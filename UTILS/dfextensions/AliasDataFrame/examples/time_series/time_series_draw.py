@@ -21,6 +21,7 @@ Groups:
   G10 — Semantic oracle gallery (fig43)
   G11 — Hardening oracles       (fig44 weights-vector, fig45 public-surface)
   G12 — Injected-truth oracles  (fig46–fig51, PHASE_13_77 scientific correctness)
+  G13 — Commissioning safety net (fig52–fig54, hist/group/subframe truth)
 
 Known limitations:
   central='median' + group_by=: silently returns mean (KNOWN.grouped_central_median).
@@ -742,6 +743,129 @@ def fig51_injected_truth_facet_residual(adf):
     )
 
 
+# ── G13 — Finite PHASE_13_76 commissioning safety-net additions ──────────────
+
+M1_HIST_BINS = 20
+M1_HIST_RANGE = (80.0, 160.0)
+M3_SUBFRAME_NAME = "OracleShift"
+M3_CHAIN_L1 = "oracle_chain_l1"
+M3_CHAIN_L2 = "oracle_chain_l2"
+M3_CHAIN_FINAL = "oracle_chain_with_shift"
+
+
+def fig52_hist_vector_truth(adf):
+    """G13.52 — hist vector truth — selection_vector and weights_vector raw-count oracles"""
+    _ensure_injected_truth(adf)
+    t_mid = float(adf.df["time_s"].median())
+    fig, axes = plt.subplots(1, 2, figsize=(11.0, 4.6))
+
+    sel = adf.draw(
+        "ncl", type="hist", bins=M1_HIST_BINS, range=M1_HIST_RANGE,
+        selection="ncl>60",
+        selection_vector=[f"time_s<{t_mid}", f"time_s>={t_mid}"],
+        selection_labels=["early", "late"],
+        vector_compose="outer", ax=axes[0], auto_title=True,
+    )
+    axes[0].set_title("hist × selection_vector: early / late")
+
+    wgt = adf.draw(
+        "ncl", type="hist", bins=M1_HIST_BINS, range=M1_HIST_RANGE,
+        selection="ncl>60",
+        weights_vector=["oracle_w_flat", "oracle_w_tgl"],
+        weights_labels=["flat", "tgl-weighted"],
+        vector_compose="outer", ax=axes[1], auto_title=True,
+    )
+    axes[1].set_title("hist × weights_vector: flat / tgl-weighted")
+    fig.tight_layout()
+    return fig, axes, {
+        "selection_stats": sel[2],
+        "weights_stats": wgt[2],
+        "t_mid": t_mid,
+    }
+
+
+def fig53_grouping_truth(adf):
+    """G13.53 — grouping truth — categorical group_by and numeric group_by_bins"""
+    _ensure_injected_truth(adf)
+    fig, axes = plt.subplots(1, 2, figsize=(11.0, 4.6))
+
+    categorical = adf.draw(
+        "known_delta:sector", type="profile",
+        bins=INJECTED_TRUTH_SECTOR_BINS, range=INJECTED_TRUTH_SECTOR_RANGE,
+        selection=INJECTED_TRUTH_SIDE_SEL, group_by="side_type",
+        min_entries=1, return_data=True, ax=axes[0], auto_title=True,
+    )
+    axes[0].set_title("group_by=side_type: independent raw groups")
+
+    binned = adf.draw(
+        "known_delta:sector", type="profile",
+        bins=INJECTED_TRUTH_SECTOR_BINS, range=INJECTED_TRUTH_SECTOR_RANGE,
+        selection=BASE_SEL, group_by="tgl", group_by_bins=4,
+        min_entries=1, return_data=True, ax=axes[1], auto_title=True,
+    )
+    axes[1].set_title("group_by=tgl, group_by_bins=4")
+    fig.tight_layout()
+    return fig, axes, {
+        "categorical_stats": categorical[2],
+        "binned_stats": binned[2],
+    }
+
+
+def _ensure_m3_subframe_chain(adf):
+    """Install one deterministic chained-alias + qualified-subframe fixture."""
+    _ensure_injected_truth(adf)
+    aliases = {
+        M3_CHAIN_L1: "known_delta + 0.005*tgl",
+        M3_CHAIN_L2: f"{M3_CHAIN_L1} - 0.002*sector/36",
+    }
+    for name, expression in aliases.items():
+        existing = getattr(adf, "aliases", {}).get(name)
+        if existing is None:
+            adf.add_alias(name, expression)
+        elif str(existing) != expression:
+            raise ValueError(f"existing alias {name!r} has unexpected definition {existing!r}")
+
+    registry = getattr(getattr(adf, "_subframes", None), "subframes", {}) or {}
+    if M3_SUBFRAME_NAME not in registry:
+        if "side_type" not in adf.df.columns:
+            raise ValueError("M3 fixture requires side_type")
+        keys = np.sort(np.asarray(pd.unique(adf.df["side_type"].dropna())))
+        offsets = 0.04 - 0.035 * keys.astype(float)
+        sub = AliasDataFrame(pd.DataFrame({
+            "side_type": keys,
+            "oracle_offset": offsets,
+        }))
+        adf.register_subframe(M3_SUBFRAME_NAME, sub, index_columns="side_type")
+
+    final_expr = f"{M3_CHAIN_L2} + {M3_SUBFRAME_NAME}.oracle_offset"
+    existing = getattr(adf, "aliases", {}).get(M3_CHAIN_FINAL)
+    if existing is None:
+        adf.add_alias(M3_CHAIN_FINAL, final_expr)
+    elif str(existing) != final_expr:
+        raise ValueError(
+            f"existing alias {M3_CHAIN_FINAL!r} has unexpected definition {existing!r}")
+
+    # Canonical public materialization path: this is deliberately part of M3.
+    # It exercises recursive alias dependencies plus the qualified subframe
+    # reference before the ordinary draw call consumes the resulting column.
+    adf.materialize_aliases(
+        names=[M3_CHAIN_FINAL], with_dependencies=True,
+        only_unmaterialized=True, cleanTemporary=False)
+    return adf
+
+
+def fig54_qualified_subframe_chain_truth(adf):
+    """G13.54 — qualified-subframe + chained-alias independent correctness"""
+    _ensure_m3_subframe_chain(adf)
+    expr = f"{M3_CHAIN_FINAL}:sector"
+    return adf.draw(
+        expr, type="profile",
+        bins=INJECTED_TRUTH_SECTOR_BINS, range=INJECTED_TRUTH_SECTOR_RANGE,
+        selection=INJECTED_TRUTH_SIDE_SEL, group_by="side_type",
+        min_entries=1, return_data=True, auto_title=True,
+    )
+
+
 # ── G7 — Full stack ADF + GB (optional, mutate adf in place) ─────────────────
 
 def fig32_subframe_vertex(adf):
@@ -805,9 +929,15 @@ FIGURES_G12 = [
     fig51_injected_truth_facet_residual,
 ]
 
+FIGURES_G13 = [
+    fig52_hist_vector_truth,
+    fig53_grouping_truth,
+    fig54_qualified_subframe_chain_truth,
+]
+
 FIGURES_MANDATORY = (FIGURES_G1 + FIGURES_G2 + FIGURES_G3 + FIGURES_G4
                      + FIGURES_G5 + FIGURES_G6 + FIGURES_G8 + FIGURES_G9
-                     + FIGURES_G10 + FIGURES_G11 + FIGURES_G12)
+                     + FIGURES_G10 + FIGURES_G11 + FIGURES_G12 + FIGURES_G13)
 FIGURES_OPTIONAL  = [fig32_subframe_vertex, fig33_gb_correction_tgl, fig34_gb_correction_sector]
 
 

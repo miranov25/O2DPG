@@ -31,9 +31,10 @@ import sys
 import time
 import traceback
 from dataclasses import dataclass, field, asdict
-from typing import Any, Callable, Sequence
+from typing import Any, Callable, Mapping, Sequence
 
 import numpy as np
+import pandas as pd
 
 SCHEMA_VERSION = "13.77.A6.4.v03"
 
@@ -4134,6 +4135,27 @@ def machine_oracle_text(case: "CaseSpec") -> str:
     return "; ".join(lines)
 
 
+def public_query_text(case: "CaseSpec | None") -> str:
+    """Compact faithful public request for page-level human/AI auditing."""
+    if case is None:
+        return ""
+    spec = dict(case.canonical_spec or {})
+    explicit = spec.get("public_query")
+    if explicit:
+        return str(explicit)
+    expr = spec.get("expr")
+    if not expr:
+        return str(spec.get("gallery_function", ""))
+    args = [repr(expr)]
+    for key in ("type", "selection", "selection_vector", "weights_vector",
+                "vector_compose", "normalize", "facet_by", "group_by",
+                "group_by_bins", "group_by_quantiles", "fit", "summary_fit",
+                "bins", "range"):
+        if key in spec and spec[key] is not None:
+            args.append(f"{key}={spec[key]!r}")
+    return "adf.draw(" + ", ".join(args) + ")"
+
+
 def footer_text(case: "CaseSpec") -> str:
     """Structured page-review contract shared by PDF and manifest.
 
@@ -4151,6 +4173,8 @@ def footer_text(case: "CaseSpec") -> str:
         if injected_truth else ""
     )
     proof_class = proof_class_for_case(case)
+    query = public_query_text(case)
+    query_block = f"QUERY:\n  {query}\n\n" if query else ""
     checks = reviewer_checks_for_case(case)
     checks_block = ""
     if checks:
@@ -4161,6 +4185,7 @@ def footer_text(case: "CaseSpec") -> str:
         )
     return (f"PROOF CLASS: {proof_class}\n"
             f"CASE: {case.case_id}\n\n"
+            f"{query_block}"
             f"{injected_block}"
             f"EXPECTED:\n  {expected}\n\n"
             f"{checks_block}"
@@ -7137,7 +7162,8 @@ def o1_neg_b_case(root_path: str, gallery_module=None) -> CaseSpec:
         expected_visual="no dedicated page; machine-only non-profile vector control",
         purpose="CORRECTNESS", oracle_kind="CORRECTNESS", owner="dfdraw",
         canonical_spec={"expr": "ncl", "type": "hist", "facet_by": "side_type",
-                        "selection_vector": ["early", "late"], "bins": 40},
+                        "selection_vector": ["early", "late"], "bins": 40,
+                        "range": [80.0, 160.0]},
         observables=(Observable("branch_facet_rows", "INDEPENDENT", "ARRAY",
                                 "raw branch×facet selected row counts", comparator="exact"),),
         root_path=root_path, gallery_module=gallery_module,
@@ -7181,9 +7207,13 @@ def run_o1_neg_a(case: CaseSpec, root_path: str, *, gallery_module=None,
             provenance = dict(prepared_provenance or {})
         df = adf.df
         q1 = float(df["time_s"].quantile(1.0 / 3.0))
-        base = ((df["ncl"] > 60) & (np.abs(np.asarray(df["dcar_tpc_vertex"], dtype=float)) < 10)
-                & (df["side_type"] < 2) & (df["time_s"] < q1))
-        expected = [int(np.count_nonzero(np.asarray(base & (df["side_type"] == facet), dtype=bool)))
+        tgl = np.asarray(df["tgl"])
+        dcar = np.asarray(df["dcar_tpc_vertex"])
+        base = ((np.asarray(df["ncl"]) > 60) & (np.abs(dcar) < 10)
+                & (np.asarray(df["side_type"]) < 2) & (np.asarray(df["time_s"]) < q1)
+                & np.isfinite(tgl) & np.isfinite(dcar)
+                & (tgl >= HARDENING_PROFILE_RANGE[0]) & (tgl <= HARDENING_PROFILE_RANGE[1]))
+        expected = [int(np.count_nonzero(base & (np.asarray(df["side_type"]) == facet)))
                     for facet in HARDENING_FACETS]
         raw = adf.draw("dcar_tpc_vertex:tgl", selection=f"{HARDENING_BASE_SEL}&(side_type<2)",
                        type="profile", bins=HARDENING_PROFILE_BINS,
@@ -7191,10 +7221,24 @@ def run_o1_neg_a(case: CaseSpec, root_path: str, *, gallery_module=None,
                        selection_vector=[f"time_s<{q1}"], facet_by="side_type",
                        min_entries=1, auto_title=False)
         stats = raw[2]
-        # Correct one-element vector semantics remain vector-shaped. A dict is the
-        # historical silent-discard signature and must fail loudly here.
-        observed = _vector_faceted_counts(stats, n_branches=1)
+        # The semantic contract is selection application, not return-container
+        # shape.  A one-element vector may legally degrade to the scalar faceted
+        # envelope; prove the supplied selection survived by comparing the public
+        # per-facet populations with independent raw masks.
+        branch_stats = stats[0] if isinstance(stats, list) and len(stats) == 1 else stats
+        per_group = branch_stats.get("per_group") if isinstance(branch_stats, dict) else None
+        if not isinstance(per_group, dict):
+            raise HarnessError(
+                f"one-element vector result has no faceted per_group payload: {type(stats).__name__}")
+        observed = []
+        for facet in HARDENING_FACETS:
+            cell = per_group.get(str(facet))
+            if not isinstance(cell, dict) or "n" not in cell:
+                raise HarnessError(f"one-element vector facet {facet} has no public n")
+            observed.append(int(cell["n"]))
         if observed != expected:
+            res.observed["ownership_ladder"] = _o1_neg_a_ownership_ladder(
+                adf, q1=q1, expected=expected, adf_observed=observed)
             raise HarnessError(f"O1-neg-A selected counts mismatch: expected={expected}, observed={observed}")
         res.observable_contract.append(_contract(case.observables[0]))
         res.observed["facet_selected_rows"] = observed
@@ -7203,6 +7247,12 @@ def run_o1_neg_a(case: CaseSpec, root_path: str, *, gallery_module=None,
                                                    reference_label="raw masks", candidate_label="public draw"))
         res.executed_comparisons = 1
         res.observed["realdata_provenance"] = provenance
+        res.observed["ownership_ladder"] = {
+            "L0": "raw boolean masks",
+            "L3": "adf.draw one-element selection_vector per-facet counts",
+            "first_disagreement_layer": "NONE",
+            "derived_owner": "NONE",
+        }
         res.status = PASS; res.detail = ""
         return res
     except Exception as exc:
@@ -7226,25 +7276,61 @@ def run_o1_neg_b(case: CaseSpec, root_path: str, *, gallery_module=None,
             _a6_4_prepared_fraction_sample_evidence(adf, prepared_provenance, root_path)
             provenance = dict(prepared_provenance or {})
         df = adf.df; t_mid = float(df["time_s"].median())
-        base = ((df["ncl"] > 60) & (df["side_type"] < 2))
-        branch_masks = (df["time_s"] < t_mid, df["time_s"] >= t_mid)
-        expected = [
-            int(np.count_nonzero(np.asarray(base & branch_mask & (df["side_type"] == facet), dtype=bool)))
-            for branch_mask in branch_masks for facet in HARDENING_FACETS
-        ]
+        ncl = np.asarray(df["ncl"], dtype=float)
+        side = np.asarray(df["side_type"])
+        ts = np.asarray(df["time_s"], dtype=float)
+        base = (ncl > 60) & (side < 2) & np.isfinite(ncl) & np.isfinite(ts)
+        branch_masks = (ts < t_mid, ts >= t_mid)
+        edges = np.linspace(80.0, 160.0, 41)
+        expected_cells = {}
+        for branch_index, branch_mask in enumerate(branch_masks):
+            for facet in HARDENING_FACETS:
+                mask = base & branch_mask & (side == facet)
+                expected_cells[(branch_index, facet)] = np.histogram(
+                    ncl[mask], bins=edges)[0].astype(float)
         raw = adf.draw("ncl", selection="(ncl>60)&(side_type<2)", type="hist", bins=40,
+                       range=(80.0, 160.0),
                        selection_vector=[f"time_s<{t_mid}", f"time_s>={t_mid}"],
                        facet_by="side_type", auto_title=False)
-        observed = _vector_faceted_counts(raw[2], n_branches=2)
-        if observed != expected:
-            raise HarnessError(f"O1-neg-B branch×facet counts mismatch: expected={expected}, observed={observed}")
+        axes = np.asarray(raw[1], dtype=object).reshape(-1)
+        observed_cells = {}
+        try:
+            if len(axes) != len(HARDENING_FACETS):
+                raise HarnessError(f"expected {len(HARDENING_FACETS)} histogram facets, got {len(axes)}")
+            for facet, ax in zip(HARDENING_FACETS, axes):
+                rendered = _m1_bar_heights(ax, n_series=2, n_bins=40)
+                for branch_index, heights in enumerate(rendered):
+                    observed_cells[(branch_index, facet)] = np.asarray(heights, dtype=float)
+        except Exception:
+            res.observed["ownership_ladder"] = _o1_neg_b_ownership_ladder(
+                adf, t_mid=t_mid, expected_cells=expected_cells,
+                adf_observed_cells=observed_cells)
+            raise
+        mismatches = []
+        for key, exp in expected_cells.items():
+            got = observed_cells.get(key)
+            if got is None or not np.array_equal(exp, got):
+                mismatches.append(key)
+        if mismatches:
+            res.observed["ownership_ladder"] = _o1_neg_b_ownership_ladder(
+                adf, t_mid=t_mid, expected_cells=expected_cells,
+                adf_observed_cells=observed_cells)
+            raise HarnessError(f"O1-neg-B rendered branch×facet histogram mismatch: {mismatches}")
+        expected = np.concatenate([expected_cells[(b, f)] for b in range(2) for f in HARDENING_FACETS]).tolist()
+        observed = np.concatenate([observed_cells[(b, f)] for b in range(2) for f in HARDENING_FACETS]).tolist()
         res.observable_contract.append(_contract(case.observables[0]))
         res.observed["branch_facet_rows"] = observed
         cmp = compare_observable(case.observables[0], expected, observed)
         res.comparisons.append(comparison_evidence(case.observables[0], cmp,
-                                                   reference_label="raw masks", candidate_label="public draw"))
+                                                   reference_label="raw np.histogram branch×facet bins", candidate_label="rendered public histogram bars"))
         res.executed_comparisons = 1
         res.observed["realdata_provenance"] = provenance
+        res.observed["ownership_ladder"] = {
+            "L0": "raw np.histogram branch×facet bins",
+            "L3": "adf.draw rendered histogram branch×facet bins",
+            "first_disagreement_layer": "NONE",
+            "derived_owner": "NONE",
+        }
         res.status = PASS; res.detail = ""
         return res
     except Exception as exc:
@@ -7634,8 +7720,10 @@ def current_stage_a_contract_amendment() -> dict:
         "owner": "PHASE_13_77 hardening v0.2 implementation manifest",
         "historical_stage_a_gallery_pages": 43,
         "historical_stage_a_closure_immutable": True,
-        "previous_checkpoint_gallery_pages": 47,
+        "pre_injected_checkpoint_gallery_pages": 47,
+        "previous_checkpoint_gallery_pages": 53,
         "injected_truth_primary_pages": 6,
+        "commissioning_addition_pages": 3,
         "superseded_nodes": [
             {
                 "node": ("tests/test_phase_13_77_realdata_invariance_harness.py::"
@@ -7661,8 +7749,8 @@ def current_stage_a_contract_amendment() -> dict:
         "target_a7_commit": HARDENING_O4_A7_COMMIT,
         "target_aliasdataframe_md5": HARDENING_O4_ADF_SOURCE_MD5,
         "target_aliasdataframe_sha256": HARDENING_O4_ADF_SOURCE_SHA256,
-        "current_step_gallery_pages": 53,
-        "approved_final_fast_gallery_pages": 53,
+        "current_step_gallery_pages": 56,
+        "approved_final_fast_gallery_pages": 56,
     }
 
 
@@ -7929,6 +8017,9 @@ _GALLERY_DISPOSITION = {
     "fig51_injected_truth_facet_residual": (
         "REUSED_CORE",
         "Injected-truth Rank 6: simple facet residual truth for failure localization"),
+    "fig52_hist_vector_truth": ("REUSED_CORE", "M1 histogram selection/weight vector independent truth"),
+    "fig53_grouping_truth": ("REUSED_CORE", "M2 categorical and binned grouping independent truth"),
+    "fig54_qualified_subframe_chain_truth": ("REUSED_CORE", "M3 qualified-subframe/chained-alias independent truth"),
 }
 
 _NUMERICAL_CORRECTNESS_ANCHORS = (
@@ -8052,6 +8143,14 @@ def _stage_a_case_for_gallery_function(name: str, root_path: str, gallery_module
     case_factory = injected.get(name) if isinstance(injected, dict) else None
     if callable(case_factory):
         return case_factory(gallery_module=gallery_module)
+    commissioning = {
+        M1_HIST_GALLERY_FUNCTION: m1_hist_vector_case,
+        M2_GROUP_GALLERY_FUNCTION: m2_grouping_case,
+        M3_SUBFRAME_GALLERY_FUNCTION: m3_subframe_chain_case,
+    }
+    factory = commissioning.get(name)
+    if callable(factory):
+        return factory(gallery_module=gallery_module)
     return None
 
 
@@ -8385,6 +8484,7 @@ def _a6_3_fraction_cases(root_path: str, gallery_module=None) -> tuple[CaseSpec,
         o4_realdata_case(root_path, gallery_module=gallery_module),
         o2_oracle_case(gallery_module=gallery_module),
         *injected_truth_cases(gallery_module=gallery_module),
+        *commissioning_addition_cases(gallery_module=gallery_module),
         a5_2_realdata_case(root_path, gallery_module=gallery_module),
         a5_4_realdata_case(root_path, gallery_module=gallery_module),
         a5_5_realdata_case(root_path, gallery_module=gallery_module),
@@ -8398,6 +8498,7 @@ def _a6_3_fraction_runners():
         run_o4_surface_equivalence, run_o2_realdata,
         run_injected_truth_case, run_injected_truth_case, run_injected_truth_case,
         run_injected_truth_case, run_injected_truth_case, run_injected_truth_case,
+        run_m1_hist_vector, run_m2_grouping, run_m3_subframe_chain,
         run_a5_2_realdata, run_a5_4_realdata, run_a5_5_realdata, run_a5_6_realdata,
     )
 
@@ -8635,6 +8736,55 @@ def _require_reference_approval_args(args) -> None:
                 f"reference acceptance/update requires --{attr.replace('_', '-')}")
 
 
+
+def print_stage_a_console_summary(manifest: Mapping[str, Any]) -> None:
+    """Print a compact production-facing Stage-A result/ownership summary.
+
+    The manifest remains authoritative.  This is intentionally only a concise
+    terminal view so operators do not need ad-hoc JSON/heredoc parsing.
+    """
+    reconciliation = manifest.get("reconciliation", {}) if isinstance(manifest, Mapping) else {}
+    cases = manifest.get("cases", []) if isinstance(manifest, Mapping) else []
+    declared = int(reconciliation.get("n_declared", len(cases)) or 0)
+    n_results = int(reconciliation.get("n_results", len(cases)) or 0)
+    gating = list(reconciliation.get("gating", []) or [])
+    by_id = {
+        row.get("case_id"): row
+        for row in cases
+        if isinstance(row, Mapping) and row.get("case_id")
+    }
+
+    print()
+    print("=== PHASE_13_77 STAGE-A SUMMARY ===")
+    print(f"cases: {n_results}/{declared}  gating_reds: {len(gating)}")
+
+    unknown = 0
+    for gate in gating:
+        case_id = gate.get("case_id", "<missing-case-id>")
+        row = by_id.get(case_id, {})
+        observed = row.get("observed", {}) if isinstance(row, Mapping) else {}
+        ladder = observed.get("ownership_ladder", {}) if isinstance(observed, Mapping) else {}
+        owner = ladder.get("derived_owner") if isinstance(ladder, Mapping) else None
+        first = ladder.get("first_disagreement_layer") if isinstance(ladder, Mapping) else None
+        if not owner or owner in {"NONE", "UNKNOWN"}:
+            owner = "UNKNOWN"
+            unknown += 1
+        if not first or first == "NONE":
+            first = "UNKNOWN"
+        detail = str(row.get("detail", gate.get("reason", ""))).replace("\n", " ").strip()
+        if len(detail) > 180:
+            detail = detail[:177] + "..."
+        print(f"RED  owner={owner:<15} first={first:<7} {case_id}")
+        if detail:
+            print(f"     {detail}")
+
+    if not gating:
+        print("STRICT GATE: PASS")
+    else:
+        print(f"STRICT GATE: FAIL  UNKNOWN={unknown}")
+    print("Manifest is authoritative; this summary is operator convenience only.")
+    print("=== END STAGE-A SUMMARY ===")
+
 def stage_a_cli_main(argv: Sequence[str] | None = None, *, gallery_module=None) -> int:
     """Execute the single Stage-A CLI; returns a process-style exit code."""
     parser = build_stage_a_cli_parser()
@@ -8690,6 +8840,7 @@ def stage_a_cli_main(argv: Sequence[str] | None = None, *, gallery_module=None) 
                 approval_identity=args.approval_identity,
                 approval_date=args.approval_date,
                 reason_for_update=args.reason_for_update)
+        print_stage_a_console_summary(manifest)
         return gate_code if args.strict else 0
     except HarnessError as exc:
         print(f"A6 Stage-A gate REFUSED: {exc}", file=sys.stderr)
@@ -8817,11 +8968,18 @@ def o2_oracle_case(gallery_module=None) -> CaseSpec:
 
 
 def _o2_weight_values(df: Any, branch_label: str) -> np.ndarray:
-    """Independent implementation of the two approved O2 weight definitions."""
+    """Independent implementation of the two approved O2 weight definitions.
+
+    Preserve the authoritative source dtype.  dfdraw evaluates these expressions
+    on the physical ROOT-derived column without an implicit float64 promotion;
+    the oracle must test the same declared arithmetic contract rather than create
+    an artificial source-dtype-vs-float64 disagreement.
+    """
+    dcar = np.asarray(df["dcar_tpc_vertex"])
     if branch_label == "unity":
-        return np.ones(len(df), dtype=float)
+        return 1.0 + 0.0 * np.abs(dcar)
     if branch_label == "w_dca":
-        return 1.0 + np.abs(np.asarray(df["dcar_tpc_vertex"], dtype=float))
+        return 1.0 + np.abs(dcar)
     raise HarnessError(f"O2 unknown weight branch {branch_label!r}")
 
 
@@ -8829,9 +8987,12 @@ def _o2_weighted_profile_reference_arrays(
         x: Any, y: Any, weights: Any, *, bins: int,
         value_range: tuple[float, float]) -> dict:
     """Independent raw weighted-profile reduction using project semantics."""
-    x = np.asarray(x, dtype=float)
-    y = np.asarray(y, dtype=float)
-    w = np.asarray(weights, dtype=float)
+    # Preserve source/materialized dtypes: dfdraw's profile reducer uses
+    # NumPy's default reduction dtype on these arrays.  Promoting only the
+    # reference to float64 creates a false oracle red on float32 ROOT columns.
+    x = np.asarray(x)
+    y = np.asarray(y)
+    w = np.asarray(weights)
     if not (x.shape == y.shape == w.shape):
         raise HarnessError(f"O2 raw arrays have incompatible shapes: {x.shape}, {y.shape}, {w.shape}")
     finite = np.isfinite(x) & np.isfinite(y) & np.isfinite(w)
@@ -9219,6 +9380,56 @@ def _o2_flatten_for_observables(expected: dict, product: dict) -> tuple[dict, di
                 observed_flat[name].extend(np.asarray(got[name]).tolist())
     return expected_flat, observed_flat
 
+def _o2_direct_product(adf: Any, case: CaseSpec) -> dict:
+    owner=_DirectDFDrawOwner(adf.df)
+    spec=case.canonical_spec
+    raw=owner.draw(
+        spec["expr"], selection=spec["selection"], type="profile",
+        bins=int(spec["bins"]), range=tuple(spec["range"]),
+        weights_vector=list(spec["weights_vector"]),
+        weights_labels=list(spec.get("weights_labels") or ()),
+        facet_by="side_type", vector_compose="outer", fit="pol1",
+        min_entries=1, auto_title=False, return_data=True)
+    try:
+        return _o2_public_model(raw,case)
+    finally:
+        try: plt.close(raw[0])
+        except Exception: pass
+
+
+def _o2_ownership_ladder(adf: Any, case: CaseSpec, expected: dict) -> dict:
+    df=adf.df
+    diag={
+        "L0":"independent NumPy weighted profile using physical source dtypes",
+        "L1":"ADF physical tgl/dcar/side/ncl columns; no alias materialization in O2",
+        "L1_all_within_tolerance":True,
+        "source_dtypes":{
+            "tgl":str(np.asarray(df["tgl"]).dtype),
+            "dcar_tpc_vertex":str(np.asarray(df["dcar_tpc_vertex"]).dtype),
+        },
+    }
+    try:
+        direct=_o2_direct_product(adf,case)
+        _o2_assert_product_matches_raw(case,expected,direct)
+        diag.update({
+            "L2":"direct DFDraw weights_vector×facet",
+            "L2_matches_truth":True,
+            "L3":"adf.draw is red",
+            "first_disagreement_layer":"L3",
+            "derived_owner":"ADF_DRAW_BRIDGE",
+        })
+    except Exception as exc:
+        diag.update({
+            "L2":"direct DFDraw weights_vector×facet",
+            "L2_matches_truth":False,
+            "L2_detail":f"{type(exc).__name__}: {exc}",
+            "L3":"adf.draw is red",
+            "first_disagreement_layer":"L2",
+            "derived_owner":"dfdraw",
+        })
+    return diag
+
+
 def run_o2_realdata(case: CaseSpec, root_path: str, *, gallery_module=None,
                     prepared_adf=None, prepared_provenance=None) -> CaseResult:
     """Run O2 on the one shared FAST ADF; rebuilding the source is forbidden."""
@@ -9260,6 +9471,14 @@ def run_o2_realdata(case: CaseSpec, root_path: str, *, gallery_module=None,
                     "scalar_fit_records": scalar["records"],
                     "style_mismatches": style["mismatches"],
                 },
+                "ownership_ladder": {
+                    "L0":"independent NumPy weighted profile using physical source dtypes",
+                    "L1":"ADF physical columns; no alias materialization in O2",
+                    "L2":"not required: public correctness oracle is green",
+                    "L3":"adf.draw matches truth",
+                    "first_disagreement_layer":"NONE",
+                    "derived_owner":"NONE",
+                },
             })
             res.status = PASS
             res.detail = ""
@@ -9270,6 +9489,15 @@ def run_o2_realdata(case: CaseSpec, root_path: str, *, gallery_module=None,
             except Exception:
                 pass
     except Exception as exc:
+        try:
+            if prepared_adf is not None and 'expected' in locals():
+                res.observed["ownership_ladder"]=_o2_ownership_ladder(prepared_adf,case,expected)
+        except Exception as diag_exc:
+            res.observed["ownership_ladder"]={
+                "first_disagreement_layer":"UNKNOWN",
+                "derived_owner":"UNKNOWN",
+                "diagnostic_error":f"{type(diag_exc).__name__}: {diag_exc}",
+            }
         res.status = FAIL
         res.detail = f"O2_WEIGHTS_VECTOR_FACET_CORRECTNESS FAIL: {exc}"
         res.exception = traceback.format_exc(limit=8)
@@ -9307,6 +9535,14 @@ INJECTED_TRUTH_SELECTION_GALLERY = "fig48_injected_truth_selection_delta_facet"
 INJECTED_TRUTH_WEIGHTS_GALLERY = "fig49_injected_truth_weights_facet"
 INJECTED_TRUTH_GAUSS_GALLERY = "fig50_injected_truth_gaussian_fit"
 INJECTED_TRUTH_FACET_GALLERY = "fig51_injected_truth_facet_residual"
+
+M1_HIST_CASE_ID = "I4-REAL-HIST-VECTOR-TRUTH-EAGER-20PCT-01"
+M1_HIST_NORMALIZE_CASE_ID = "I4-HIST-NORMALIZE-EXPLICIT-CONTRACT-01"
+M1_HIST_GALLERY_FUNCTION = "fig52_hist_vector_truth"
+M2_GROUP_CASE_ID = "I4-REAL-GROUPING-TRUTH-EAGER-20PCT-01"
+M2_GROUP_GALLERY_FUNCTION = "fig53_grouping_truth"
+M3_SUBFRAME_CASE_ID = "I4-REAL-QUALIFIED-SUBFRAME-CHAIN-TRUTH-EAGER-20PCT-01"
+M3_SUBFRAME_GALLERY_FUNCTION = "fig54_qualified_subframe_chain_truth"
 
 
 # ── Human/AI review contract for scientific gallery pages ────────────────────
@@ -9370,6 +9606,21 @@ _PRIMARY_ORACLE_REVIEW_CHECKS = {
         "Confirm both side_type panels are present and residual means fluctuate around zero rather than showing a coherent sector-dependent bias.",
         "Check there is no systematic A/C-side offset or repeated sector structure larger than the expected statistical fluctuations.",
         "Confirm per-facet/per-sector counts and means are compared with the raw stable-row oracle_noise partition.",
+    ),
+    M1_HIST_CASE_ID: (
+        "On the left, identify early and late histogram branches; on the right, identify flat and tgl-weighted branches. No branch may silently disappear.",
+        "Check that visibly different branch populations/weights produce correspondingly different bin heights rather than duplicated histograms.",
+        "Confirm the machine oracle compares rendered histogram bin heights against independent np.histogram counts and weighted sums.",
+    ),
+    M2_GROUP_CASE_ID: (
+        "On the left, confirm side_type groups are distinct; on the right, confirm four ordered tgl bins are present and produce distinct profile families.",
+        "Check group labels/order correspond to the declared grouping rather than accidental row order.",
+        "Confirm the machine oracle reconstructs group membership with raw pandas and compares per-group per-sector counts and means.",
+    ),
+    M3_SUBFRAME_CASE_ID: (
+        "Confirm side_type groups show the known offset separation on top of the chained known_delta trend.",
+        "Check the query explicitly contains both the chained alias and the qualified OracleShift.oracle_offset reference.",
+        "Confirm the machine oracle computes the chained expression and subframe projection directly from raw rows without using ADF/dfdraw aggregation.",
     ),
 }
 
@@ -9760,6 +10011,152 @@ INJECTED_TRUTH_GALLERY_CASES = {
 }
 
 
+def m1_hist_vector_case(*, gallery_module=None) -> CaseSpec:
+    cid = M1_HIST_CASE_ID
+    return CaseSpec(
+        case_id=cid,
+        claim_id="I4.commissioning.hist_vector_truth",
+        title="hist selection_vector and weights_vector match independent NumPy histograms",
+        claim=("the supported non-profile vector dispatch preserves selection and weight branch "
+               "semantics down to rendered histogram bin contents"),
+        failure_means=("hist vector dispatch dropped/swapped a branch, changed selection membership, "
+                       "or changed weighted bin sums"),
+        expected_visual="left: early/late ncl histograms; right: flat/tgl-weighted ncl histograms",
+        owner_on_failure="dfdraw",
+        purpose="CORRECTNESS", gate="ENVIRONMENT_GATED", oracle_kind="CORRECTNESS",
+        loading_mode="EAGER", sample_mode="FRACTION",
+        canonical_spec={
+            "gallery_function": M1_HIST_GALLERY_FUNCTION,
+            "public_query": (
+                "left adf.draw('ncl', type='hist', selection_vector=['early','late'], vector_compose='outer'); "
+                "right adf.draw('ncl', type='hist', weights_vector=['flat','tgl-weighted'], vector_compose='outer')"),
+            "type": "hist", "bins": 20, "range": (80.0, 160.0),
+        },
+        setup_contract="reuse shared EAGER 20% ADF and injected deterministic weights",
+        preconditions=("ncl/time_s/tgl finite support is non-empty",),
+        figure_contract=FigureContract(
+            expected_panels="two histogram panels", panel_roles="selection vector; weight vector",
+            expected_traces="early/late; flat/tgl-weighted", expected_group_count="2 + 2 branches",
+            primary_comparison="np.histogram raw counts/weighted sums -> rendered bar heights",
+            residual_definition="rendered bin height - independent NumPy bin content",
+            accepted_envelope="bin edges fixed; unweighted counts exact; weighted sums tight float tolerance",
+            case_ids=(cid,), proof_kind="CORRECTNESS"),
+        surfaces_under_test=("draw",),
+        observables=(
+            Observable("selection_bin_counts", "INDEPENDENT", "ARRAY", "np.histogram selected counts", comparator="exact"),
+            Observable("weighted_bin_sums", "INDEPENDENT", "ARRAY", "np.histogram weighted sums",
+                       comparator="close", rtol=1e-10, atol=1e-8,
+                       rationale="matplotlib histogram heights from float64 weighted accumulation"),
+        ),
+        non_claims=("hist normalize is a separate explicit contract",),
+        negative_control="M1:SWAP_SELECTION_OR_DROP_WEIGHT_BRANCH", reference_policy="same-process",
+    )
+
+
+def m1_hist_normalize_case() -> CaseSpec:
+    cid = M1_HIST_NORMALIZE_CASE_ID
+    return CaseSpec(
+        case_id=cid, claim_id="I4.commissioning.hist_normalize_contract",
+        title="hist normalize semantic is explicit: supported numerically or loud refusal",
+        claim=("profile-style normalize= must never be silently accepted and ignored by hist; "
+               "the current commissioning contract requires deterministic loud refusal unless support is implemented"),
+        failure_means="hist normalize was silently dropped or ambiguously accepted",
+        expected_visual="no gallery page; machine-only semantic contract",
+        owner_on_failure="dfdraw", purpose="ERROR_CONTRACT", gate="CORE_MANDATORY",
+        oracle_kind="ERROR_CONTRACT", loading_mode="EAGER", sample_mode="SYNTHETIC",
+        canonical_spec={"expr":"ncl", "type":"hist", "normalize":"delta"},
+        setup_contract="execute one histogram request with profile-style normalize='delta'",
+        preconditions=("histogram dispatch available",),
+        figure_contract=FigureContract(
+            expected_panels="none", panel_roles="machine-only refusal contract",
+            expected_traces="none", expected_group_count="0",
+            primary_comparison="public call -> deterministic explicit refusal",
+            residual_definition="not applicable",
+            accepted_envelope="exception must explicitly mention normalize/hist unsupported semantics",
+            case_ids=(cid,), proof_kind="ERROR_CONTRACT"),
+        surfaces_under_test=("draw",), observables=(
+            Observable("loud_refusal", "INDEPENDENT", "FLAT", "explicit normalize refusal", comparator="exact"),
+        ),
+        non_claims=("this does not claim histogram normalize is supported",),
+        known_bug_status="KNOWN_BUG",
+        known_bug_id="BUG_dfdraw_20260912_hist_normalize_ignored",
+        negative_control="M1:NORMALIZE_SILENTLY_IGNORED", reference_policy="same-process",
+    )
+
+
+def m2_grouping_case(*, gallery_module=None) -> CaseSpec:
+    cid=M2_GROUP_CASE_ID
+    return CaseSpec(
+        case_id=cid, claim_id="I4.commissioning.grouping_truth",
+        title="categorical group_by and numeric group_by_bins match raw pandas grouping truth",
+        claim="production-shaped grouping preserves independently reconstructed membership, counts and means",
+        failure_means="group membership/order, bin membership, counts or profile means differ from raw pandas truth",
+        expected_visual="left side_type groups; right four ordered tgl bins",
+        owner_on_failure="dfdraw", purpose="CORRECTNESS", gate="ENVIRONMENT_GATED",
+        oracle_kind="CORRECTNESS", loading_mode="EAGER", sample_mode="FRACTION",
+        canonical_spec={"gallery_function":M2_GROUP_GALLERY_FUNCTION,
+                        "public_query":"adf.draw('known_delta:sector', type='profile', group_by='side_type'); adf.draw(..., group_by='tgl', group_by_bins=4)",
+                        "expr":"known_delta:sector", "type":"profile", "group_by":"side_type / tgl", "group_by_bins":4},
+        setup_contract="reuse injected-truth ADF; execute categorical and binned grouping on one page",
+        preconditions=("side_type 0/1 populated", "tgl selected domain has four non-empty bins"),
+        figure_contract=FigureContract(
+            expected_panels="two grouping panels", panel_roles="categorical groups; numeric bins",
+            expected_traces="2 side groups; 4 tgl-bin groups", expected_group_count="2 + 4 groups",
+            primary_comparison="raw pandas group membership and per-sector means -> public profile_data",
+            residual_definition="public group-bin count/mean - raw grouped truth",
+            accepted_envelope="group cardinality/order and counts exact; means tight float tolerance",
+            case_ids=(cid,), proof_kind="CORRECTNESS"),
+        surfaces_under_test=("draw",),
+        observables=(
+            Observable("group_counts", "INDEPENDENT", "ARRAY", "raw grouped per-sector counts", comparator="exact"),
+            Observable("group_means", "INDEPENDENT", "ARRAY", "raw grouped per-sector known_delta means",
+                       comparator="close", rtol=1e-8, atol=1e-9,
+                       rationale="same selected rows and explicit sector bins"),
+        ),
+        non_claims=("group_by_quantiles is not additionally required because Round-2 permits bins OR quantiles",),
+        negative_control="M2:GROUP_MEMBERSHIP_MUTATION", reference_policy="same-process")
+
+
+def m3_subframe_chain_case(*, gallery_module=None) -> CaseSpec:
+    cid=M3_SUBFRAME_CASE_ID
+    return CaseSpec(
+        case_id=cid, claim_id="I4.commissioning.qualified_subframe_chain_truth",
+        title="qualified subframe plus chained aliases matches independent raw truth",
+        claim=("one production-shaped public draw resolves a two-level parent alias chain and a qualified "
+               "subframe projection without changing the independently known expression"),
+        failure_means="alias chaining, subframe projection, qualified-reference resolution or grouping changed the known truth",
+        expected_visual="two side_type groups separated by deterministic OracleShift offsets on the chained known_delta trend",
+        owner_on_failure="ADF", purpose="CORRECTNESS", gate="ENVIRONMENT_GATED",
+        oracle_kind="CORRECTNESS", loading_mode="EAGER", sample_mode="FRACTION",
+        canonical_spec={"gallery_function":M3_SUBFRAME_GALLERY_FUNCTION,
+                        "public_query":"adf.draw('oracle_chain_l2+OracleShift.oracle_offset:sector', type='profile', group_by='side_type', ...)",
+                        "expr":"oracle_chain_l2+OracleShift.oracle_offset:sector", "type":"profile", "group_by":"side_type"},
+        setup_contract="register OracleShift(side_type->offset), add two chained aliases, execute ordinary draw",
+        preconditions=("side_type key domain fully covered by subframe",),
+        figure_contract=FigureContract(
+            expected_panels="one grouped profile panel", panel_roles="side_type groups with qualified offset",
+            expected_traces="side_type=0 and side_type=1", expected_group_count="2",
+            primary_comparison="raw chained formula + raw side offset -> public grouped profile_data",
+            residual_definition="public grouped mean - independently computed row formula",
+            accepted_envelope="counts exact; means tight float tolerance",
+            case_ids=(cid,), proof_kind="CORRECTNESS"),
+        surfaces_under_test=("draw",),
+        observables=(
+            Observable("count", "INDEPENDENT", "ARRAY", "raw side/sector selected counts", comparator="exact"),
+            Observable("y_mean", "INDEPENDENT", "ARRAY", "raw chained+qualified expression mean",
+                       comparator="close", rtol=1e-8, atol=1e-9,
+                       rationale="same selected rows and deterministic subframe projection"),
+        ),
+        non_claims=("draw_figures orchestration is already covered by consistency tests; this case is correctness-first",),
+        negative_control="M3:QUALIFIED_OFFSET_OR_ALIAS_CHAIN_MUTATION", reference_policy="same-process")
+
+
+def commissioning_addition_cases(*, gallery_module=None) -> tuple[CaseSpec, ...]:
+    return (m1_hist_vector_case(gallery_module=gallery_module),
+            m2_grouping_case(gallery_module=gallery_module),
+            m3_subframe_chain_case(gallery_module=gallery_module))
+
+
 def injected_truth_cases(*, gallery_module=None) -> tuple[CaseSpec, ...]:
     return (
         injected_truth_vector_case(gallery_module=gallery_module),
@@ -9856,9 +10253,63 @@ def _it_raw_model(adf: Any) -> dict:
     }
 
 
+def _it_cast_expected_to_authoritative_dtype(df: Any, column: str, values: Any) -> np.ndarray:
+    """Cast independent values to an already-materialized authoritative dtype.
+
+    AD-19/13.76.ADF makes the first successful materialization dtype authoritative
+    for aliases without an explicit dtype.  Using that dtype metadata is not using
+    the ADF values as truth: the numerical values below are still built independently
+    from physical source columns and the declared formula.
+    """
+    if column not in df.columns:
+        raise HarnessError(f"authoritative materialized column {column!r} is absent")
+    target = np.asarray(df[column]).dtype
+    try:
+        return np.asarray(values).astype(target, copy=False)
+    except Exception as exc:
+        raise HarnessError(
+            f"cannot cast independent {column!r} truth to authoritative dtype {target}") from exc
+
+
+def _it_semantic_model(adf: Any) -> dict:
+    """Independent injected-truth model with authoritative stepwise dtypes.
+
+    `_it_raw_model` remains the ideal float64 analytic L0 truth.  This model is
+    the independent reference for public ADF/dfdraw semantics after alias
+    materialization: every alias step is recomputed from source columns and then
+    cast only to the authoritative materialized dtype required by AD-19.
+    """
+    raw = _it_raw_model(adf)
+    df = adf.df
+    sector = np.asarray(df["sector"])
+    tgl = np.asarray(df["tgl"])
+    dcar = np.asarray(df["dcar_tpc_vertex"])
+    noise = np.asarray(df["oracle_noise"])
+
+    delta_formula = (
+        0.08 * np.sin(2.0 * np.pi * sector / 36.0)
+        + 0.03 * tgl + 0.015 * tgl * tgl)
+    delta = _it_cast_expected_to_authoritative_dtype(
+        df, "known_delta", delta_formula)
+    clean = _it_cast_expected_to_authoritative_dtype(
+        df, "dcar_distorted_clean", dcar + delta)
+    noisy = _it_cast_expected_to_authoritative_dtype(
+        df, "dcar_oracle", clean + noise)
+    residual = _it_cast_expected_to_authoritative_dtype(
+        df, "oracle_residual", noisy - dcar - delta)
+
+    out = dict(raw)
+    out.update({
+        "sector": sector, "tgl": tgl, "dcar": dcar,
+        "delta": delta, "clean": clean, "noisy": noisy,
+        "noise": noise, "residual": residual,
+    })
+    return out
+
+
 def _it_profile(x: Any, y: Any, mask: Any, *, weights: Any = None) -> dict:
     x = np.asarray(x, dtype=float)
-    y = np.asarray(y, dtype=float)
+    y = np.asarray(y)
     mask = np.asarray(mask, dtype=bool) & np.isfinite(x) & np.isfinite(y)
     lo, hi = INJECTED_TRUTH_RANGE
     edges = np.linspace(lo, hi, INJECTED_TRUTH_BINS + 1)
@@ -9871,7 +10322,7 @@ def _it_profile(x: Any, y: Any, mask: Any, *, weights: Any = None) -> dict:
     # dfdraw marks weighted support undefined in empty bins.  Match that semantic
     # convention explicitly rather than treating an unpopulated bin as measured 0.
     sum_weights = np.full(INJECTED_TRUTH_BINS, np.nan, dtype=float)
-    w = None if weights is None else np.asarray(weights, dtype=float)
+    w = None if weights is None else np.asarray(weights)
     if w is not None:
         inside &= np.isfinite(w)
     for b in range(INJECTED_TRUTH_BINS):
@@ -9881,14 +10332,15 @@ def _it_profile(x: Any, y: Any, mask: Any, *, weights: Any = None) -> dict:
         if w is None:
             sum_weights[b] = float(len(yy))
             if len(yy):
-                mean[b] = float(np.mean(yy, dtype=np.float64))
+                mean[b] = float(np.mean(yy))
         else:
             ww = w[take]
             if len(ww):
-                sw = float(np.sum(ww, dtype=np.float64))
+                sw_native = np.sum(ww)
+                sw = float(sw_native)
                 sum_weights[b] = sw
                 if sw > 0.0:
-                    mean[b] = float(np.sum(ww * yy, dtype=np.float64) / sw)
+                    mean[b] = float(np.sum(ww * yy) / sw_native)
     return {"x_center": centers, "count": count, "sum_weights": sum_weights, "y_mean": mean}
 
 
@@ -9940,7 +10392,7 @@ def _it_prepare_public(adf: Any, gallery: Any):
     if not callable(helper):
         raise HarnessError("gallery has no _ensure_injected_truth owner")
     helper(adf)
-    return _it_raw_model(adf)
+    return _it_semantic_model(adf)
 
 
 def _it_vector_overlay(adf: Any, gallery: Any) -> tuple[dict, dict]:
@@ -10166,6 +10618,666 @@ def _it_facet(adf: Any, gallery: Any) -> tuple[dict, dict]:
             pass
 
 
+def _m1_bar_heights(ax: Any, *, n_series: int, n_bins: int) -> list[np.ndarray]:
+    """Extract rendered histogram heights for bar or stepfilled artists.
+
+    dfdraw currently renders these vector histograms as filled step polygons,
+    not BarContainers.  Keep both shapes supported so the oracle follows the
+    public rendered result without depending on one Matplotlib histtype.
+    """
+    series: list[np.ndarray] = []
+
+    # Ordinary bar histograms.
+    for container in getattr(ax, "containers", ()):
+        patches = getattr(container, "patches", None)
+        if patches is not None and len(patches) == n_bins:
+            series.append(np.asarray(
+                [float(p.get_height()) for p in patches], dtype=float))
+
+    # Filled/step histograms.  The forward half of Matplotlib's closed Polygon
+    # path has two vertices per bin; the first of each pair carries that bin's
+    # top height.  A 20-bin filled step therefore has 4*20+1 vertices.
+    if len(series) < n_series:
+        for patch in getattr(ax, "patches", ()):
+            get_xy = getattr(patch, "get_xy", None)
+            if not callable(get_xy):
+                continue
+            xy = np.asarray(get_xy(), dtype=float)
+            if xy.ndim != 2 or xy.shape[1] != 2 or len(xy) < 2 * n_bins + 1:
+                continue
+            heights = xy[1:2 * n_bins:2, 1]
+            if len(heights) == n_bins:
+                series.append(np.asarray(heights, dtype=float))
+
+    if len(series) < n_series:
+        raise HarnessError(
+            f"histogram artist exposes {len(series)} extractable {n_bins}-bin "
+            f"series; expected >= {n_series}")
+    return series[-n_series:]
+
+
+def run_m1_hist_vector(case: CaseSpec, root_path: str, *, gallery_module=None,
+                       prepared_adf=None, prepared_provenance=None) -> CaseResult:
+    t0=time.time(); res=CaseResult(case_id=case.case_id, status=SKIP); adf=prepared_adf
+    try:
+        if adf is None: raise HarnessError("M1 requires shared FAST prepared_adf")
+        gallery=gallery_module if gallery_module is not None else _a5_2_import_gallery()
+        provenance=_a6_4_prepared_fraction_sample_evidence(adf, prepared_provenance, root_path)
+        getattr(gallery, "_ensure_injected_truth")(adf)
+        raw=getattr(gallery, M1_HIST_GALLERY_FUNCTION)(adf)
+        fig, axes, meta=raw
+        df=adf.df
+        ncl=np.asarray(df["ncl"], dtype=float); ts=np.asarray(df["time_s"], dtype=float)
+        base=(ncl>60)&np.isfinite(ncl); mid=float(meta["t_mid"])
+        edges=np.linspace(80.0,160.0,21)
+        exp_sel=[]
+        for mask in (base&(ts<mid), base&(ts>=mid)):
+            exp_sel.extend(np.histogram(ncl[mask], bins=edges)[0].tolist())
+        got_sel=np.concatenate(_m1_bar_heights(axes[0], n_series=2, n_bins=20)).astype(int).tolist()
+        exp_w=[]
+        for w in (np.ones(len(df), dtype=float), 1.0+0.30*np.abs(np.asarray(df["tgl"],dtype=float))):
+            finite=base&np.isfinite(w)
+            exp_w.extend(np.histogram(ncl[finite], bins=edges, weights=w[finite])[0].tolist())
+        got_w=np.concatenate(_m1_bar_heights(axes[1], n_series=2, n_bins=20)).tolist()
+        expected={"selection_bin_counts":exp_sel,"weighted_bin_sums":exp_w}
+        observed={"selection_bin_counts":got_sel,"weighted_bin_sums":got_w}
+        for obs in case.observables:
+            res.observable_contract.append(_contract(obs)); cmp=compare_observable(obs, expected[obs.name], observed[obs.name])
+            res.comparisons.append(comparison_evidence(obs,cmp,reference_label="raw np.histogram",candidate_label="rendered histogram bars"))
+            if not cmp.ok: raise HarnessError(f"{obs.name}: {cmp.detail}")
+        res.executed_comparisons=len(case.observables); res.observed["realdata_provenance"]=dict(prepared_provenance or provenance)
+        res.status=PASS; res.detail=""; return res
+    except Exception as exc:
+        res.status=FAIL; res.detail=f"M1 HIST FAIL: {exc}"; res.exception=traceback.format_exc(limit=8); return res
+    finally:
+        res.wall_time_s=round(time.time()-t0,4)
+        if adf is not None: _record_stage_a_machine_status(adf,res)
+        try: plt.close('all')
+        except Exception: pass
+
+
+def run_m1_hist_normalize_contract(case: CaseSpec, make_adf: Callable[[], Any] | None = None) -> CaseResult:
+    t0=time.time(); res=CaseResult(case_id=case.case_id,status=SKIP)
+    try:
+        if make_adf is None: raise HarnessError("M1 hist normalize contract requires make_adf")
+        adf=make_adf(); refused=False; detail=""
+        try:
+            adf.draw("ncl", type="hist", bins=10, normalize="delta", auto_title=False)
+        except Exception as exc:
+            detail=f"{type(exc).__name__}: {exc}"
+            low=detail.lower()
+            refused=("normalize" in low and ("hist" in low or "unsupported" in low or "not" in low))
+        expected=True; observed=bool(refused)
+        obs=case.observables[0]; res.observable_contract.append(_contract(obs))
+        cmp=compare_observable(obs, expected, observed)
+        res.comparisons.append(comparison_evidence(obs,cmp,reference_label="explicit loud-refusal contract",candidate_label=detail or "call returned normally"))
+        if not cmp.ok: raise HarnessError("hist normalize did not refuse explicitly; silent semantic drop/ambiguous acceptance")
+        res.executed_comparisons=1; res.status=PASS; res.detail=detail; return res
+    except Exception as exc:
+        res.status=FAIL; res.detail=f"M1 HIST NORMALIZE FAIL: {exc}"; res.exception=traceback.format_exc(limit=8); return res
+    finally: res.wall_time_s=round(time.time()-t0,4)
+
+
+def _m2_profile_groups(stats: Any) -> list[tuple[Any, Any]]:
+    if not isinstance(stats, dict) or not hasattr(stats.get("profile_data"), "columns"):
+        raise HarnessError("grouping oracle requires public profile_data DataFrame")
+    frame=stats["profile_data"]
+    if "group" not in frame.columns: raise HarnessError("grouping profile_data lacks group column")
+    return [(g, frame[frame["group"]==g].copy()) for g in pd.unique(frame["group"])]
+
+
+def _m2_grouping_arrays(model: dict, meta: dict) -> tuple[dict, dict]:
+    exp_c=[]; got_c=[]; exp_m=[]; got_m=[]
+    groups=_m2_profile_groups(meta["categorical_stats"])
+    if [int(float(g)) for g,_ in groups] != [0,1]:
+        raise HarnessError(f"categorical group identity mismatch {[g for g,_ in groups]}")
+    for (g,frame),side in zip(groups,(0,1)):
+        ref=_it_profile(model["sector"],model["delta"],model["side_sel"]&(model["side"]==side))
+        exp_c.extend(ref["count"].tolist()); got_c.extend(np.asarray(frame["count"],dtype=int).tolist())
+        exp_m.extend(ref["y_mean"].tolist()); got_m.extend(np.asarray(frame["y_mean"],dtype=float).tolist())
+
+    base=model["base"] & np.isfinite(model["tgl"])
+    selected_tgl=pd.Series(model["tgl"][base]); cut=pd.cut(selected_tgl,bins=4)
+    categories=list(cut.cat.categories); groups2=_m2_profile_groups(meta["binned_stats"])
+    if len(groups2)!=len(categories):
+        raise HarnessError(f"group_by_bins cardinality {len(groups2)}!={len(categories)}")
+    selected_indices=np.flatnonzero(base)
+    for j,(_,frame) in enumerate(groups2):
+        member=np.zeros(len(model["df"]),dtype=bool)
+        member[selected_indices[np.asarray(cut==categories[j])]]=True
+        ref=_it_profile(model["sector"],model["delta"],member)
+        exp_c.extend(ref["count"].tolist()); got_c.extend(np.asarray(frame["count"],dtype=int).tolist())
+        exp_m.extend(ref["y_mean"].tolist()); got_m.extend(np.asarray(frame["y_mean"],dtype=float).tolist())
+    return ({"group_counts":exp_c,"group_means":exp_m},
+            {"group_counts":got_c,"group_means":got_m})
+
+
+def _m2_direct_meta(adf: Any) -> tuple[dict, list[Any]]:
+    owner=_DirectDFDrawOwner(adf.df); figures=[]
+    cat=owner.draw(
+        "known_delta:sector", type="profile", bins=INJECTED_TRUTH_BINS,
+        range=INJECTED_TRUTH_RANGE, selection=INJECTED_TRUTH_SIDE_SEL,
+        group_by="side_type", min_entries=1, return_data=True, auto_title=False)
+    figures.append(cat[0])
+    binned=owner.draw(
+        "known_delta:sector", type="profile", bins=INJECTED_TRUTH_BINS,
+        range=INJECTED_TRUTH_RANGE, selection=INJECTED_TRUTH_BASE_SEL,
+        group_by="tgl", group_by_bins=4, min_entries=1,
+        return_data=True, auto_title=False)
+    figures.append(binned[0])
+    return {"categorical_stats":cat[2],"binned_stats":binned[2]}, figures
+
+
+def _m2_classify_failure(adf: Any, case: CaseSpec, model: dict, expected: dict,
+                         semantic_diag: dict) -> dict:
+    diag=copy.deepcopy(semantic_diag)
+    if not diag.get("L1_all_within_tolerance",False):
+        diag.update({"first_disagreement_layer":"L1","derived_owner":"ADF"})
+        return diag
+    figures=[]
+    try:
+        meta,figures=_m2_direct_meta(adf)
+        _,direct_observed=_m2_grouping_arrays(model,meta)
+        ok,detail=_case_observables_match(case,expected,direct_observed)
+        diag.update({
+            "L2":"direct DFDraw grouped profiles on materialized known_delta",
+            "L2_matches_truth":bool(ok),"L2_detail":detail,
+            "L3":"adf.draw grouped profile is red",
+            "first_disagreement_layer":"L3" if ok else "L2",
+            "derived_owner":"ADF_DRAW_BRIDGE" if ok else "dfdraw",
+        })
+        return diag
+    except Exception as exc:
+        diag.update({
+            "L2":"direct DFDraw grouped profiles on materialized known_delta",
+            "L2_matches_truth":False,"L2_detail":f"{type(exc).__name__}: {exc}",
+            "L3":"adf.draw grouped profile is red",
+            "first_disagreement_layer":"L2","derived_owner":"dfdraw",
+        })
+        return diag
+    finally:
+        for fig in figures:
+            try: plt.close(fig)
+            except Exception: pass
+
+
+def run_m2_grouping(case: CaseSpec, root_path: str, *, gallery_module=None,
+                    prepared_adf=None, prepared_provenance=None) -> CaseResult:
+    t0=time.time(); res=CaseResult(case_id=case.case_id,status=SKIP); adf=prepared_adf
+    try:
+        if adf is None: raise HarnessError("M2 requires shared FAST prepared_adf")
+        gallery=gallery_module if gallery_module is not None else _a5_2_import_gallery(); getattr(gallery,"_ensure_injected_truth")(adf)
+        provenance=_a6_4_prepared_fraction_sample_evidence(adf,prepared_provenance,root_path)
+        raw=getattr(gallery,M2_GROUP_GALLERY_FUNCTION)(adf); meta=raw[2]
+        semantic_diag=_it_semantic_dtype_diagnostics(adf,gallery)
+        model=_it_semantic_model(adf)
+        expected,observed=_m2_grouping_arrays(model,meta)
+        first_failure=None
+        for obs in case.observables:
+            res.observable_contract.append(_contract(obs)); cmp=compare_observable(obs,expected[obs.name],observed[obs.name])
+            res.comparisons.append(comparison_evidence(obs,cmp,reference_label="raw pandas grouping with authoritative source dtype",candidate_label="public grouped profile_data"))
+            if not cmp.ok and first_failure is None: first_failure=f"{obs.name}: {cmp.detail}"
+        if first_failure is not None:
+            res.observed["ownership_ladder"]=_m2_classify_failure(adf,case,model,expected,semantic_diag)
+            raise HarnessError(first_failure)
+        res.executed_comparisons=len(case.observables)
+        res.observed["realdata_provenance"]=dict(prepared_provenance or provenance)
+        semantic_diag.update({"first_disagreement_layer":"NONE","derived_owner":"NONE"})
+        res.observed["ownership_ladder"]=semantic_diag
+        res.status=PASS; res.detail=""; return res
+    except Exception as exc:
+        res.status=FAIL; res.detail=f"M2 GROUPING FAIL: {exc}"; res.exception=traceback.format_exc(limit=8); return res
+    finally:
+        res.wall_time_s=round(time.time()-t0,4)
+        if adf is not None: _record_stage_a_machine_status(adf,res)
+        try: plt.close('all')
+        except Exception: pass
+
+
+def _m3_independent_semantic_values(adf: Any) -> dict:
+    """Recompute the M3 chain independently, honoring each materialized dtype."""
+    df = adf.df
+    semantic = _it_semantic_model(adf)
+    tgl = np.asarray(df["tgl"])
+    sector = np.asarray(df["sector"])
+    side = np.asarray(df["side_type"])
+    l1 = _it_cast_expected_to_authoritative_dtype(
+        df, "oracle_chain_l1", semantic["delta"] + 0.005 * tgl)
+    l2 = _it_cast_expected_to_authoritative_dtype(
+        df, "oracle_chain_l2", l1 - 0.002 * sector / 36.0)
+    offset = 0.04 - 0.035 * side.astype(float)
+    final = _it_cast_expected_to_authoritative_dtype(
+        df, "oracle_chain_with_shift", l2 + offset)
+    return {"chain_l1": l1, "chain_l2": l2, "offset": offset, "final": final}
+
+
+def _m3_materialization_diagnostics(adf: Any, expected: dict) -> dict:
+    rows = {}
+    ok = True
+    for key, column in (("chain_l1", "oracle_chain_l1"),
+                        ("chain_l2", "oracle_chain_l2"),
+                        ("final", "oracle_chain_with_shift")):
+        exp = np.asarray(expected[key])
+        got = np.asarray(adf.df[column]).astype(exp.dtype, copy=False)
+        exact = bool(np.array_equal(exp, got, equal_nan=True))
+        ok &= exact
+        finite = np.isfinite(exp.astype(float)) & np.isfinite(got.astype(float))
+        delta = np.abs(exp.astype(float)[finite] - got.astype(float)[finite]) if np.any(finite) else np.asarray([])
+        rows[column] = {
+            "expected_dtype": str(exp.dtype),
+            "adf_dtype": str(np.asarray(adf.df[column]).dtype),
+            "max_abs_difference": float(np.max(delta)) if delta.size else 0.0,
+            "exact": exact,
+        }
+    return {
+        "L0": "raw source columns + declared chain/subframe formula",
+        "L1": "independent stepwise authoritative-dtype chain -> ADF materialized chain",
+        "L1_all_within_tolerance": bool(ok),
+        "first_disagreement_layer": ">=L2" if ok else "L1",
+        "derived_owner": "UNRESOLVED_BEYOND_L1" if ok else "ADF",
+        "variables": rows,
+    }
+
+
+def _m3_expected_observed(model: dict, chain: dict, stats: Any) -> tuple[dict,dict]:
+    groups=_m2_profile_groups(stats)
+    if [int(float(g)) for g,_ in groups] != [0,1]:
+        raise HarnessError(f"M3 group identity mismatch {[g for g,_ in groups]}")
+    exp_c=[];got_c=[];exp_m=[];got_m=[]
+    for (g,frame),side in zip(groups,(0,1)):
+        ref=_it_profile(model["sector"],chain["final"],
+                        model["side_sel"]&(model["side"]==side))
+        exp_c.extend(ref["count"].tolist()); got_c.extend(np.asarray(frame["count"],dtype=int).tolist())
+        exp_m.extend(ref["y_mean"].tolist()); got_m.extend(np.asarray(frame["y_mean"],dtype=float).tolist())
+    return ({"count":exp_c,"y_mean":exp_m},{"count":got_c,"y_mean":got_m})
+
+
+def _m3_direct_stats(adf: Any) -> tuple[Any,Any]:
+    owner=_DirectDFDrawOwner(adf.df)
+    raw=owner.draw(
+        "oracle_chain_with_shift:sector", type="profile",
+        bins=INJECTED_TRUTH_BINS, range=INJECTED_TRUTH_RANGE,
+        selection=INJECTED_TRUTH_SIDE_SEL, group_by="side_type",
+        min_entries=1, return_data=True, auto_title=False)
+    return raw[2],raw[0]
+
+
+def _m3_classify_failure(adf: Any, case: CaseSpec, model: dict, chain: dict,
+                         expected: dict, ownership: dict) -> dict:
+    diag=copy.deepcopy(ownership)
+    if not diag.get("L1_all_within_tolerance",False):
+        diag.update({"first_disagreement_layer":"L1","derived_owner":"ADF"})
+        return diag
+    fig=None
+    try:
+        stats,fig=_m3_direct_stats(adf)
+        _,direct_observed=_m3_expected_observed(model,chain,stats)
+        ok,detail=_case_observables_match(case,expected,direct_observed)
+        diag.update({
+            "L2":"direct DFDraw on materialized oracle_chain_with_shift",
+            "L2_matches_truth":bool(ok),"L2_detail":detail,
+            "L3":"adf.draw qualified-chain profile is red",
+            "first_disagreement_layer":"L3" if ok else "L2",
+            "derived_owner":"ADF_DRAW_BRIDGE" if ok else "dfdraw",
+        })
+        return diag
+    except Exception as exc:
+        diag.update({
+            "L2":"direct DFDraw on materialized oracle_chain_with_shift",
+            "L2_matches_truth":False,"L2_detail":f"{type(exc).__name__}: {exc}",
+            "L3":"adf.draw qualified-chain profile is red",
+            "first_disagreement_layer":"L2","derived_owner":"dfdraw",
+        })
+        return diag
+    finally:
+        try:
+            if fig is not None: plt.close(fig)
+        except Exception: pass
+
+
+def run_m3_subframe_chain(case: CaseSpec, root_path: str, *, gallery_module=None,
+                          prepared_adf=None, prepared_provenance=None) -> CaseResult:
+    t0=time.time(); res=CaseResult(case_id=case.case_id,status=SKIP); adf=prepared_adf
+    try:
+        if adf is None: raise HarnessError("M3 requires shared FAST prepared_adf")
+        gallery=gallery_module if gallery_module is not None else _a5_2_import_gallery(); getattr(gallery,"_ensure_m3_subframe_chain")(adf)
+        provenance=_a6_4_prepared_fraction_sample_evidence(adf,prepared_provenance,root_path)
+        raw=getattr(gallery,M3_SUBFRAME_GALLERY_FUNCTION)(adf); stats=raw[2]
+        model=_it_semantic_model(adf)
+        chain=_m3_independent_semantic_values(adf)
+        ownership=_m3_materialization_diagnostics(adf,chain)
+        expected,observed=_m3_expected_observed(model,chain,stats)
+        first_failure=None
+        for obs in case.observables:
+            res.observable_contract.append(_contract(obs)); cmp=compare_observable(obs,expected[obs.name],observed[obs.name])
+            res.comparisons.append(comparison_evidence(obs,cmp,reference_label="raw chained formula + authoritative materialization dtype + raw subframe offset",candidate_label="public qualified grouped profile_data"))
+            if not cmp.ok and first_failure is None: first_failure=f"{obs.name}: {cmp.detail}"
+        if first_failure is not None:
+            res.observed["ownership_ladder"]=_m3_classify_failure(adf,case,model,chain,expected,ownership)
+            raise HarnessError(first_failure)
+        res.executed_comparisons=len(case.observables)
+        res.observed["realdata_provenance"]=dict(prepared_provenance or provenance)
+        ownership.update({"first_disagreement_layer":"NONE","derived_owner":"NONE"})
+        res.observed["ownership_ladder"]=ownership
+        res.status=PASS; res.detail=""; return res
+    except Exception as exc:
+        res.status=FAIL; res.detail=f"M3 SUBFRAME FAIL: {exc}"; res.exception=traceback.format_exc(limit=8); return res
+    finally:
+        res.wall_time_s=round(time.time()-t0,4)
+        if adf is not None: _record_stage_a_machine_status(adf,res)
+        try: plt.close('all')
+        except Exception: pass
+
+
+def _it_semantic_dtype_diagnostics(adf: Any, gallery: Any) -> dict:
+    """L0/L1 ownership evidence with AD-19 authoritative dtype semantics."""
+    getattr(gallery, "_ensure_injected_truth")(adf)
+    raw = _it_raw_model(adf)
+    semantic = _it_semantic_model(adf)
+    df = adf.df
+    raw_expected = {
+        "known_delta": raw["delta"],
+        "dcar_distorted_clean": raw["clean"],
+        "dcar_oracle": raw["noisy"],
+        "oracle_residual": raw["residual"],
+    }
+    semantic_expected = {
+        "known_delta": semantic["delta"],
+        "dcar_distorted_clean": semantic["clean"],
+        "dcar_oracle": semantic["noisy"],
+        "oracle_residual": semantic["residual"],
+    }
+    rows = {}
+    l1_ok = True
+    for name in raw_expected:
+        raw_values = np.asarray(raw_expected[name], dtype=np.float64)
+        expected = np.asarray(semantic_expected[name])
+        got_native = np.asarray(df[name])
+        got = got_native.astype(expected.dtype, copy=False)
+        finite_raw = np.isfinite(raw_values) & np.isfinite(expected.astype(np.float64))
+        precision_delta = (np.abs(raw_values[finite_raw] - expected.astype(np.float64)[finite_raw])
+                           if np.any(finite_raw) else np.asarray([]))
+        finite = np.isfinite(expected.astype(np.float64)) & np.isfinite(got.astype(np.float64))
+        diff = (np.abs(expected.astype(np.float64)[finite] - got.astype(np.float64)[finite])
+                if np.any(finite) else np.asarray([]))
+        denom = (np.maximum(np.abs(expected.astype(np.float64)[finite]), 1e-30)
+                 if np.any(finite) else np.asarray([]))
+        max_abs = float(np.max(diff)) if diff.size else 0.0
+        max_rel = float(np.max(diff / denom)) if diff.size else 0.0
+        exact = bool(np.array_equal(expected, got, equal_nan=True))
+        l1_ok &= exact
+        rows[name] = {
+            "raw_formula_dtype": str(raw_values.dtype),
+            "authoritative_dtype": str(expected.dtype),
+            "adf_dtype": str(got_native.dtype),
+            "max_abs_raw_to_authoritative": (
+                float(np.max(precision_delta)) if precision_delta.size else 0.0),
+            "max_abs_difference": max_abs,
+            "max_relative_difference": max_rel,
+            "exact_after_authoritative_cast": exact,
+            "within_current_oracle_tolerance": exact,
+        }
+    return {
+        "L0": "raw NumPy/pandas formula",
+        "L1": "independent formula with AD-19 authoritative materialized dtype -> ADF materialized values",
+        "L1_all_within_tolerance": bool(l1_ok),
+        "first_disagreement_layer": ">=L2" if l1_ok else "L1",
+        "derived_owner": "UNRESOLVED_BEYOND_L1" if l1_ok else "ADF",
+        "variables": rows,
+    }
+
+
+class _DirectDFDrawOwner:
+    """Minimal direct-dfdraw owner used only for M4 attribution.
+
+    It deliberately bypasses AliasDataFrame.draw while consuming the already
+    materialized plain DataFrame.  This is the L2 leg of the approved ownership
+    ladder, not a second implementation of plotting semantics.
+    """
+    def __init__(self, df: Any):
+        self.df = df
+        try:
+            from dfextensions.dfdraw.drawer import DFDraw
+        except Exception:
+            from dfdraw.drawer import DFDraw
+        self._plotter = DFDraw(df)
+
+    def draw(self, *args, **kwargs):
+        return self._plotter.draw(*args, **kwargs)
+
+
+def _o1_scalar_faceted_counts(stats: Any) -> list[int]:
+    """Extract per-facet population from either scalar or one-vector envelope."""
+    branch_stats = stats[0] if isinstance(stats, list) and len(stats) == 1 else stats
+    per_group = branch_stats.get("per_group") if isinstance(branch_stats, dict) else None
+    if not isinstance(per_group, dict):
+        raise HarnessError(f"faceted result has no per_group payload: {type(stats).__name__}")
+    out = []
+    for facet in HARDENING_FACETS:
+        cell = per_group.get(str(facet))
+        if not isinstance(cell, dict) or "n" not in cell:
+            raise HarnessError(f"facet {facet} has no public n")
+        out.append(int(cell["n"]))
+    return out
+
+
+def _o1_neg_a_ownership_ladder(adf: Any, *, q1: float, expected: list[int],
+                                  adf_observed: list[int]) -> dict:
+    diag = {
+        "L0": "raw boolean masks",
+        "L0_expected": list(expected),
+        "L3": "adf.draw one-element selection_vector per-facet counts",
+        "L3_observed": list(adf_observed),
+    }
+    fig = None
+    try:
+        owner = _DirectDFDrawOwner(adf.df)
+        raw = owner.draw(
+            "dcar_tpc_vertex:tgl", selection=f"{HARDENING_BASE_SEL}&(side_type<2)",
+            type="profile", bins=HARDENING_PROFILE_BINS, range=HARDENING_PROFILE_RANGE,
+            selection_vector=[f"time_s<{q1}"], facet_by="side_type",
+            min_entries=1, auto_title=False)
+        fig = raw[0]
+        direct = _o1_scalar_faceted_counts(raw[2])
+        direct_ok = direct == list(expected)
+        diag.update({
+            "L2": "direct DFDraw one-element selection_vector per-facet counts",
+            "L2_observed": direct,
+            "L2_matches_truth": direct_ok,
+            "first_disagreement_layer": "L3" if direct_ok else "L2",
+            "derived_owner": "ADF_DRAW_BRIDGE" if direct_ok else "dfdraw",
+        })
+    except Exception as exc:
+        diag.update({
+            "L2": "direct DFDraw one-element selection_vector per-facet counts",
+            "L2_matches_truth": False,
+            "L2_detail": f"{type(exc).__name__}: {exc}",
+            "first_disagreement_layer": "L2",
+            "derived_owner": "dfdraw",
+        })
+    finally:
+        try:
+            if fig is not None: plt.close(fig)
+        except Exception:
+            pass
+    return diag
+
+
+def _o1_neg_b_direct_cells(adf: Any, *, t_mid: float) -> tuple[dict, Any]:
+    owner = _DirectDFDrawOwner(adf.df)
+    raw = owner.draw(
+        "ncl", selection="(ncl>60)&(side_type<2)", type="hist", bins=40,
+        range=(80.0, 160.0),
+        selection_vector=[f"time_s<{t_mid}", f"time_s>={t_mid}"],
+        facet_by="side_type", auto_title=False)
+    axes = np.asarray(raw[1], dtype=object).reshape(-1)
+    if len(axes) != len(HARDENING_FACETS):
+        raise HarnessError(f"direct DFDraw expected {len(HARDENING_FACETS)} facets, got {len(axes)}")
+    cells = {}
+    for facet, ax in zip(HARDENING_FACETS, axes):
+        rendered = _m1_bar_heights(ax, n_series=2, n_bins=40)
+        for branch_index, heights in enumerate(rendered):
+            cells[(branch_index, facet)] = np.asarray(heights, dtype=float)
+    return cells, raw[0]
+
+
+def _o1_neg_b_ownership_ladder(adf: Any, *, t_mid: float, expected_cells: dict,
+                                  adf_observed_cells: dict) -> dict:
+    diag = {
+        "L0": "raw np.histogram branch×facet bins",
+        "L3": "adf.draw rendered histogram branch×facet bins",
+        "L3_complete_cells": sorted(str(k) for k in adf_observed_cells),
+    }
+    fig = None
+    try:
+        direct, fig = _o1_neg_b_direct_cells(adf, t_mid=t_mid)
+        direct_ok = (set(direct) == set(expected_cells) and all(
+            np.array_equal(np.asarray(expected_cells[k]), np.asarray(direct[k]))
+            for k in expected_cells))
+        diag.update({
+            "L2": "direct DFDraw rendered histogram branch×facet bins",
+            "L2_complete_cells": sorted(str(k) for k in direct),
+            "L2_matches_truth": bool(direct_ok),
+            "first_disagreement_layer": "L3" if direct_ok else "L2",
+            "derived_owner": "ADF_DRAW_BRIDGE" if direct_ok else "dfdraw",
+        })
+    except Exception as exc:
+        diag.update({
+            "L2": "direct DFDraw rendered histogram branch×facet bins",
+            "L2_matches_truth": False,
+            "L2_detail": f"{type(exc).__name__}: {exc}",
+            "first_disagreement_layer": "L2",
+            "derived_owner": "dfdraw",
+        })
+    finally:
+        try:
+            if fig is not None: plt.close(fig)
+        except Exception:
+            pass
+    return diag
+
+
+class _DirectInjectedGallery:
+    """Exact G12 public requests routed directly to DFDraw for M4 only."""
+    @staticmethod
+    def _ensure_injected_truth(owner):
+        return owner
+
+    @staticmethod
+    def fig46_injected_truth_vector_overlay(owner):
+        return owner.draw(
+            "[dcar_tpc_vertex,dcar_distorted_clean,dcar_oracle,known_delta]:sector",
+            type="profile", bins=INJECTED_TRUTH_BINS, range=INJECTED_TRUTH_RANGE,
+            selection=INJECTED_TRUTH_BASE_SEL, auto_title=False, return_data=True)
+
+    @staticmethod
+    def fig47_injected_truth_direct_delta(owner):
+        return owner.draw(
+            "[dcar_distorted_clean,dcar_tpc_vertex]:sector",
+            type="profile", bins=INJECTED_TRUTH_BINS, range=INJECTED_TRUTH_RANGE,
+            selection=INJECTED_TRUTH_BASE_SEL, normalize="delta",
+            auto_title=False, return_data=True)
+
+    @staticmethod
+    def fig48_injected_truth_selection_delta_facet(owner):
+        return owner.draw(
+            "known_delta:sector", type="profile", bins=INJECTED_TRUTH_BINS,
+            range=INJECTED_TRUTH_RANGE, selection=INJECTED_TRUTH_SIDE_SEL,
+            selection_vector=["tgl<0", "tgl>=0"], normalize="delta",
+            facet_by="side_type", auto_title=False, return_data=True)
+
+    @staticmethod
+    def fig49_injected_truth_weights_facet(owner):
+        return owner.draw(
+            "known_delta:sector", type="profile", bins=INJECTED_TRUTH_BINS,
+            range=INJECTED_TRUTH_RANGE, selection=INJECTED_TRUTH_SIDE_SEL,
+            weights_vector=["oracle_w_flat", "oracle_w_tgl"],
+            weights_labels=["flat", "tgl-weighted"], vector_compose="outer",
+            facet_by="side_type", auto_title=False, return_data=True)
+
+    @staticmethod
+    def fig50_injected_truth_gaussian_fit(owner):
+        return owner.draw(
+            "oracle_residual", type="hist", bins=100, range=(-0.1, 0.1),
+            fit="gauss", selection=INJECTED_TRUTH_BASE_SEL, auto_title=False)
+
+    @staticmethod
+    def fig51_injected_truth_facet_residual(owner):
+        return owner.draw(
+            "oracle_residual:sector", type="profile", bins=INJECTED_TRUTH_BINS,
+            range=INJECTED_TRUTH_RANGE, selection=INJECTED_TRUTH_SIDE_SEL,
+            facet_by="side_type", auto_title=False, return_data=True)
+
+
+def _it_direct_expected_observed(case_id: str, adf: Any) -> tuple[dict, dict]:
+    owner = _DirectDFDrawOwner(adf.df)
+    gallery = _DirectInjectedGallery()
+    if case_id == INJECTED_TRUTH_VECTOR_CASE_ID:
+        return _it_vector_overlay(owner, gallery)
+    if case_id == INJECTED_TRUTH_DELTA_CASE_ID:
+        return _it_direct_delta(owner, gallery)
+    if case_id == INJECTED_TRUTH_SELECTION_CASE_ID:
+        return _it_selection_delta(owner, gallery)
+    if case_id == INJECTED_TRUTH_WEIGHTS_CASE_ID:
+        return _it_weights(owner, gallery)
+    if case_id == INJECTED_TRUTH_GAUSS_CASE_ID:
+        exp, got, _ = _it_gauss(owner, gallery)
+        return exp, got
+    if case_id == INJECTED_TRUTH_FACET_CASE_ID:
+        return _it_facet(owner, gallery)
+    raise HarnessError(f"no direct injected-truth route for {case_id}")
+
+
+def _case_observables_match(case: CaseSpec, expected: dict, observed: dict) -> tuple[bool, str]:
+    failures = []
+    for obs in case.observables:
+        cmp = compare_observable(obs, expected[obs.name], observed[obs.name])
+        if not cmp.ok:
+            failures.append(f"{obs.name}: {cmp.detail}")
+    return (not failures), "; ".join(failures)
+
+
+def _classify_injected_failure(case: CaseSpec, adf: Any, semantic_diag: dict) -> dict:
+    """Complete M4 L0/L1/L2/L3 attribution for a red injected-truth case."""
+    diag = copy.deepcopy(semantic_diag)
+    if not diag.get("L1_all_within_tolerance", False):
+        diag.update({
+            "first_disagreement_layer": "L1",
+            "derived_owner": "ADF",
+            "L2": "not executed because L1 already disagrees",
+            "L3": "adf.draw red",
+        })
+        return diag
+    try:
+        expected, observed = _it_direct_expected_observed(case.case_id, adf)
+        direct_ok, detail = _case_observables_match(case, expected, observed)
+        diag["L2"] = "direct DFDraw on materialized plain DataFrame"
+        diag["L2_matches_truth"] = bool(direct_ok)
+        diag["L2_detail"] = detail
+        diag["L3"] = "adf.draw red"
+        if direct_ok:
+            diag.update({
+                "first_disagreement_layer": "L3",
+                "derived_owner": "ADF_DRAW_BRIDGE",
+            })
+        else:
+            diag.update({
+                "first_disagreement_layer": "L2",
+                "derived_owner": "dfdraw",
+            })
+    except Exception as exc:
+        # A direct dfdraw refusal/malformed result is itself an L2 disagreement.
+        diag.update({
+            "L2": "direct DFDraw on materialized plain DataFrame",
+            "L2_matches_truth": False,
+            "L2_detail": f"{type(exc).__name__}: {exc}",
+            "L3": "adf.draw red",
+            "first_disagreement_layer": "L2",
+            "derived_owner": "dfdraw",
+        })
+    return diag
+
+
 def _record_stage_a_machine_status(adf: Any, result: CaseResult) -> None:
     status_map = getattr(adf, "_stage_a_machine_status", None)
     if not isinstance(status_map, dict):
@@ -10190,6 +11302,8 @@ def run_injected_truth_case(case: CaseSpec, root_path: str, *, gallery_module=No
         gallery = gallery_module if gallery_module is not None else _a5_2_import_gallery()
         provenance = _a6_4_prepared_fraction_sample_evidence(
             adf, prepared_provenance, root_path)
+        semantic_diag = _it_semantic_dtype_diagnostics(adf, gallery)
+        res.observed["ownership_ladder"] = semantic_diag
 
         if case.case_id == INJECTED_TRUTH_VECTOR_CASE_ID:
             expected, observed = _it_vector_overlay(adf, gallery)
@@ -10211,14 +11325,15 @@ def run_injected_truth_case(case: CaseSpec, root_path: str, *, gallery_module=No
         else:
             raise HarnessError(f"unknown injected-truth case {case.case_id}")
 
+        first_failure = None
         for obs in case.observables:
             res.observable_contract.append(_contract(obs))
             cmp = compare_observable(obs, expected[obs.name], observed[obs.name])
             res.comparisons.append(comparison_evidence(
                 obs, cmp, reference_label="raw NumPy/pandas known injected truth",
                 candidate_label=f"public {case.canonical_spec['gallery_function']}"))
-            if not cmp.ok:
-                raise HarnessError(f"{obs.name}: {cmp.detail}")
+            if not cmp.ok and first_failure is None:
+                first_failure = f"{obs.name}: {cmp.detail}"
         res.executed_comparisons = len(case.observables)
         res.observed.update({
             "realdata_provenance": dict(prepared_provenance or provenance),
@@ -10230,10 +11345,37 @@ def run_injected_truth_case(case: CaseSpec, root_path: str, *, gallery_module=No
                 "diagnostics": diagnostics,
             },
         })
+        if first_failure is not None:
+            res.observed["ownership_ladder"] = _classify_injected_failure(
+                case, adf, semantic_diag)
+            raise HarnessError(first_failure)
+        semantic_diag.update({
+            "first_disagreement_layer": "NONE",
+            "derived_owner": "NONE",
+            "L2": "not required: public correctness oracle is green",
+            "L3": "adf.draw matches truth",
+        })
+        res.observed["ownership_ladder"] = semantic_diag
         res.status = PASS
         res.detail = ""
         return res
     except Exception as exc:
+        # A helper may fail before the observable-comparison loop (for example a
+        # missing normalize payload).  In that case the initial L1 diagnostic is
+        # not yet an ownership result: complete the L2/L3 ladder here.
+        if adf is not None:
+            current = res.observed.get("ownership_ladder", {})
+            layer = current.get("first_disagreement_layer") if isinstance(current, dict) else None
+            if layer in {None, ">=L2", "UNKNOWN"}:
+                try:
+                    res.observed["ownership_ladder"] = _classify_injected_failure(
+                        case, adf, semantic_diag)
+                except Exception as diag_exc:
+                    res.observed["ownership_ladder"] = {
+                        "first_disagreement_layer": "UNKNOWN",
+                        "derived_owner": "UNKNOWN",
+                        "diagnostic_error": f"{type(diag_exc).__name__}: {diag_exc}",
+                    }
         res.status = FAIL
         res.detail = f"INJECTED_TRUTH FAIL: {exc}"
         res.exception = traceback.format_exc(limit=8)
