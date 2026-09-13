@@ -6099,62 +6099,44 @@ class DFDraw:
         return fig, axes, stats_dict
     
     def explain(
-        self, expr, type="profile", *, view="effective", format="dict", **kwargs
+        self, expr, type="profile", *, view="effective", format="dict",
+        door="draw", **kwargs
     ):
-        """Explain the current dfdraw request without drawing anything.
+        """Explain a dfdraw request without drawing anything.
 
-        Experimental diagnostic API introduced by PHASE_13_82_DF Stage B.
-        The schema may grow while PHASE_13_82_DF remains open.
-
-        This first public slice exposes the verified Stage-1 EFFECTIVE
-        description for four static ``type='profile'`` fields only:
-        ``bins``, ``marker``, ``markersize`` and ``capsize``. Unsupported
-        views or plot families fail loudly rather than returning a partial
-        answer that looks complete.
+        Experimental diagnostic API introduced by PHASE_13_82_DF. The schema
+        may grow while the phase remains open. Gate 1A / CRR-1 exposes the
+        static SUPPLIED and EFFECTIVE views for representative profile
+        semantics; data-derived RESOLVED semantics remain a later CRR.
 
         Parameters
         ----------
         expr : str
             dfdraw expression, for example ``"y:x"``.
         type : str, default "profile"
-            Plot family. Stage B currently supports ``"profile"`` only.
-        view : {"effective", "supplied", "resolved", "all"}, default "effective"
-            Semantic view to inspect. Only ``"effective"`` is implemented
-            in this first public Stage-B slice; the other names are reserved
-            and currently raise ``NotImplementedError``.
+            Plot family. Gate 1A currently supports ``"profile"`` only.
+        view : {"supplied", "effective", "resolved", "all"}
+            ``"supplied"`` records only what the request supplied.
+            ``"effective"`` additionally applies static configuration/default
+            and contract lowering. ``"resolved"`` and ``"all"`` are reserved
+            for the later resolved/runtime CRR and fail loudly for now.
         format : {"dict", "pretty"}, default "dict"
-            ``"dict"`` returns the machine-readable nested representation.
-            ``"pretty"`` returns the human-readable rendering of the same
-            description object.
+            Machine-readable nested data or a human-readable rendering of the
+            same description.
+        door : {"draw", "profile"}, default "draw"
+            Public frontend whose contract is being described. The explicit
+            door exists for declared-equivalence calibration; it does not run
+            either frontend.
         **kwargs
-            Plot options to explain. They are inspected without drawing or
-            mutating the DataFrame, global style, or pyplot state.
-
-        Returns
-        -------
-        dict or str
-            Machine-readable dictionary for ``format="dict"`` or formatted
-            text for ``format="pretty"``.
-
-        Raises
-        ------
-        ValueError
-            If ``view`` or ``format`` is not a recognized Stage-B spelling.
-        NotImplementedError
-            If a recognized but not-yet-implemented view or plot family is
-            requested.
-
-        Examples
-        --------
-        ``DFDraw(df).explain("y:x", type="profile", bins=80)`` returns a
-        nested dictionary whose ``statistic.bins`` entry records value 80 and
-        source ``CALL_ARGUMENT``. Use ``format="pretty"`` for a compact human
-        readable rendering.
+            Plot options to describe. No figure is rendered and no global
+            configuration or input data is mutated.
 
         Notes
         -----
-        ``explain`` describes current execution; it is not an independent
-        correctness oracle. PHASE_13_81 owns independent semantic oracles.
+        ``explain`` describes contract/current-implementation state; it is not
+        an independent correctness oracle. PHASE_13_81 owns those oracles.
+        Known product defects remain visible as ``KNOWN_GAP`` with evidence
+        rather than being normalized away.
         """
         allowed_views = ("supplied", "effective", "resolved", "all")
         if view not in allowed_views:
@@ -6162,10 +6144,10 @@ class DFDraw:
                 f"unknown explain view {view!r}; expected one of "
                 f"{allowed_views}"
             )
-        if view != "effective":
+        if view in ("resolved", "all"):
             raise NotImplementedError(
-                f"explain view={view!r} is reserved but not implemented in "
-                "PHASE_13_82_DF Stage B yet; use view='effective'"
+                f"explain view={view!r} is reserved for the resolved/runtime "
+                "Gate-1A CRR-2; use view='supplied' or view='effective'"
             )
 
         allowed_formats = ("dict", "pretty")
@@ -6175,49 +6157,181 @@ class DFDraw:
                 f"{allowed_formats}"
             )
 
-        description = self._explain(expr, type=type, **kwargs)
+        allowed_doors = ("draw", "profile")
+        if door not in allowed_doors:
+            raise ValueError(
+                f"unknown explain door {door!r}; expected one of "
+                f"{allowed_doors}"
+            )
+
+        description = self._explain(
+            expr, type=type, view=view, door=door, **kwargs
+        )
         if format == "dict":
             return description.as_dict()
         return description.pretty()
 
-    def _explain(self, expr, type="profile", **kwargs):
-        """Describe what this request means, without drawing anything.
+    def _explain(
+        self, expr, type="profile", *, view="effective", door="draw", **kwargs
+    ):
+        """Build the current Gate-1A static semantic description.
 
-        PHASE_13_82_DF, private diagnostic surface (DT-1: private first).
-
-        Returns a `Description` of the effective values currently covered by
-        Stage 1 - the four static profile fields `bins`, `marker`,
-        `markersize` and `capsize` - each with where it came from. This is not
-        yet the whole request: other fields and data-derived values are later
-        stages. Nothing is rendered, no global state is touched, and the
-        description is produced by the SAME resolution helper the drawing path
-        uses - so it cannot disagree with what a real draw would do. That
-        agreement is asserted by T11.
-
-        Stage 1 covers the static (data-free) fields of type='profile'.
-        Data-derived values such as an automatic range are resolved later and
-        are not reported yet.
-
-        Returns
-        -------
-        Description
-            `.pretty()` for a readable listing, `.as_dict()` for a nested
-            dictionary, `.get(path)` for one field.
+        This function is deliberately data-free. It reuses the Stage-A field
+        declarations/resolution owner for configuration-backed fields and
+        existing pure parsing/composition helpers for static lowering. It does
+        not inspect facet/group membership, axes state, or any other live
+        production resolution; those belong to Gate-1A CRR-2.
         """
         from .plots._semantic import (
-            PROFILE_STATIC_FIELDS, Description, resolve_fields,
+            PROFILE_STATIC_FIELDS,
+            CONTRACT_REFUSE_BY_DESIGN,
+            Description,
+            IMPLEMENTATION_KNOWN_GAP,
+            IMPLEMENTATION_PASSING,
+            IMPLEMENTATION_REFUSES_CORRECTLY,
+            IMPLEMENTATION_UNMEASURED,
+            record_supplied_fields,
+            resolve_fields,
         )
 
         if type != "profile":
             raise NotImplementedError(
                 f"_explain currently covers type='profile' only; got "
-                f"{type!r}. PHASE_13_82_DF stage 1."
+                f"{type!r}. PHASE_13_82_DF Gate 1A."
+            )
+        if door == "profile" and type != "profile":
+            raise ValueError("door='profile' requires type='profile'")
+
+        modeled_args = {
+            *(spec.arg for spec in PROFILE_STATIC_FIELDS),
+            "selection",
+            "selection_vector",
+            "vector_compose",
+            "group_by",
+            "group_by_bins",
+            "group_by_quantiles",
+            "normalize",
+        }
+        unknown_args = sorted(set(kwargs) - modeled_args)
+        if unknown_args:
+            raise NotImplementedError(
+                "Gate-1A CRR-1 does not yet describe these profile options: "
+                + ", ".join(unknown_args)
             )
 
-        d = Description()
-        # The SAME declarations the draw path uses. Nothing about a field's
-        # contract is restated here (review finding P1-1).
-        resolve_fields(PROFILE_STATIC_FIELDS, kwargs, description=d)
+        d = Description(view=view, door=door)
+        d.record_semantic("request.expr", expr)
+        d.record_semantic("request.type", type)
+        d.record_semantic("request.equivalence_domain", "profile")
+
+        if view == "supplied":
+            record_supplied_fields(PROFILE_STATIC_FIELDS, kwargs, d)
+        elif view == "effective":
+            resolve_fields(PROFILE_STATIC_FIELDS, kwargs, description=d)
+        else:
+            raise ValueError(f"unsupported private explain view {view!r}")
+
+        # Selection / branch semantics (S3). SUPPLIED records the literal
+        # request. EFFECTIVE additionally applies AD-67's scalar lowering for
+        # one-element selection_vector using the existing composition helper.
+        selection = kwargs.get("selection")
+        selection_vector = kwargs.get("selection_vector")
+        if selection is not None:
+            d.record_semantic("selection.scalar", selection)
+        if selection_vector is not None:
+            sv = list(selection_vector)
+            if len(sv) == 0:
+                d.record_semantic("selection.vector", [])
+                d.set_status(
+                    contract_status=CONTRACT_REFUSE_BY_DESIGN,
+                    implementation_status=IMPLEMENTATION_REFUSES_CORRECTLY,
+                )
+            elif len(sv) == 1:
+                # AD-67 contract: one-element vector lowers to scalar at zero
+                # channel cost. ORACLE-01 proves the current product can lose
+                # that scalar-equivalent selection, so the gap annotation is
+                # view-independent while the lowering itself is EFFECTIVE.
+                if view == "supplied":
+                    d.record_semantic("selection.vector", sv)
+                else:
+                    d.record_semantic(
+                        "selection.scalar",
+                        self._combine_selections(selection, sv[0]),
+                    )
+                    d.record_semantic(
+                        "selection.lowered_from", "selection_vector"
+                    )
+                    d.record_semantic("selection.vector_channel_cost", 0)
+                d.set_status(
+                    implementation_status=IMPLEMENTATION_KNOWN_GAP,
+                    evidence=["PHASE_13_77 Stage-A ORACLE-01"],
+                )
+            elif view == "supplied":
+                d.record_semantic("selection.vector", sv)
+            else:
+                d.record_semantic("selection.vector", sv)
+                d.record_semantic(
+                    "coordinates.branch",
+                    {
+                        "kind": "selection_vector",
+                        "cardinality": len(sv),
+                        "order": list(range(len(sv))),
+                    },
+                )
+                d.record_semantic(
+                    "composition.vector_compose",
+                    kwargs.get("vector_compose", "inner"),
+                )
+
+        # Group identity (S6). CRR-1 describes only the supplied/effective
+        # coordinate contract; concrete labels/membership are CRR-2.
+        group_by = kwargs.get("group_by")
+        if group_by is not None:
+            group_desc = {"expression": group_by}
+            if kwargs.get("group_by_bins") is not None:
+                group_desc["bins"] = kwargs.get("group_by_bins")
+            if kwargs.get("group_by_quantiles") is not None:
+                group_desc["quantiles"] = kwargs.get("group_by_quantiles")
+            d.record_semantic("coordinates.group", group_desc)
+
+        # Derived transform / declared-door calibration (S7). This records the
+        # contract on both doors, and truthfully annotates the confirmed top-
+        # level bracket-vector loss as a product gap without fixing it here.
+        normalize = kwargs.get("normalize")
+        if normalize is not None:
+            d.record_semantic("transform.normalize", normalize)
+            parsed_y, _ = self._parse_expr(expr)
+            bracket_vector = isinstance(parsed_y, list) and len(parsed_y) >= 2
+            if bracket_vector and door == "draw":
+                if normalize == "delta":
+                    evidence = list(
+                        d.as_dict()["_semantic"].get("evidence", [])
+                    )
+                    if "PHASE_13_77 Stage-A ORACLE-05" not in evidence:
+                        evidence.append("PHASE_13_77 Stage-A ORACLE-05")
+                    d.set_status(
+                        implementation_status=IMPLEMENTATION_KNOWN_GAP,
+                        evidence=evidence,
+                    )
+                else:
+                    # ORACLE-05 establishes the delta case only. Do not
+                    # generalize that evidence to other normalize modes.
+                    d.set_status(
+                        implementation_status=IMPLEMENTATION_UNMEASURED
+                    )
+            elif bracket_vector and door == "profile":
+                # ORACLE-05 contains a typed-profile positive control for the
+                # delta case. Other modes remain unmeasured by this Gate.
+                if d.as_dict()["_semantic"]["implementation_status"] != \
+                        IMPLEMENTATION_KNOWN_GAP:
+                    d.set_status(
+                        implementation_status=(
+                            IMPLEMENTATION_PASSING
+                            if normalize == "delta"
+                            else IMPLEMENTATION_UNMEASURED
+                        )
+                    )
+
         return d
 
     def profile(

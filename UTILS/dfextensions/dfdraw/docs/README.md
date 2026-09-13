@@ -85,23 +85,51 @@ fig, ax, stats = drawer.draw("x", selection="x > 0")
 PHASE_13_82_DF. It reports what dfdraw currently thinks selected configuration
 means without rendering a figure or modifying the input or global style.
 
-The first Stage-B slice covers the **effective** values of four static profile
-fields: `bins`, `marker`, `markersize`, and `capsize`. Other plot families and
-`supplied`/`resolved` views fail loudly until their semantic owners are added.
+Gate 1A now exposes two static views for representative profile semantics:
+
+- `view="supplied"` — only what the request explicitly supplied;
+- `view="effective"` — after static configuration/default and contract lowering.
+
+The first configuration-backed fields remain `bins`, `marker`, `markersize`,
+and `capsize`. Gate 1A also describes static branch/group identity and the
+reviewed normalize-door calibration. Data-derived `resolved` semantics remain a
+later bounded CRR and fail loudly for now.
 
 ```python
-# Machine-readable configuration explanation
-info = drawer.explain("y:x", type="profile", bins=80, marker="s")
-print(info["statistic"]["bins"])
-# {'value': 80, 'source': 'CALL_ARGUMENT'}
+# What did the user actually supply?
+supplied = drawer.explain(
+    "y:x", type="profile", view="supplied", bins=80, marker="s"
+)
 
-# Human-readable form of the same description
+# What does dfdraw statically mean after defaults/configuration/lowering?
+effective = drawer.explain(
+    "y:x", type="profile", bins=80, marker="s"
+)
+print(effective["statistic"]["bins"])
+# {'value': 80, 'source': 'CALL_ARGUMENT'}
+print(effective["_semantic"])
+
+# AD-67 calibration: one-element selection_vector lowers to scalar semantics
+# while the currently confirmed implementation defect stays visible.
+one = drawer.explain(
+    "y:x", type="profile", selection_vector=["x < 0"]
+)
+print(one["selection"])
+print(one["_semantic"]["implementation_status"])  # KNOWN_GAP
+
+# Human-readable form of the same structured description
 print(drawer.explain("y:x", type="profile", format="pretty"))
 ```
 
-This interface describes the **current implementation**; it is not an
-independent correctness oracle. Its schema remains experimental while
-PHASE_13_82_DF is open.
+For declared-door calibration, `door="draw"` and `door="profile"` describe the
+same canonical profile contract where the project already declares those doors
+equivalent. Known current disagreement, such as bracket-vector
+`normalize="delta"` at the top-level draw door, is reported as `KNOWN_GAP` with
+its reviewed evidence rather than normalized away.
+
+This interface describes the **current implementation plus its explicit
+contract/status annotations**; it is not an independent correctness oracle. Its
+schema remains experimental while PHASE_13_82_DF is open.
 
 ---
 

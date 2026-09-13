@@ -84,6 +84,35 @@ ORIGINS = (
     EXTERNAL_RUNTIME_CONTEXT,
 )
 
+
+# --------------------------------------------------------------------------
+# Contract / implementation status vocabulary — PHASE_13_82_DF v1.1
+# --------------------------------------------------------------------------
+
+CONTRACT_SUPPORTED = "SUPPORTED"
+CONTRACT_NOT_APPLICABLE = "NOT_APPLICABLE"
+CONTRACT_REFUSE_BY_DESIGN = "REFUSE_BY_DESIGN"
+CONTRACT_UNRESOLVED = "UNRESOLVED"
+CONTRACT_STATUSES = (
+    CONTRACT_SUPPORTED,
+    CONTRACT_NOT_APPLICABLE,
+    CONTRACT_REFUSE_BY_DESIGN,
+    CONTRACT_UNRESOLVED,
+)
+
+IMPLEMENTATION_PASSING = "PASSING"
+IMPLEMENTATION_KNOWN_GAP = "KNOWN_GAP"
+IMPLEMENTATION_REFUSES_CORRECTLY = "REFUSES_CORRECTLY"
+IMPLEMENTATION_TEST_GAP = "TEST_GAP"
+IMPLEMENTATION_UNMEASURED = "UNMEASURED"
+IMPLEMENTATION_STATUSES = (
+    IMPLEMENTATION_PASSING,
+    IMPLEMENTATION_KNOWN_GAP,
+    IMPLEMENTATION_REFUSES_CORRECTLY,
+    IMPLEMENTATION_TEST_GAP,
+    IMPLEMENTATION_UNMEASURED,
+)
+
 # --------------------------------------------------------------------------
 # How precisely the contributor can be named (Rev2 R4, provenance honesty)
 # --------------------------------------------------------------------------
@@ -177,44 +206,110 @@ class Description:
     not duplicated, it is merely observed.
     """
 
-    def __init__(self) -> None:
+    def __init__(self, *, view: str = "effective", door: str = "draw") -> None:
         self._fields: Dict[str, Field] = {}
+        self._semantic_values: Dict[str, Any] = {}
+        self._meta: Dict[str, Any] = {
+            "view": view,
+            "door": door,
+            "contract_status": CONTRACT_SUPPORTED,
+            "implementation_status": IMPLEMENTATION_PASSING,
+            "evidence": [],
+        }
 
     def record(self, f: Field) -> Field:
         self._fields[f.path] = f
         return f
 
+    def record_semantic(self, path: str, value: Any) -> Any:
+        """Record a semantic fact that has no configuration provenance.
+
+        Examples are branch/group coordinates and contract lowering notes.
+        These are deliberately separate from :class:`Field`, whose provenance
+        vocabulary describes effective configuration values.
+        """
+        self._semantic_values[path] = value
+        return value
+
+    def set_status(
+        self,
+        *,
+        contract_status: Optional[str] = None,
+        implementation_status: Optional[str] = None,
+        evidence: Optional[List[str]] = None,
+    ) -> None:
+        if contract_status is not None:
+            if contract_status not in CONTRACT_STATUSES:
+                raise ValueError(
+                    f"unknown contract_status {contract_status!r}; "
+                    f"expected one of {CONTRACT_STATUSES}"
+                )
+            self._meta["contract_status"] = contract_status
+        if implementation_status is not None:
+            if implementation_status not in IMPLEMENTATION_STATUSES:
+                raise ValueError(
+                    f"unknown implementation_status {implementation_status!r}; "
+                    f"expected one of {IMPLEMENTATION_STATUSES}"
+                )
+            self._meta["implementation_status"] = implementation_status
+        if evidence is not None:
+            self._meta["evidence"] = list(evidence)
+
     def get(self, path: str) -> Optional[Field]:
         return self._fields.get(path)
+
+    def get_semantic(self, path: str, default=None):
+        return self._semantic_values.get(path, default)
 
     def fields(self) -> List[Field]:
         return list(self._fields.values())
 
+    @staticmethod
+    def _set_nested(out: Dict[str, Any], path: str, value: Any) -> None:
+        node = out
+        parts = path.split(".")
+        for part in parts[:-1]:
+            node = node.setdefault(part, {})
+        node[parts[-1]] = value
+
     def as_dict(self) -> Dict[str, Any]:
-        """Nested dictionary keyed by the dotted paths."""
-        out: Dict[str, Any] = {}
+        """Nested dictionary keyed by semantic dotted paths."""
+        out: Dict[str, Any] = {"_semantic": dict(self._meta)}
+        for path, value in self._semantic_values.items():
+            self._set_nested(out, path, value)
         for f in self._fields.values():
-            node = out
-            parts = f.path.split(".")
-            for p in parts[:-1]:
-                node = node.setdefault(p, {})
-            node[parts[-1]] = f.as_dict()
+            self._set_nested(out, f.path, f.as_dict())
         return out
 
     def pretty(self) -> str:
-        """Human-readable listing, grouped by top-level section.
+        """Human-readable rendering of the same structured description."""
+        lines: List[str] = [
+            "SEMANTIC",
+            f"  view                   {self._meta['view']}",
+            f"  door                   {self._meta['door']}",
+            f"  contract_status        {self._meta['contract_status']}",
+            f"  implementation_status  {self._meta['implementation_status']}",
+        ]
+        for evidence in self._meta.get("evidence", []):
+            lines.append(f"  evidence               {evidence}")
+        lines.append("")
 
-        Deliberately puts the value and its origin close together: the whole
-        point of the view is to see them at once.
-        """
         by_section: Dict[str, List[Field]] = {}
         for f in self._fields.values():
             by_section.setdefault(f.path.split(".")[0], []).append(f)
 
-        lines: List[str] = []
-        for section in sorted(by_section):
+        semantic_by_section: Dict[str, List[tuple]] = {}
+        for path, value in self._semantic_values.items():
+            semantic_by_section.setdefault(path.split(".")[0], []).append(
+                (path, value)
+            )
+
+        for section in sorted(set(by_section) | set(semantic_by_section)):
             lines.append(section.upper())
-            for f in by_section[section]:
+            for path, value in semantic_by_section.get(section, []):
+                leaf = path.split(".", 1)[1] if "." in path else path
+                lines.append(f"  {leaf:<22} {value!r}")
+            for f in by_section.get(section, []):
                 leaf = f.path.split(".", 1)[1] if "." in f.path else f.path
                 lines.append(f"  {leaf:<22} {f.value!r}")
                 line = f"      source            {f.origin}"
@@ -341,6 +436,25 @@ def describe_supplied(**supplied: Any) -> Dict[str, Any]:
     record of what was asked for.
     """
     return {k: v for k, v in supplied.items() if v is not None}
+
+
+def record_supplied_fields(specs, supplied, description):
+    """Record only explicitly supplied fields using the canonical specs.
+
+    This is the SUPPLIED-view counterpart of :func:`resolve_fields`: it reuses
+    the same declaration owner but intentionally performs no configuration or
+    default resolution.
+    """
+    for spec in specs:
+        if spec.arg in supplied and supplied[spec.arg] is not None:
+            description.record(Field(
+                path=spec.path,
+                value=supplied[spec.arg],
+                origin=CALL_ARGUMENT,
+                explicit_by_user=True if spec.origin_sensitive else None,
+                origin_sensitive=spec.origin_sensitive,
+            ))
+    return description
 
 
 # --------------------------------------------------------------------------

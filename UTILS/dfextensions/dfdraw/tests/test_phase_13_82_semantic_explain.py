@@ -31,8 +31,11 @@ from dfextensions.dfdraw import DFDraw  # noqa: E402
 from dfextensions.dfdraw.plots._semantic import (  # noqa: E402
     BUILTIN_DEFAULT,
     CALL_ARGUMENT,
+    CONTRACT_SUPPORTED,
     CURRENT_GLOBAL_CONFIGURATION,
     Description,
+    IMPLEMENTATION_KNOWN_GAP,
+    IMPLEMENTATION_PASSING,
     ORIGIN_DETAIL_CHANGED,
     ORIGIN_DETAIL_UNKNOWN,
     resolve,
@@ -381,9 +384,19 @@ def test_B3_public_explain_dict_matches_private_description(df, clean_style):
     assert public == private
 
 
-@pytest.mark.parametrize("view", ["supplied", "resolved", "all"])
-def test_B4_public_explain_reserved_views_fail_loudly(df, view):
-    with pytest.raises(NotImplementedError, match="not implemented"):
+def test_B4a_public_explain_supplied_view_is_available(df):
+    out = DFDraw(df).explain(
+        "y:x", type="profile", view="supplied", bins=17, marker="D"
+    )
+    assert out["_semantic"]["view"] == "supplied"
+    assert out["statistic"]["bins"]["value"] == 17
+    assert out["statistic"]["bins"]["source"] == CALL_ARGUMENT
+    assert out["aesthetics"]["marker"]["value"] == "D"
+
+
+@pytest.mark.parametrize("view", ["resolved", "all"])
+def test_B4b_public_explain_reserved_resolved_views_fail_loudly(df, view):
+    with pytest.raises(NotImplementedError, match="resolved/runtime"):
         DFDraw(df).explain("y:x", type="profile", view=view)
 
 
@@ -435,3 +448,147 @@ def test_B10_public_explain_does_not_change_later_draw(df):
         assert marker_a == marker_b
     finally:
         plt.close("all")
+
+
+# --------------------------------------------------------------------------
+# Gate 1A / CRR-1 — static/descriptive semantic slices S1/S2/S3/S6/S7
+# --------------------------------------------------------------------------
+
+def test_G1A_status_vocabulary_is_ratified_two_axis_model():
+    from dfextensions.dfdraw.plots import _semantic as sem
+    assert sem.CONTRACT_STATUSES == (
+        "SUPPORTED", "NOT_APPLICABLE", "REFUSE_BY_DESIGN", "UNRESOLVED"
+    )
+    assert sem.IMPLEMENTATION_STATUSES == (
+        "PASSING", "KNOWN_GAP", "REFUSES_CORRECTLY", "TEST_GAP",
+        "UNMEASURED"
+    )
+
+
+def test_G1A_S1_supplied_omits_unsupplied_defaults(df):
+    out = DFDraw(df).explain("y:x", type="profile", view="supplied")
+    assert out["_semantic"]["contract_status"] == CONTRACT_SUPPORTED
+    assert out["_semantic"]["implementation_status"] == IMPLEMENTATION_PASSING
+    assert "statistic" not in out
+    assert "aesthetics" not in out
+
+
+def test_G1A_S1_effective_global_then_explicit_override(df, clean_style):
+    set_style({"hist.bins": 77})
+    inherited = DFDraw(df).explain("y:x", type="profile")
+    explicit = DFDraw(df).explain("y:x", type="profile", bins=40)
+    assert inherited["statistic"]["bins"]["value"] == 77
+    assert inherited["statistic"]["bins"]["config_key"] == "hist.bins"
+    assert explicit["statistic"]["bins"]["value"] == 40
+    assert explicit["statistic"]["bins"]["source"] == CALL_ARGUMENT
+
+
+def test_G1A_S2_same_effective_marker_can_preserve_different_explicitness(
+    df, clean_style
+):
+    set_style({"profile.marker": "s"})
+    inherited = DFDraw(df).explain(
+        "y:x", type="profile", group_by="g"
+    )
+    explicit = DFDraw(df).explain(
+        "y:x", type="profile", group_by="g", marker="s"
+    )
+    a = inherited["aesthetics"]["marker"]
+    b = explicit["aesthetics"]["marker"]
+    assert a["value"] == b["value"] == "s"
+    assert a["explicit_by_user"] is False
+    assert b["explicit_by_user"] is True
+
+
+def test_G1A_S3_multibranch_selection_vector_has_named_branch_coordinate(df):
+    out = DFDraw(df).explain(
+        "y:x", type="profile",
+        selection_vector=["x < 0", "x >= 0"],
+    )
+    assert out["selection"]["vector"] == ["x < 0", "x >= 0"]
+    branch = out["coordinates"]["branch"]
+    assert branch["kind"] == "selection_vector"
+    assert branch["cardinality"] == 2
+    assert branch["order"] == [0, 1]
+
+
+def test_G1A_S3_one_element_vector_lowers_to_scalar_without_branch(df):
+    out = DFDraw(df).explain(
+        "y:x", type="profile", selection_vector=["x < 0"]
+    )
+    assert out["selection"]["scalar"] == "x < 0"
+    assert out["selection"]["lowered_from"] == "selection_vector"
+    assert out["selection"]["vector_channel_cost"] == 0
+    assert "coordinates" not in out or "branch" not in out.get("coordinates", {})
+    assert out["_semantic"]["contract_status"] == CONTRACT_SUPPORTED
+    assert out["_semantic"]["implementation_status"] == IMPLEMENTATION_KNOWN_GAP
+    assert out["_semantic"]["evidence"] == [
+        "PHASE_13_77 Stage-A ORACLE-01"
+    ]
+
+
+def test_G1A_S3_one_element_vector_combines_with_global_selection(df):
+    out = DFDraw(df).explain(
+        "y:x", type="profile", selection="y > 0",
+        selection_vector=["x < 0"]
+    )
+    assert out["selection"]["scalar"] == "(y > 0) & (x < 0)"
+
+
+def test_G1A_S6_group_coordinate_is_named_without_resolving_membership(df):
+    out = DFDraw(df).explain(
+        "y:x", type="profile", group_by="g", group_by_bins=4
+    )
+    assert out["coordinates"]["group"] == {"expression": "g", "bins": 4}
+    assert "resolved" not in out["coordinates"]["group"]
+
+
+def _without_semantic_header(d):
+    return {k: v for k, v in d.items() if k != "_semantic"}
+
+
+def test_G1A_S7_declared_profile_doors_share_contract_semantics(df):
+    kwargs = {"normalize": "delta"}
+    via_draw = DFDraw(df).explain(
+        "[y,y+1]:x", type="profile", door="draw", **kwargs
+    )
+    via_profile = DFDraw(df).explain(
+        "[y,y+1]:x", type="profile", door="profile", **kwargs
+    )
+    assert _without_semantic_header(via_draw) == _without_semantic_header(via_profile)
+    assert via_draw["transform"]["normalize"] == "delta"
+    assert via_draw["_semantic"]["implementation_status"] == IMPLEMENTATION_KNOWN_GAP
+    assert "PHASE_13_77 Stage-A ORACLE-05" in via_draw["_semantic"]["evidence"]
+    assert via_profile["_semantic"]["implementation_status"] == IMPLEMENTATION_PASSING
+
+
+def test_G1A_S7_unknown_door_is_rejected(df):
+    with pytest.raises(ValueError, match="unknown explain door"):
+        DFDraw(df).explain("y:x", type="profile", door="hist")
+
+
+def test_G1A_pretty_and_dict_are_same_semantic_owner(df):
+    d = DFDraw(df)
+    machine = d.explain(
+        "y:x", type="profile", view="effective",
+        selection_vector=["x < 0"],
+    )
+    pretty = d.explain(
+        "y:x", type="profile", view="effective", format="pretty",
+        selection_vector=["x < 0"],
+    )
+    assert machine["_semantic"]["implementation_status"] in pretty
+    assert "ORACLE-01" in pretty
+
+
+def test_G1A_unmodeled_kwarg_refuses_instead_of_returning_partial_answer(df):
+    with pytest.raises(NotImplementedError, match="does not yet describe"):
+        DFDraw(df).explain("y:x", type="profile", title="not-yet-modeled")
+
+
+def test_G1A_S7_does_not_overgeneralize_delta_evidence(df):
+    draw_ratio = DFDraw(df).explain(
+        "[y,y+1]:x", type="profile", door="draw", normalize="ratio"
+    )
+    assert draw_ratio["_semantic"]["implementation_status"] == "UNMEASURED"
+    assert draw_ratio["_semantic"]["evidence"] == []
