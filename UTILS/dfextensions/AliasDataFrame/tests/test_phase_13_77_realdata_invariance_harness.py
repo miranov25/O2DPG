@@ -5939,6 +5939,20 @@ def test_a7_26_o2_raw_weighted_profile_reference_matches_manual_formula():
     np.testing.assert_allclose(got["y_sem"][0], expected_sem0, rtol=0, atol=1e-15)
     np.testing.assert_allclose(got["n_eff"], [1.6, 2.0], rtol=0, atol=1e-15)
 
+    # Numerical-contract calibration: same float16 values/membership, different
+    # accumulator only.  The corrected gate owns the float64 reduction while
+    # the native path remains diagnostic evidence.
+    x16 = np.linspace(-0.9, 0.9, 5000, dtype=np.float16)
+    y16 = (np.arange(5000) % 7).astype(np.float16)
+    w16 = (1.0 + 0.01 * np.abs(y16)).astype(np.float16)
+    native = H._o2_weighted_profile_reference_arrays(
+        x16, y16, w16, bins=2, value_range=(-1.0, 1.0), accumulator="native")
+    high = H._o2_weighted_profile_reference_arrays(
+        x16, y16, w16, bins=2, value_range=(-1.0, 1.0), accumulator="float64")
+    assert native["accumulator"] == "native"
+    assert high["accumulator"] == "float64"
+    assert np.nanmax(np.abs(np.asarray(native["y_mean"]) - np.asarray(high["y_mean"]))) > 0
+
 
 def test_a7_27_o2_reference_numerical_mutation_fails_for_intended_reason():
     import copy
@@ -6751,6 +6765,11 @@ def test_a8_03_injected_vector_overlay_matches_independent_raw_truth(tmp_path):
     assert result.status == H.PASS, result.detail
     assert result.executed_comparisons == 2
     assert all(cmp["ok"] for cmp in result.comparisons)
+    ladder = result.observed["ownership_ladder"]
+    numeric = ladder["numerical_recheck"]
+    assert numeric["contract_reference_status"] == "VERIFIED"
+    assert numeric["comparisons"][0]["reference_high_precision"]["ok"] is True
+    assert ladder["owner_status"] in {"NONE", "ORACLE"}
 
 
 def test_a8_04_swapped_vector_branch_falsifier_fails_for_intended_reason():
@@ -6814,6 +6833,12 @@ def test_a8_10_direct_normalize_delta_recovers_known_truth(tmp_path):
         prepared_adf=adf, prepared_provenance=_a7_provenance(str(root), len(adf.df)))
     # This is intentionally a product acceptance assertion. If current dfdraw
     # ignores normalize='delta' for native vector expressions, it stays RED.
+    if result.status == H.FAIL:
+        ladder = result.observed["ownership_ladder"]
+        assert ladder["contract_reference_status"] == "VERIFIED"
+        assert ladder["owner_status"] == "DFDRAW"
+        assert ladder["typed_profile_positive_control"]["status"] == "PASS"
+        assert "top-level draw() bracket-vector profile" in ladder["confirmed_bug_scope"]
     assert result.status == H.PASS, result.detail
     assert result.executed_comparisons == 1
 
@@ -6830,6 +6855,10 @@ def test_a8_05_selection_delta_and_simple_facet_match_independent_truth(tmp_path
             prepared_adf=adf, prepared_provenance=_a7_provenance(str(root), len(adf.df)))
         assert result.status == H.PASS, (case.case_id, result.detail)
         assert result.executed_comparisons == len(case.observables)
+        if case.case_id == H.INJECTED_TRUTH_SELECTION_CASE_ID:
+            numeric = result.observed["ownership_ladder"]["numerical_recheck"]
+            assert numeric["contract_reference_status"] == "VERIFIED"
+            assert numeric["comparisons"][0]["reference_high_precision"]["ok"] is True
 
 
 def test_a8_06_weights_truth_matches_raw_or_stays_red_for_real_semantic_difference(tmp_path):
@@ -6944,6 +6973,9 @@ def test_a9_04_m2_grouping_matches_raw_pandas_truth(tmp_path):
     result=H.run_m2_grouping(H.m2_grouping_case(gallery_module=G),root,gallery_module=G,
         prepared_adf=adf,prepared_provenance=_a7_provenance(root,len(adf.df)))
     assert result.status == H.PASS, result.detail
+    numeric=result.observed["ownership_ladder"]["numerical_recheck"]
+    assert numeric["contract_reference_status"] == "VERIFIED"
+    assert numeric["comparisons"][0]["reference_high_precision"]["ok"] is True
 
 
 def test_a9_05_m3_qualified_subframe_chain_matches_raw_truth(tmp_path):
@@ -7022,7 +7054,39 @@ def test_a9_08_stage_a_console_summary_is_compact_and_uses_derived_ownership(cap
     assert "gating_reds: 2" in out
     assert "owner=dfdraw" in out
     assert "first=L2" in out
-    assert "owner=UNKNOWN" in out
+    assert "owner=UNRESOLVED" in out
     assert "STRICT GATE: FAIL  UNKNOWN=1" in out
     assert "Manifest is authoritative" in out
+
+    numeric_manifest = {
+        "provenance": {
+            "numeric_oracle_recheck": {
+                "final_ownership_table": [
+                    {
+                        "case_id": "NUMERIC-ORACLE",
+                        "status": H.PASS,
+                        "first_disagreement_layer": "NONE",
+                        "contract_reference_status": "VERIFIED",
+                        "owner_status": "ORACLE",
+                        "reference_native_all_ok": False,
+                        "reference_high_precision_all_ok": True,
+                        "resolution": "numeric reference accumulator corrected",
+                    }
+                ]
+            }
+        },
+        "reconciliation": {"n_declared": 1, "n_results": 1, "gating": []},
+        "cases": [{"case_id": "NUMERIC-ORACLE", "status": H.PASS, "observed": {}}],
+    }
+    H.print_stage_a_console_summary(numeric_manifest)
+    numeric_out = capsys.readouterr().out
+    assert "NUMERIC ORACLE RECHECK OWNERSHIP" in numeric_out
+    assert "owner=ORACLE" in numeric_out
+    assert "native_ok=False" in numeric_out
+    assert "float64_ok=True" in numeric_out
+
+    parser = H.build_stage_a_cli_parser()
+    args = parser.parse_args(["input.root", "--numeric-recheck", "--manifest", "numeric.json"])
+    assert args.numeric_recheck is True
+    assert args.pdf is None
 

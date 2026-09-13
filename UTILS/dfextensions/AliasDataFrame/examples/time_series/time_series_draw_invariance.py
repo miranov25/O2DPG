@@ -36,7 +36,7 @@ from typing import Any, Callable, Mapping, Sequence
 import numpy as np
 import pandas as pd
 
-SCHEMA_VERSION = "13.77.A6.4.v03"
+SCHEMA_VERSION = "13.77.A6.4.v04"
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Enumerations.  Plain strings: they are serialised into the manifest, and a
@@ -8555,6 +8555,112 @@ def run_stage_a_fraction_gate(root_path: str, *, manifest_path: str, pdf_path: s
 
 
 
+def numeric_oracle_recheck_cases(root_path: str, gallery_module=None) -> tuple[CaseSpec, ...]:
+    """Bounded dfdraw-feedback rerun: four numerical cases + unchanged controls."""
+    return (
+        o2_oracle_case(gallery_module=gallery_module),
+        injected_truth_vector_case(gallery_module=gallery_module),
+        injected_truth_selection_case(gallery_module=gallery_module),
+        m2_grouping_case(gallery_module=gallery_module),
+        # Positive controls remain unchanged and guard semantic membership.
+        o5_realdata_case(root_path, gallery_module=gallery_module),
+        injected_truth_weights_case(gallery_module=gallery_module),
+        m1_hist_vector_case(gallery_module=gallery_module),
+        m3_subframe_chain_case(gallery_module=gallery_module),
+    )
+
+
+def numeric_oracle_recheck_runners():
+    return (
+        run_o2_realdata,
+        run_injected_truth_case,
+        run_injected_truth_case,
+        run_m2_grouping,
+        run_o5_realdata,
+        run_injected_truth_case,
+        run_m1_hist_vector,
+        run_m3_subframe_chain,
+    )
+
+
+def _numeric_recheck_ownership_table(results: Sequence[CaseResult],
+                                     requested_case_ids: Sequence[str]) -> list[dict]:
+    """Compact final ownership ledger for the four numerical recheck cases."""
+    requested = set(requested_case_ids)
+    rows = []
+    for result in results:
+        if result.case_id not in requested:
+            continue
+        observed = result.observed if isinstance(result.observed, Mapping) else {}
+        ladder = observed.get("ownership_ladder", {}) if isinstance(observed, Mapping) else {}
+        if not isinstance(ladder, Mapping):
+            ladder = {}
+        numeric = ladder.get("numerical_recheck", {})
+        comparisons = numeric.get("comparisons", []) if isinstance(numeric, Mapping) else []
+        high_ok = bool(comparisons) and all(
+            bool(c.get("reference_high_precision", {}).get("ok"))
+            for c in comparisons if isinstance(c, Mapping))
+        native_ok = bool(comparisons) and all(
+            bool(c.get("reference_native", {}).get("ok"))
+            for c in comparisons if isinstance(c, Mapping))
+        rows.append({
+            "case_id": result.case_id,
+            "status": result.status,
+            "first_disagreement_layer": ladder.get("first_disagreement_layer", "UNRESOLVED"),
+            "contract_reference_status": ladder.get("contract_reference_status", "UNRESOLVED"),
+            "owner_status": ladder.get("owner_status", ladder.get("derived_owner", "UNRESOLVED")),
+            "resolution": ladder.get("resolution", ""),
+            "reference_native_all_ok": native_ok,
+            "reference_high_precision_all_ok": high_ok,
+        })
+    return rows
+
+
+def run_numeric_oracle_recheck(root_path: str, *, manifest_path: str,
+                               gallery_module=None) -> tuple[list[CaseResult], dict, int]:
+    """Run only ORACLE-03/04/06/07 plus stable positive controls.
+
+    No gallery PDF is generated: this is the narrow evidence revision requested
+    by the dfdraw panel.  The same canonical EAGER 20% fixture is built once.
+    """
+    gallery = gallery_module if gallery_module is not None else _a5_2_import_gallery()
+    adf, provenance_doc = _a6_4_build_fraction_adf_once(root_path, gallery_module=gallery)
+    cases = list(numeric_oracle_recheck_cases(root_path, gallery_module=gallery))
+    results = [
+        runner(
+            case, root_path, gallery_module=gallery,
+            prepared_adf=adf, prepared_provenance=provenance_doc)
+        for runner, case in zip(numeric_oracle_recheck_runners(), cases)
+    ]
+    _shared_fraction_provenance(results)
+    requested_cases = [
+        HARDENING_O2_CASE_ID,
+        INJECTED_TRUTH_VECTOR_CASE_ID,
+        INJECTED_TRUTH_SELECTION_CASE_ID,
+        M2_GROUP_CASE_ID,
+    ]
+    ownership_table = _numeric_recheck_ownership_table(results, requested_cases)
+    extra = {
+        **provenance_doc,
+        "stage_a_gate": "NUMERIC_ORACLE_RECHECK",
+        "numeric_oracle_recheck": {
+            "requested_cases": requested_cases,
+            "positive_controls": [
+                HARDENING_O5_CASE_ID,
+                INJECTED_TRUTH_WEIGHTS_CASE_ID,
+                M1_HIST_CASE_ID,
+                M3_SUBFRAME_CASE_ID,
+            ],
+            "contract": (
+                "same materialized values and semantic membership; independent float64 "
+                "statistical accumulation; no tolerance widening"),
+            "final_ownership_table": ownership_table,
+        },
+    }
+    doc = write_manifest(manifest_path, results, cases, extra=extra)
+    return results, doc, strict_exit_code(results, cases)
+
+
 def _a6_4_build_lazy_adf_once(root_path: str, *, gallery_module=None) -> tuple[Any, dict]:
     """Build the canonical real-data FULL+LAZY ADF once and prove it stayed lazy.
 
@@ -8702,6 +8808,9 @@ def build_stage_a_cli_parser():
     mode.add_argument("--sample", type=float)
     mode.add_argument("--full", action="store_true")
     mode.add_argument("--validate-lazy-eager", action="store_true")
+    mode.add_argument(
+        "--numeric-recheck", action="store_true",
+        help="rerun ORACLE-03/04/06/07 with float64 reference diagnostics plus positive controls")
     parser.add_argument(
         "--lazy", action="store_true",
         help="with --full, use the existing unsampled lazy loader (read branches on demand)")
@@ -8724,7 +8833,9 @@ def _require_cli_evidence_paths(args) -> None:
     if args.validate_lazy_eager:
         return
     if not args.manifest:
-        raise HarnessError("Stage-A sample/full gate requires --manifest")
+        raise HarnessError("Stage-A gate requires --manifest")
+    if args.numeric_recheck:
+        return
     if not args.pdf:
         raise HarnessError("Stage-A sample/full gate requires --pdf")
 
@@ -8764,17 +8875,19 @@ def print_stage_a_console_summary(manifest: Mapping[str, Any]) -> None:
         row = by_id.get(case_id, {})
         observed = row.get("observed", {}) if isinstance(row, Mapping) else {}
         ladder = observed.get("ownership_ladder", {}) if isinstance(observed, Mapping) else {}
-        owner = ladder.get("derived_owner") if isinstance(ladder, Mapping) else None
+        owner = (ladder.get("owner_status") or ladder.get("derived_owner")) if isinstance(ladder, Mapping) else None
+        contract = ladder.get("contract_reference_status") if isinstance(ladder, Mapping) else None
         first = ladder.get("first_disagreement_layer") if isinstance(ladder, Mapping) else None
-        if not owner or owner in {"NONE", "UNKNOWN"}:
-            owner = "UNKNOWN"
+        if not owner or owner in {"NONE", "UNKNOWN", "UNRESOLVED"}:
+            owner = "UNRESOLVED"
             unknown += 1
         if not first or first == "NONE":
             first = "UNKNOWN"
+        contract = contract or "UNRESOLVED"
         detail = str(row.get("detail", gate.get("reason", ""))).replace("\n", " ").strip()
         if len(detail) > 180:
             detail = detail[:177] + "..."
-        print(f"RED  owner={owner:<15} first={first:<7} {case_id}")
+        print(f"RED  owner={owner:<12} contract={contract:<12} first={first:<7} {case_id}")
         if detail:
             print(f"     {detail}")
 
@@ -8782,6 +8895,22 @@ def print_stage_a_console_summary(manifest: Mapping[str, Any]) -> None:
         print("STRICT GATE: PASS")
     else:
         print(f"STRICT GATE: FAIL  UNKNOWN={unknown}")
+
+    provenance_doc = manifest.get("provenance", {}) if isinstance(manifest, Mapping) else {}
+    recheck = provenance_doc.get("numeric_oracle_recheck", {}) if isinstance(provenance_doc, Mapping) else {}
+    ownership_table = recheck.get("final_ownership_table", []) if isinstance(recheck, Mapping) else []
+    if ownership_table:
+        print("--- NUMERIC ORACLE RECHECK OWNERSHIP ---")
+        for row in ownership_table:
+            print(
+                f"{row.get('case_id')}  status={row.get('status')} "
+                f"first={row.get('first_disagreement_layer')} "
+                f"contract={row.get('contract_reference_status')} "
+                f"owner={row.get('owner_status')} "
+                f"native_ok={row.get('reference_native_all_ok')} "
+                f"float64_ok={row.get('reference_high_precision_all_ok')}")
+            if row.get("resolution"):
+                print(f"     resolution={row.get('resolution')}")
     print("Manifest is authoritative; this summary is operator convenience only.")
     print("=== END STAGE-A SUMMARY ===")
 
@@ -8804,7 +8933,14 @@ def stage_a_cli_main(argv: Sequence[str] | None = None, *, gallery_module=None) 
             return 0
 
         _require_cli_evidence_paths(args)
-        if args.sample is not None:
+        if args.numeric_recheck:
+            if any((args.compare, args.accept_reference, args.update_reference,
+                    args.previous_reference)):
+                raise HarnessError(
+                    "numeric oracle recheck cannot perform reference mutation/comparison")
+            results, manifest, gate_code = run_numeric_oracle_recheck(
+                args.root_path, manifest_path=args.manifest, gallery_module=gallery)
+        elif args.sample is not None:
             if args.sample != A5_2_SAMPLE_FRACTION or args.seed != A5_2_SAMPLE_SEED:
                 raise HarnessError(
                     "canonical Stage-A FRACTION gate is fixed at --sample 0.20 --seed 42")
@@ -8864,9 +9000,11 @@ HARDENING_O2_WEIGHT_BRANCHES = (
     ("w_dca", "1.0 + abs(dcar_tpc_vertex)"),
 )
 
-# The real ROOT columns are float32. dfdraw reduces the evaluated weight arrays
-# in their source dtype, while the independent oracle intentionally promotes to
-# float64. These tolerances cover only that accumulation-rounding envelope.
+# Numerical contract: the independent oracle uses the exact materialized/input
+# values delivered to dfdraw, but performs statistical reductions in explicit
+# float64.  This matches current dfdraw's source-reviewed promotion contract
+# without calling dfdraw reducers.  The existing tolerances are retained; they
+# are not widened by the numerical-oracle recheck.
 HARDENING_O2_SUMW_RTOL = 5e-6
 HARDENING_O2_SUMW_ATOL = 1e-6
 HARDENING_O2_VALUE_RTOL = 5e-6
@@ -8985,23 +9123,32 @@ def _o2_weight_values(df: Any, branch_label: str) -> np.ndarray:
 
 def _o2_weighted_profile_reference_arrays(
         x: Any, y: Any, weights: Any, *, bins: int,
-        value_range: tuple[float, float]) -> dict:
-    """Independent raw weighted-profile reduction using project semantics."""
-    # Preserve source/materialized dtypes: dfdraw's profile reducer uses
-    # NumPy's default reduction dtype on these arrays.  Promoting only the
-    # reference to float64 creates a false oracle red on float32 ROOT columns.
+        value_range: tuple[float, float], accumulator: str = "float64") -> dict:
+    """Independent weighted-profile reduction over the exact input values.
+
+    ``accumulator='float64'`` is the contract reference used for gating: the
+    materialized/evaluated values are unchanged, while all statistical sums are
+    accumulated in explicit float64, matching current dfdraw's documented
+    promotion before reduction.  ``accumulator='native'`` is retained only as a
+    diagnostic calibration path so we can detect old false reds caused by
+    low-precision NumPy accumulation.
+    """
     x = np.asarray(x)
     y = np.asarray(y)
     w = np.asarray(weights)
     if not (x.shape == y.shape == w.shape):
         raise HarnessError(f"O2 raw arrays have incompatible shapes: {x.shape}, {y.shape}, {w.shape}")
+    if accumulator not in {"float64", "native"}:
+        raise HarnessError(f"unknown O2 accumulator {accumulator!r}")
+
     finite = np.isfinite(x) & np.isfinite(y) & np.isfinite(w)
     x, y, w = x[finite], y[finite], w[finite]
     lo, hi = map(float, value_range)
     nbins = int(bins)
     edges = np.linspace(lo, hi, nbins + 1)
-    idx = np.searchsorted(edges, x, side="right") - 1
-    idx[x == hi] = nbins - 1
+    x_for_bins = np.asarray(x, dtype=np.float64)
+    idx = np.searchsorted(edges, x_for_bins, side="right") - 1
+    idx[x_for_bins == hi] = nbins - 1
     inside = (idx >= 0) & (idx < nbins)
     idx, y, w = idx[inside], y[inside], w[inside]
 
@@ -9013,23 +9160,37 @@ def _o2_weighted_profile_reference_arrays(
     y_sem = np.full(nbins, np.nan, dtype=float)
     for b in range(nbins):
         take = idx == b
-        yy = y[take]
-        ww = w[take]
-        n = int(len(yy))
+        yy_native = y[take]
+        ww_native = w[take]
+        n = int(len(yy_native))
         count[b] = n
         if not n:
             continue
-        sw = float(np.sum(ww))
-        sw2 = float(np.sum(ww * ww))
+        if accumulator == "float64":
+            yy = np.asarray(yy_native, dtype=np.float64)
+            ww = np.asarray(ww_native, dtype=np.float64)
+            sw = float(np.sum(ww, dtype=np.float64))
+            sw2 = float(np.sum(ww * ww, dtype=np.float64))
+            numerator = float(np.sum(ww * yy, dtype=np.float64))
+        else:
+            yy = yy_native
+            ww = ww_native
+            sw_native = np.sum(ww)
+            sw = float(sw_native)
+            sw2 = float(np.sum(ww * ww))
+            numerator = float(np.sum(ww * yy))
         sum_weights[b] = sw
         if sw <= 0:
             continue
-        mean = float(np.sum(ww * yy) / sw)
+        mean = numerator / sw
         y_mean[b] = mean
         if sw2 > 0:
             n_eff[b] = (sw * sw) / sw2
         if n > 1:
-            variance = float(np.sum(ww * (yy - mean) ** 2) / sw)
+            if accumulator == "float64":
+                variance = float(np.sum(ww * (yy - mean) ** 2, dtype=np.float64) / sw)
+            else:
+                variance = float(np.sum(ww * (yy - mean) ** 2) / sw)
             y_std[b] = float(np.sqrt(variance))
             if np.isfinite(n_eff[b]) and n_eff[b] > 0:
                 y_sem[b] = float(y_std[b] / np.sqrt(n_eff[b]))
@@ -9043,10 +9204,11 @@ def _o2_weighted_profile_reference_arrays(
         "y_mean": y_mean,
         "y_std": y_std,
         "y_sem": y_sem,
+        "accumulator": accumulator,
     }
 
 
-def _o2_expected_model(adf: Any, case: CaseSpec | None = None) -> dict:
+def _o2_expected_model(adf: Any, case: CaseSpec | None = None, *, accumulator: str = "float64") -> dict:
     """Build the complete O2 branch×facet weighted reference from raw rows."""
     case = case or o2_oracle_case()
     if not hasattr(adf, "df"):
@@ -9060,8 +9222,8 @@ def _o2_expected_model(adf: Any, case: CaseSpec | None = None) -> dict:
     bins = int(spec["bins"])
     value_range = tuple(float(v) for v in spec["range"])
     facets = tuple(int(v) for v in spec["facets"])
-    x = np.asarray(df["tgl"], dtype=float)
-    y = np.asarray(df["dcar_tpc_vertex"], dtype=float)
+    x = np.asarray(df["tgl"])
+    y = np.asarray(df["dcar_tpc_vertex"])
     base = ((np.asarray(df["ncl"], dtype=float) > 60)
             & (np.abs(y) < 10)
             & (np.asarray(df["side_type"]) < 2))
@@ -9079,7 +9241,8 @@ def _o2_expected_model(adf: Any, case: CaseSpec | None = None) -> dict:
                 "weight_expression": branch_expr,
                 "facet": facet,
                 **_o2_weighted_profile_reference_arrays(
-                    x[mask], y[mask], weights[mask], bins=bins, value_range=value_range),
+                    x[mask], y[mask], weights[mask], bins=bins, value_range=value_range,
+                    accumulator=accumulator),
             }
     return {
         "facets": list(facets),
@@ -9087,6 +9250,7 @@ def _o2_expected_model(adf: Any, case: CaseSpec | None = None) -> dict:
         "weight_expressions": [expr for _, expr in HARDENING_O2_WEIGHT_BRANCHES],
         "bins": bins,
         "range": list(value_range),
+        "accumulator": accumulator,
         "by_branch_facet": by_branch_facet,
     }
 
@@ -9256,6 +9420,156 @@ def _o2_raw_tolerance(name: str) -> tuple[float, float]:
     return 1e-12, 1e-12
 
 
+def _finite_summary(values: Any) -> dict:
+    arr = np.asarray(values)
+    try:
+        numeric = np.asarray(arr, dtype=np.float64)
+    except Exception:
+        return {
+            "dtype": str(arr.dtype),
+            "size": int(arr.size),
+            "n_nan": None,
+            "n_posinf": None,
+            "n_neginf": None,
+        }
+    return {
+        "dtype": str(arr.dtype),
+        "size": int(arr.size),
+        "n_nan": int(np.count_nonzero(np.isnan(numeric))),
+        "n_posinf": int(np.count_nonzero(np.isposinf(numeric))),
+        "n_neginf": int(np.count_nonzero(np.isneginf(numeric))),
+    }
+
+
+def _numeric_reference_diagnostic(
+        *, observable: str, reference_native: Any, reference_high_precision: Any,
+        observed: Any, coordinates: Sequence[Any] | None = None,
+        atol: float, rtol: float, dtype_metadata: Mapping[str, Any] | None = None,
+        input_finiteness: Mapping[str, Any] | None = None) -> dict:
+    """Serialize the numerical evidence requested by the dfdraw review panel.
+
+    The two references use identical materialized values and semantic membership;
+    only the reduction accumulator differs.  Ownership is never inferred merely
+    from the fact that one comparison is red.
+    """
+    native = np.asarray(reference_native)
+    high = np.asarray(reference_high_precision)
+    got = np.asarray(observed)
+    doc = {
+        "observable": observable,
+        "expected_shape": list(high.shape),
+        "observed_shape": list(got.shape),
+        "number_compared": int(high.size) if high.shape == got.shape else 0,
+        "atol": float(atol),
+        "rtol": float(rtol),
+        "dtypes": dict(dtype_metadata or {}),
+        "finiteness": dict(input_finiteness or {}),
+    }
+    if high.shape != got.shape or native.shape != got.shape:
+        doc.update({
+            "reference_native": {"ok": False, "reason": "shape mismatch"},
+            "reference_high_precision": {"ok": False, "reason": "shape mismatch"},
+            "number_finite": 0,
+            "number_mismatched": int(max(high.size, got.size)),
+            "first_mismatches": [],
+        })
+        return doc
+
+    def _one(ref: np.ndarray) -> dict:
+        r = np.asarray(ref, dtype=np.float64).reshape(-1)
+        g = np.asarray(got, dtype=np.float64).reshape(-1)
+        finite = np.isfinite(r) & np.isfinite(g)
+        equal_nonfinite = ((np.isnan(r) & np.isnan(g)) |
+                           (np.isposinf(r) & np.isposinf(g)) |
+                           (np.isneginf(r) & np.isneginf(g)))
+        close = np.isclose(r, g, rtol=rtol, atol=atol, equal_nan=True)
+        mismatch = ~close
+        diff = np.abs(r - g)
+        denom = np.maximum(np.abs(r), np.finfo(np.float64).tiny)
+        rel = diff / denom
+        finite_diff = diff[finite]
+        finite_rel = rel[finite]
+        return {
+            "ok": bool(np.all(close)),
+            "number_finite": int(np.count_nonzero(finite)),
+            "number_mismatched": int(np.count_nonzero(mismatch)),
+            "max_abs": float(np.max(finite_diff)) if finite_diff.size else 0.0,
+            "max_rel": float(np.max(finite_rel)) if finite_rel.size else 0.0,
+            "median_abs": float(np.median(finite_diff)) if finite_diff.size else 0.0,
+            "mismatch_mask": mismatch,
+            "diff": diff,
+            "rel": rel,
+            "ref": r,
+            "got": g,
+        }
+
+    native_doc = _one(native)
+    high_doc = _one(high)
+    mismatch_idx = np.flatnonzero(high_doc["mismatch_mask"])
+    coords = list(coordinates or ())
+    first = []
+    for flat_index in mismatch_idx[:10]:
+        coordinate = coords[int(flat_index)] if int(flat_index) < len(coords) else int(flat_index)
+        first.append({
+            "flat_index": int(flat_index),
+            "coordinate": coordinate,
+            "reference_native": float(native_doc["ref"][flat_index]),
+            "reference_high_precision": float(high_doc["ref"][flat_index]),
+            "observed": float(high_doc["got"][flat_index]),
+            "abs_difference": float(high_doc["diff"][flat_index]),
+            "relative_difference": float(high_doc["rel"][flat_index]),
+        })
+    for d in (native_doc, high_doc):
+        d.pop("mismatch_mask", None)
+        d.pop("diff", None)
+        d.pop("rel", None)
+        d.pop("ref", None)
+        d.pop("got", None)
+    doc.update({
+        "number_finite": int(high_doc["number_finite"]),
+        "number_mismatched": int(high_doc["number_mismatched"]),
+        "reference_native": native_doc,
+        "reference_high_precision": high_doc,
+        "first_5_expected_high_precision": np.asarray(high, dtype=np.float64).reshape(-1)[:5].tolist(),
+        "first_5_observed": np.asarray(got, dtype=np.float64).reshape(-1)[:5].tolist(),
+        "first_5_absolute_differences": np.abs(
+            np.asarray(high, dtype=np.float64).reshape(-1)[:5]
+            - np.asarray(got, dtype=np.float64).reshape(-1)[:5]).tolist(),
+        "first_mismatches": first,
+    })
+    return doc
+
+
+def _numeric_owner_from_diagnostics(*, l1_ok: bool, diagnostics: Sequence[Mapping[str, Any]]) -> dict:
+    """Separate divergence layer from ownership/reference-contract adjudication."""
+    if not l1_ok:
+        return {
+            "first_disagreement_layer": "L1",
+            "contract_reference_status": "VERIFIED",
+            "owner_status": "ADF",
+            "derived_owner": "ADF",
+        }
+    hp_ok = all(bool(d.get("reference_high_precision", {}).get("ok")) for d in diagnostics)
+    native_ok = all(bool(d.get("reference_native", {}).get("ok")) for d in diagnostics)
+    if hp_ok:
+        owner = "NONE" if native_ok else "ORACLE"
+        out = {
+            "first_disagreement_layer": "NONE",
+            "contract_reference_status": "VERIFIED",
+            "owner_status": owner,
+            "derived_owner": owner,
+        }
+        if owner == "ORACLE":
+            out["resolution"] = "numeric reference accumulator corrected"
+        return out
+    return {
+        "first_disagreement_layer": "L2",
+        "contract_reference_status": "VERIFIED",
+        "owner_status": "DFDRAW",
+        "derived_owner": "dfdraw",
+    }
+
+
 def _o2_close_array(label: str, expected: Any, observed: Any, *, atol=1e-12, rtol=1e-12):
     a = np.asarray(expected)
     b = np.asarray(observed)
@@ -9397,35 +9711,171 @@ def _o2_direct_product(adf: Any, case: CaseSpec) -> dict:
         except Exception: pass
 
 
+def _o2_numeric_recheck_diagnostics(adf: Any, case: CaseSpec, product: dict) -> dict:
+    """Native-vs-float64 reduction diagnostics for ORACLE-03."""
+    expected_native = _o2_expected_model(adf, case, accumulator="native")
+    expected_high = _o2_expected_model(adf, case, accumulator="float64")
+    df = adf.df
+    records = []
+    coordinates_by_observable = {name: [] for name in ("sum_weights", "y_mean", "y_std", "y_sem")}
+    native_flat = {name: [] for name in coordinates_by_observable}
+    high_flat = {name: [] for name in coordinates_by_observable}
+    got_flat = {name: [] for name in coordinates_by_observable}
+
+    for branch in expected_high["weight_branches"]:
+        weights = _o2_weight_values(df, branch)
+        for facet in expected_high["facets"]:
+            key = f"{branch}|side_type={facet}"
+            ref_n = expected_native["by_branch_facet"][key]
+            ref_h = expected_high["by_branch_facet"][key]
+            got = product["cells"][key]
+            for b, center in enumerate(np.asarray(ref_h["x_center"], dtype=float)):
+                coord = {
+                    "branch": branch,
+                    "facet": int(facet),
+                    "bin_index": int(b),
+                    "x_center": float(center),
+                    "row_count": int(np.asarray(ref_h["count"])[b]),
+                }
+                for name in coordinates_by_observable:
+                    coordinates_by_observable[name].append(coord)
+                    native_flat[name].append(np.asarray(ref_n[name])[b])
+                    high_flat[name].append(np.asarray(ref_h[name])[b])
+                    got_flat[name].append(np.asarray(got[name])[b])
+
+            # Branch/facet-level admission diagnostics requested by dfdraw.
+            x = np.asarray(df["tgl"])
+            y = np.asarray(df["dcar_tpc_vertex"])
+            side = np.asarray(df["side_type"])
+            ncl = np.asarray(df["ncl"])
+            base = (ncl > 60) & (np.abs(y.astype(np.float64)) < 10) & (side < 2) & (side == facet)
+            finite = base & np.isfinite(x) & np.isfinite(y) & np.isfinite(weights)
+            in_range = finite & (x.astype(np.float64) >= HARDENING_O2_RANGE[0]) & (x.astype(np.float64) <= HARDENING_O2_RANGE[1])
+            ww = weights[in_range]
+            public_count = int(np.nansum(np.asarray(got["count"], dtype=np.float64)))
+            public_sumw = float(np.nansum(np.asarray(got["sum_weights"], dtype=np.float64)))
+            nonfinite_weight_rows = np.flatnonzero(base & np.isfinite(x) & np.isfinite(y) & ~np.isfinite(weights))[:20]
+            edges = np.linspace(HARDENING_O2_RANGE[0], HARDENING_O2_RANGE[1], HARDENING_O2_BINS + 1)
+            x64 = np.asarray(x, dtype=np.float64)
+            bin_idx = np.searchsorted(edges, x64, side="right") - 1
+            bin_idx[x64 == HARDENING_O2_RANGE[1]] = HARDENING_O2_BINS - 1
+            got_counts = np.asarray(got["count"], dtype=np.float64)
+            got_sumw = np.asarray(got["sum_weights"], dtype=np.float64)
+            mismatch_bins = np.flatnonzero(
+                np.isfinite(got_sumw) & ~np.isclose(got_counts, got_sumw, rtol=HARDENING_O2_SUMW_RTOL, atol=HARDENING_O2_SUMW_ATOL))
+            mismatch_bin_rows = []
+            for b in mismatch_bins[:10]:
+                rows = np.flatnonzero(in_range & (bin_idx == b))[:20]
+                mismatch_bin_rows.append({
+                    "bin_index": int(b),
+                    "x_center": float((edges[b] + edges[b + 1]) / 2.0),
+                    "dfdraw_count": float(got_counts[b]),
+                    "dfdraw_sum_weights": float(got_sumw[b]),
+                    "count_minus_dfdraw_sum_weights": float(got_counts[b] - got_sumw[b]),
+                    "affected_rows": [
+                        {
+                            "row_index": int(i),
+                            "dcar_tpc_vertex": float(np.asarray(y, dtype=np.float64)[i]),
+                            "evaluated_weight": float(np.asarray(weights, dtype=np.float64)[i]),
+                            "isfinite_dcar": bool(np.isfinite(np.asarray(y, dtype=np.float64)[i])),
+                            "isfinite_weight": bool(np.isfinite(np.asarray(weights, dtype=np.float64)[i])),
+                        }
+                        for i in rows
+                    ],
+                })
+            records.append({
+                "branch": branch,
+                "facet": int(facet),
+                "selected_row_count_in_profile_range": int(np.count_nonzero(in_range)),
+                "finite_evaluated_weight_count_in_profile_range": int(np.count_nonzero(in_range & np.isfinite(weights))),
+                "native_sum_weights": float(np.sum(ww)) if ww.size else 0.0,
+                "float64_sum_weights": float(np.sum(np.asarray(ww, dtype=np.float64), dtype=np.float64)) if ww.size else 0.0,
+                "dfdraw_count_total": public_count,
+                "dfdraw_sum_weights_total": public_sumw,
+                "count_minus_dfdraw_sum_weights": float(public_count - public_sumw),
+                "weight_dtype": str(np.asarray(weights).dtype),
+                "nonfinite_weight_row_indices": [int(i) for i in nonfinite_weight_rows],
+                "nonfinite_weight_rows": [
+                    {
+                        "row_index": int(i),
+                        "dcar_tpc_vertex": float(np.asarray(y, dtype=np.float64)[i]),
+                        "evaluated_weight": float(np.asarray(weights, dtype=np.float64)[i]),
+                        "isfinite_dcar": bool(np.isfinite(np.asarray(y, dtype=np.float64)[i])),
+                        "isfinite_weight": bool(np.isfinite(np.asarray(weights, dtype=np.float64)[i])),
+                    }
+                    for i in nonfinite_weight_rows
+                ],
+                "mismatching_sumweight_bins": mismatch_bin_rows,
+            })
+
+    diagnostics = []
+    for name in coordinates_by_observable:
+        atol, rtol = _o2_raw_tolerance(name)
+        diagnostics.append(_numeric_reference_diagnostic(
+            observable=name,
+            reference_native=native_flat[name],
+            reference_high_precision=high_flat[name],
+            observed=got_flat[name],
+            coordinates=coordinates_by_observable[name],
+            atol=atol,
+            rtol=rtol,
+            dtype_metadata={
+                "raw_source_dtype_tgl": str(np.asarray(df["tgl"]).dtype),
+                "raw_source_dtype_dcar_tpc_vertex": str(np.asarray(df["dcar_tpc_vertex"]).dtype),
+                "adf_materialized_dtype_tgl": str(np.asarray(df["tgl"]).dtype),
+                "adf_materialized_dtype_dcar_tpc_vertex": str(np.asarray(df["dcar_tpc_vertex"]).dtype),
+                "oracle_accumulator_dtype": "float64",
+                "dfdraw_effective_reduction_dtype": "float64 (source-reviewed contract)",
+                "returned_statistic_dtype": str(np.asarray(got_flat[name]).dtype),
+            },
+            input_finiteness={
+                "tgl": _finite_summary(df["tgl"]),
+                "dcar_tpc_vertex": _finite_summary(df["dcar_tpc_vertex"]),
+            },
+        ))
+    return {
+        "case_id": case.case_id,
+        "contract_reference_status": "VERIFIED",
+        "reference_policy": "same materialized/evaluated values; independent float64 statistical accumulation",
+        "comparisons": diagnostics,
+        "branch_facet_admission": records,
+    }
+
+
 def _o2_ownership_ladder(adf: Any, case: CaseSpec, expected: dict) -> dict:
-    df=adf.df
-    diag={
-        "L0":"independent NumPy weighted profile using physical source dtypes",
-        "L1":"ADF physical tgl/dcar/side/ncl columns; no alias materialization in O2",
-        "L1_all_within_tolerance":True,
-        "source_dtypes":{
-            "tgl":str(np.asarray(df["tgl"]).dtype),
-            "dcar_tpc_vertex":str(np.asarray(df["dcar_tpc_vertex"]).dtype),
+    df = adf.df
+    diag = {
+        "L0": "independent weighted profile over exact materialized/input values",
+        "L1": "ADF physical tgl/dcar/side/ncl columns; no alias materialization in O2",
+        "L1_all_within_tolerance": True,
+        "source_dtypes": {
+            "tgl": str(np.asarray(df["tgl"]).dtype),
+            "dcar_tpc_vertex": str(np.asarray(df["dcar_tpc_vertex"]).dtype),
         },
     }
     try:
-        direct=_o2_direct_product(adf,case)
-        _o2_assert_product_matches_raw(case,expected,direct)
+        direct = _o2_direct_product(adf, case)
+        numeric = _o2_numeric_recheck_diagnostics(adf, case, direct)
+        diag["numerical_recheck"] = numeric
+        owner = _numeric_owner_from_diagnostics(
+            l1_ok=True, diagnostics=numeric["comparisons"])
         diag.update({
-            "L2":"direct DFDraw weights_vector×facet",
-            "L2_matches_truth":True,
-            "L3":"adf.draw is red",
-            "first_disagreement_layer":"L3",
-            "derived_owner":"ADF_DRAW_BRIDGE",
+            "L2": "direct DFDraw weights_vector×facet",
+            "L2_matches_high_precision_truth": bool(
+                all(d["reference_high_precision"]["ok"] for d in numeric["comparisons"])),
+            "L3": "adf.draw numerical result evaluated against the same corrected contract",
+            **owner,
         })
     except Exception as exc:
         diag.update({
-            "L2":"direct DFDraw weights_vector×facet",
-            "L2_matches_truth":False,
-            "L2_detail":f"{type(exc).__name__}: {exc}",
-            "L3":"adf.draw is red",
-            "first_disagreement_layer":"L2",
-            "derived_owner":"dfdraw",
+            "L2": "direct DFDraw weights_vector×facet",
+            "L2_matches_high_precision_truth": False,
+            "L2_detail": f"{type(exc).__name__}: {exc}",
+            "L3": "adf.draw numerical result requires adjudication",
+            "first_disagreement_layer": "L2",
+            "contract_reference_status": "UNRESOLVED",
+            "owner_status": "UNRESOLVED",
+            "derived_owner": "UNKNOWN",
         })
     return diag
 
@@ -9452,6 +9902,9 @@ def run_o2_realdata(case: CaseSpec, root_path: str, *, gallery_module=None,
             scalar = _o2_assert_scalar_decomposition(prepared_adf, case, product)
             style = _o2_style_invariance(product["axes"])
             expected_flat, observed_flat = _o2_flatten_for_observables(expected, product)
+            numeric_recheck = _o2_numeric_recheck_diagnostics(prepared_adf, case, product)
+            numeric_owner = _numeric_owner_from_diagnostics(
+                l1_ok=True, diagnostics=numeric_recheck["comparisons"])
             for obs in case.observables:
                 res.observable_contract.append(_contract(obs))
                 cmp = compare_observable(obs, expected_flat[obs.name], observed_flat[obs.name])
@@ -9472,12 +9925,13 @@ def run_o2_realdata(case: CaseSpec, root_path: str, *, gallery_module=None,
                     "style_mismatches": style["mismatches"],
                 },
                 "ownership_ladder": {
-                    "L0":"independent NumPy weighted profile using physical source dtypes",
+                    "L0":"independent weighted profile over exact materialized/input values",
                     "L1":"ADF physical columns; no alias materialization in O2",
-                    "L2":"not required: public correctness oracle is green",
-                    "L3":"adf.draw matches truth",
-                    "first_disagreement_layer":"NONE",
-                    "derived_owner":"NONE",
+                    "L1_all_within_tolerance": True,
+                    "L2":"public/direct numerical result matches corrected float64 contract",
+                    "L3":"adf.draw matches corrected truth",
+                    "numerical_recheck": numeric_recheck,
+                    **numeric_owner,
                 },
             })
             res.status = PASS
@@ -9725,10 +10179,11 @@ def injected_truth_delta_case(*, gallery_module=None) -> CaseSpec:
     return CaseSpec(
         case_id=cid,
         claim_id="I4.injected_truth.direct_delta",
-        title="injected truth: vector normalize=delta recovers known_delta",
-        claim=("the normal two-variable vector normalization workflow produces the known "
-               "clean-distorted minus original per-sector delta"),
-        failure_means=("normalize='delta' was ignored, branch order changed, or public delta "
+        title="injected truth: top-level draw() bracket-vector normalize=delta dispatch",
+        claim=("top-level draw() bracket-vector profile must preserve typed-profile normalization; "
+               "the clean-distorted minus original per-sector delta is independently known"),
+        failure_means=("top-level draw() bracket-vector profile bypassed typed-profile normalization, "
+                       "normalize='delta' was silently lost, branch order changed, or public delta "
                        "values differ from the independently known injected bias"),
         expected_visual="clean-distorted minus original follows the known_delta sector profile",
         owner_on_failure="dfdraw",
@@ -10307,7 +10762,16 @@ def _it_semantic_model(adf: Any) -> dict:
     return out
 
 
-def _it_profile(x: Any, y: Any, mask: Any, *, weights: Any = None) -> dict:
+def _it_profile(x: Any, y: Any, mask: Any, *, weights: Any = None,
+                accumulator: str = "float64") -> dict:
+    """Independent profile reduction over unchanged materialized values.
+
+    ``float64`` is the corrected contract reference.  ``native`` is retained
+    only as diagnostic evidence showing whether the historical oracle red came
+    from accumulator precision rather than semantic membership.
+    """
+    if accumulator not in {"float64", "native"}:
+        raise HarnessError(f"unknown injected-truth accumulator {accumulator!r}")
     x = np.asarray(x, dtype=float)
     y = np.asarray(y)
     mask = np.asarray(mask, dtype=bool) & np.isfinite(x) & np.isfinite(y)
@@ -10319,29 +10783,46 @@ def _it_profile(x: Any, y: Any, mask: Any, *, weights: Any = None) -> dict:
     centers = (edges[:-1] + edges[1:]) / 2.0
     count = np.zeros(INJECTED_TRUTH_BINS, dtype=int)
     mean = np.full(INJECTED_TRUTH_BINS, np.nan, dtype=float)
-    # dfdraw marks weighted support undefined in empty bins.  Match that semantic
-    # convention explicitly rather than treating an unpopulated bin as measured 0.
     sum_weights = np.full(INJECTED_TRUTH_BINS, np.nan, dtype=float)
     w = None if weights is None else np.asarray(weights)
     if w is not None:
         inside &= np.isfinite(w)
     for b in range(INJECTED_TRUTH_BINS):
         take = inside & (idx == b)
-        yy = y[take]
-        count[b] = int(len(yy))
+        yy_native = y[take]
+        count[b] = int(len(yy_native))
         if w is None:
-            sum_weights[b] = float(len(yy))
-            if len(yy):
-                mean[b] = float(np.mean(yy))
+            sum_weights[b] = float(len(yy_native))
+            if len(yy_native):
+                if accumulator == "float64":
+                    yy = np.asarray(yy_native, dtype=np.float64)
+                    mean[b] = float(np.mean(yy, dtype=np.float64))
+                else:
+                    mean[b] = float(np.mean(yy_native))
         else:
-            ww = w[take]
-            if len(ww):
-                sw_native = np.sum(ww)
-                sw = float(sw_native)
+            ww_native = w[take]
+            if len(ww_native):
+                if accumulator == "float64":
+                    ww = np.asarray(ww_native, dtype=np.float64)
+                    yy = np.asarray(yy_native, dtype=np.float64)
+                    sw = float(np.sum(ww, dtype=np.float64))
+                    numerator = float(np.sum(ww * yy, dtype=np.float64))
+                else:
+                    ww = ww_native
+                    yy = yy_native
+                    sw_native = np.sum(ww)
+                    sw = float(sw_native)
+                    numerator = float(np.sum(ww * yy))
                 sum_weights[b] = sw
                 if sw > 0.0:
-                    mean[b] = float(np.sum(ww * yy) / sw_native)
-    return {"x_center": centers, "count": count, "sum_weights": sum_weights, "y_mean": mean}
+                    mean[b] = numerator / sw
+    return {
+        "x_center": centers,
+        "count": count,
+        "sum_weights": sum_weights,
+        "y_mean": mean,
+        "accumulator": accumulator,
+    }
 
 
 def _it_profile_frame(stats: Any):
@@ -10546,6 +11027,156 @@ def _it_weights(adf: Any, gallery: Any) -> tuple[dict, dict]:
             pass
 
 
+def _it_vector_reference(model: Mapping[str, Any], *, accumulator: str) -> tuple[dict, list[dict]]:
+    ys = (
+        ("dcar_tpc_vertex", model["dcar"]),
+        ("dcar_distorted_clean", model["clean"]),
+        ("dcar_oracle", model["noisy"]),
+        ("known_delta", model["delta"]),
+    )
+    counts, means, coords = [], [], []
+    for branch, y in ys:
+        ref = _it_profile(model["sector"], y, model["base"], accumulator=accumulator)
+        counts.extend(ref["count"].tolist())
+        means.extend(ref["y_mean"].tolist())
+        sector64 = np.asarray(model["sector"], dtype=np.float64)
+        y_native = np.asarray(y)
+        edges = np.linspace(INJECTED_TRUTH_RANGE[0], INJECTED_TRUTH_RANGE[1], INJECTED_TRUTH_BINS + 1)
+        idx = np.searchsorted(edges, sector64, side="right") - 1
+        idx[sector64 == INJECTED_TRUTH_RANGE[1]] = INJECTED_TRUTH_BINS - 1
+        valid = np.asarray(model["base"], dtype=bool) & np.isfinite(sector64) & np.isfinite(y_native)
+        for b, center in enumerate(ref["x_center"]):
+            values = np.asarray(y_native[valid & (idx == b)], dtype=np.float64)
+            coords.append({
+                "branch": branch,
+                "bin_index": int(b),
+                "sector_center": float(center),
+                "row_count": int(ref["count"][b]),
+                "y_min": float(np.min(values)) if values.size else float("nan"),
+                "y_max": float(np.max(values)) if values.size else float("nan"),
+                "materialized_dtype": str(y_native.dtype),
+            })
+    return {"counts": counts, "profile_means": means}, coords
+
+
+def _it_selection_reference(model: Mapping[str, Any], *, accumulator: str) -> tuple[dict, list[dict], list[dict]]:
+    delta_values, valid_mask, coords, branch_context = [], [], [], []
+    for facet in (0, 1):
+        fmask = model["side_sel"] & (model["side"] == facet)
+        left = _it_profile(
+            model["sector"], model["delta"], fmask & (model["tgl"] < 0),
+            accumulator=accumulator)
+        right = _it_profile(
+            model["sector"], model["delta"], fmask & (model["tgl"] >= 0),
+            accumulator=accumulator)
+        valid = (left["count"] > 0) & (right["count"] > 0)
+        delta = left["y_mean"] - right["y_mean"]
+        delta[~valid] = np.nan
+        delta_values.extend(delta.tolist())
+        valid_mask.extend(valid.tolist())
+        for b, center in enumerate(left["x_center"]):
+            coords.append({
+                "facet": int(facet),
+                "bin_index": int(b),
+                "sector_center": float(center),
+                "branch0_row_count": int(left["count"][b]),
+                "branch1_row_count": int(right["count"][b]),
+            })
+            branch_context.append({
+                "facet": int(facet),
+                "bin_index": int(b),
+                "sector_center": float(center),
+                "branch0_row_count": int(left["count"][b]),
+                "branch1_row_count": int(right["count"][b]),
+                "branch0_mean": float(left["y_mean"][b]),
+                "branch1_mean": float(right["y_mean"][b]),
+                "independent_delta": float(delta[b]),
+            })
+    return {"delta_values": delta_values, "valid_mask": valid_mask}, coords, branch_context
+
+
+def _it_numeric_recheck_diagnostics(case_id: str, adf: Any, observed: Mapping[str, Any]) -> dict:
+    """Numerical calibration evidence for ORACLE-04 and ORACLE-06."""
+    model = _it_semantic_model(adf)
+    df = adf.df
+    if case_id == INJECTED_TRUTH_VECTOR_CASE_ID:
+        native, coords = _it_vector_reference(model, accumulator="native")
+        high, _ = _it_vector_reference(model, accumulator="float64")
+        diag = _numeric_reference_diagnostic(
+            observable="profile_means",
+            reference_native=native["profile_means"],
+            reference_high_precision=high["profile_means"],
+            observed=observed["profile_means"],
+            coordinates=coords,
+            atol=1e-9,
+            rtol=1e-8,
+            dtype_metadata={
+                "raw_source_dtype_dcar_tpc_vertex": str(np.asarray(df["dcar_tpc_vertex"]).dtype),
+                "adf_materialized_dtype_known_delta": str(np.asarray(df["known_delta"]).dtype),
+                "adf_materialized_dtype_dcar_distorted_clean": str(np.asarray(df["dcar_distorted_clean"]).dtype),
+                "adf_materialized_dtype_dcar_oracle": str(np.asarray(df["dcar_oracle"]).dtype),
+                "expression_result_dtypes": {
+                    "dcar_tpc_vertex": str(np.asarray(model["dcar"]).dtype),
+                    "dcar_distorted_clean": str(np.asarray(model["clean"]).dtype),
+                    "dcar_oracle": str(np.asarray(model["noisy"]).dtype),
+                    "known_delta": str(np.asarray(model["delta"]).dtype),
+                },
+                "oracle_accumulator_dtype": "float64",
+                "dfdraw_effective_reduction_dtype": "float64 (source-reviewed contract)",
+                "returned_statistic_dtype": str(np.asarray(observed["profile_means"]).dtype),
+            },
+            input_finiteness={
+                "dcar_tpc_vertex": _finite_summary(model["dcar"]),
+                "dcar_distorted_clean": _finite_summary(model["clean"]),
+                "dcar_oracle": _finite_summary(model["noisy"]),
+                "known_delta": _finite_summary(model["delta"]),
+            },
+        )
+        return {
+            "case_id": case_id,
+            "contract_reference_status": "VERIFIED",
+            "reference_policy": "identical materialized values; independent float64 mean",
+            "comparisons": [diag],
+        }
+
+    if case_id == INJECTED_TRUTH_SELECTION_CASE_ID:
+        native, coords, _ = _it_selection_reference(model, accumulator="native")
+        high, _, branch_context = _it_selection_reference(model, accumulator="float64")
+        diag = _numeric_reference_diagnostic(
+            observable="delta_values",
+            reference_native=native["delta_values"],
+            reference_high_precision=high["delta_values"],
+            observed=observed["delta_values"],
+            coordinates=coords,
+            atol=1e-9,
+            rtol=1e-8,
+            dtype_metadata={
+                "raw_source_dtype_tgl": str(np.asarray(df["tgl"]).dtype),
+                "adf_materialized_dtype_known_delta": str(np.asarray(df["known_delta"]).dtype),
+                "expression_result_dtype": str(np.asarray(model["delta"]).dtype),
+                "oracle_accumulator_dtype": "float64",
+                "dfdraw_effective_reduction_dtype": "float64 (source-reviewed contract)",
+                "returned_statistic_dtype": str(np.asarray(observed["delta_values"]).dtype),
+            },
+            input_finiteness={
+                "tgl": _finite_summary(model["tgl"]),
+                "known_delta": _finite_summary(model["delta"]),
+            },
+        )
+        mismatch_indices = [row["flat_index"] for row in diag.get("first_mismatches", [])]
+        diag["first_failing_branch_context"] = [
+            branch_context[i] for i in mismatch_indices if i < len(branch_context)
+        ]
+        return {
+            "case_id": case_id,
+            "contract_reference_status": "VERIFIED",
+            "reference_policy": "identical branch/facet/bin membership; independent float64 branch means",
+            "comparisons": [diag],
+        }
+
+    raise HarnessError(f"no numerical recheck diagnostics for {case_id}")
+
+
 def _it_gauss(adf: Any, gallery: Any) -> tuple[dict, dict, dict]:
     model = _it_prepare_public(adf, gallery)
     raw = getattr(gallery, INJECTED_TRUTH_GAUSS_GALLERY)(adf)
@@ -10726,15 +11357,27 @@ def _m2_profile_groups(stats: Any) -> list[tuple[Any, Any]]:
     return [(g, frame[frame["group"]==g].copy()) for g in pd.unique(frame["group"])]
 
 
-def _m2_grouping_arrays(model: dict, meta: dict) -> tuple[dict, dict]:
-    exp_c=[]; got_c=[]; exp_m=[]; got_m=[]
+def _m2_grouping_arrays(model: dict, meta: dict, *, accumulator: str = "float64",
+                        return_coordinates: bool = False):
+    exp_c=[]; got_c=[]; exp_m=[]; got_m=[]; coords=[]
     groups=_m2_profile_groups(meta["categorical_stats"])
     if [int(float(g)) for g,_ in groups] != [0,1]:
         raise HarnessError(f"categorical group identity mismatch {[g for g,_ in groups]}")
     for (g,frame),side in zip(groups,(0,1)):
-        ref=_it_profile(model["sector"],model["delta"],model["side_sel"]&(model["side"]==side))
+        ref=_it_profile(
+            model["sector"],model["delta"],model["side_sel"]&(model["side"]==side),
+            accumulator=accumulator)
         exp_c.extend(ref["count"].tolist()); got_c.extend(np.asarray(frame["count"],dtype=int).tolist())
         exp_m.extend(ref["y_mean"].tolist()); got_m.extend(np.asarray(frame["y_mean"],dtype=float).tolist())
+        for b,center in enumerate(ref["x_center"]):
+            coords.append({
+                "group_kind":"categorical",
+                "group":"side_type",
+                "group_identity":int(side),
+                "bin_index":int(b),
+                "sector_center":float(center),
+                "row_count":int(ref["count"][b]),
+            })
 
     base=model["base"] & np.isfinite(model["tgl"])
     selected_tgl=pd.Series(model["tgl"][base]); cut=pd.cut(selected_tgl,bins=4)
@@ -10745,11 +11388,60 @@ def _m2_grouping_arrays(model: dict, meta: dict) -> tuple[dict, dict]:
     for j,(_,frame) in enumerate(groups2):
         member=np.zeros(len(model["df"]),dtype=bool)
         member[selected_indices[np.asarray(cut==categories[j])]]=True
-        ref=_it_profile(model["sector"],model["delta"],member)
+        ref=_it_profile(model["sector"],model["delta"],member,accumulator=accumulator)
         exp_c.extend(ref["count"].tolist()); got_c.extend(np.asarray(frame["count"],dtype=int).tolist())
         exp_m.extend(ref["y_mean"].tolist()); got_m.extend(np.asarray(frame["y_mean"],dtype=float).tolist())
-    return ({"group_counts":exp_c,"group_means":exp_m},
-            {"group_counts":got_c,"group_means":got_m})
+        for b,center in enumerate(ref["x_center"]):
+            coords.append({
+                "group_kind":"binned",
+                "group":"tgl",
+                "group_index":int(j),
+                "group_identity":str(categories[j]),
+                "bin_index":int(b),
+                "sector_center":float(center),
+                "row_count":int(ref["count"][b]),
+            })
+    expected={"group_counts":exp_c,"group_means":exp_m}
+    observed={"group_counts":got_c,"group_means":got_m}
+    if return_coordinates:
+        return expected, observed, coords
+    return expected, observed
+
+
+def _m2_numeric_recheck_diagnostics(adf: Any, model: dict, meta: dict, observed: dict) -> dict:
+    native, _, coords = _m2_grouping_arrays(
+        model, meta, accumulator="native", return_coordinates=True)
+    high, _, _ = _m2_grouping_arrays(
+        model, meta, accumulator="float64", return_coordinates=True)
+    diag = _numeric_reference_diagnostic(
+        observable="group_means",
+        reference_native=native["group_means"],
+        reference_high_precision=high["group_means"],
+        observed=observed["group_means"],
+        coordinates=coords,
+        atol=1e-9,
+        rtol=1e-8,
+        dtype_metadata={
+            "raw_source_dtype_sector": str(np.asarray(adf.df["sector"]).dtype),
+            "raw_source_dtype_tgl": str(np.asarray(adf.df["tgl"]).dtype),
+            "adf_materialized_dtype_known_delta": str(np.asarray(adf.df["known_delta"]).dtype),
+            "expression_result_dtype": str(np.asarray(model["delta"]).dtype),
+            "oracle_accumulator_dtype": "float64",
+            "dfdraw_effective_reduction_dtype": "float64 (source-reviewed contract)",
+            "returned_statistic_dtype": str(np.asarray(observed["group_means"]).dtype),
+        },
+        input_finiteness={
+            "sector": _finite_summary(model["sector"]),
+            "tgl": _finite_summary(model["tgl"]),
+            "known_delta": _finite_summary(model["delta"]),
+        },
+    )
+    return {
+        "case_id": M2_GROUP_CASE_ID,
+        "contract_reference_status": "VERIFIED",
+        "reference_policy": "identical group/bin membership; independent float64 group means",
+        "comparisons": [diag],
+    }
 
 
 def _m2_direct_meta(adf: Any) -> tuple[dict, list[Any]]:
@@ -10772,27 +11464,39 @@ def _m2_classify_failure(adf: Any, case: CaseSpec, model: dict, expected: dict,
                          semantic_diag: dict) -> dict:
     diag=copy.deepcopy(semantic_diag)
     if not diag.get("L1_all_within_tolerance",False):
-        diag.update({"first_disagreement_layer":"L1","derived_owner":"ADF"})
+        diag.update({
+            "first_disagreement_layer":"L1",
+            "contract_reference_status":"VERIFIED",
+            "owner_status":"ADF",
+            "derived_owner":"ADF",
+        })
         return diag
     figures=[]
     try:
         meta,figures=_m2_direct_meta(adf)
-        _,direct_observed=_m2_grouping_arrays(model,meta)
-        ok,detail=_case_observables_match(case,expected,direct_observed)
+        _,direct_observed=_m2_grouping_arrays(model,meta,accumulator="float64")
+        numeric=_m2_numeric_recheck_diagnostics(adf,model,meta,direct_observed)
+        owner=_numeric_owner_from_diagnostics(
+            l1_ok=True,diagnostics=numeric["comparisons"])
         diag.update({
             "L2":"direct DFDraw grouped profiles on materialized known_delta",
-            "L2_matches_truth":bool(ok),"L2_detail":detail,
-            "L3":"adf.draw grouped profile is red",
-            "first_disagreement_layer":"L3" if ok else "L2",
-            "derived_owner":"ADF_DRAW_BRIDGE" if ok else "dfdraw",
+            "L2_matches_high_precision_truth":bool(
+                all(d["reference_high_precision"]["ok"] for d in numeric["comparisons"])),
+            "L3":"adf.draw grouped profile evaluated against corrected contract",
+            "numerical_recheck":numeric,
+            **owner,
         })
         return diag
     except Exception as exc:
         diag.update({
             "L2":"direct DFDraw grouped profiles on materialized known_delta",
-            "L2_matches_truth":False,"L2_detail":f"{type(exc).__name__}: {exc}",
-            "L3":"adf.draw grouped profile is red",
-            "first_disagreement_layer":"L2","derived_owner":"dfdraw",
+            "L2_matches_high_precision_truth":False,
+            "L2_detail":f"{type(exc).__name__}: {exc}",
+            "L3":"adf.draw grouped profile requires adjudication",
+            "first_disagreement_layer":"L2",
+            "contract_reference_status":"UNRESOLVED",
+            "owner_status":"UNRESOLVED",
+            "derived_owner":"UNKNOWN",
         })
         return diag
     finally:
@@ -10811,7 +11515,8 @@ def run_m2_grouping(case: CaseSpec, root_path: str, *, gallery_module=None,
         raw=getattr(gallery,M2_GROUP_GALLERY_FUNCTION)(adf); meta=raw[2]
         semantic_diag=_it_semantic_dtype_diagnostics(adf,gallery)
         model=_it_semantic_model(adf)
-        expected,observed=_m2_grouping_arrays(model,meta)
+        expected,observed=_m2_grouping_arrays(model,meta,accumulator="float64")
+        numeric_recheck=_m2_numeric_recheck_diagnostics(adf,model,meta,observed)
         first_failure=None
         for obs in case.observables:
             res.observable_contract.append(_contract(obs)); cmp=compare_observable(obs,expected[obs.name],observed[obs.name])
@@ -10822,7 +11527,13 @@ def run_m2_grouping(case: CaseSpec, root_path: str, *, gallery_module=None,
             raise HarnessError(first_failure)
         res.executed_comparisons=len(case.observables)
         res.observed["realdata_provenance"]=dict(prepared_provenance or provenance)
-        semantic_diag.update({"first_disagreement_layer":"NONE","derived_owner":"NONE"})
+        semantic_diag["numerical_recheck"]=numeric_recheck
+        semantic_diag.update(_numeric_owner_from_diagnostics(
+            l1_ok=True,diagnostics=numeric_recheck["comparisons"]))
+        semantic_diag.update({
+            "L2":"public grouped result matches corrected float64 contract",
+            "L3":"adf.draw grouped result matches corrected truth",
+        })
         res.observed["ownership_ladder"]=semantic_diag
         res.status=PASS; res.detail=""; return res
     except Exception as exc:
@@ -11045,6 +11756,9 @@ class _DirectDFDrawOwner:
     def draw(self, *args, **kwargs):
         return self._plotter.draw(*args, **kwargs)
 
+    def profile(self, *args, **kwargs):
+        return self._plotter.profile(*args, **kwargs)
+
 
 def _o1_scalar_faceted_counts(stats: Any) -> list[int]:
     """Extract per-facet population from either scalar or one-vector envelope."""
@@ -11085,6 +11799,8 @@ def _o1_neg_a_ownership_ladder(adf: Any, *, q1: float, expected: list[int],
             "L2_observed": direct,
             "L2_matches_truth": direct_ok,
             "first_disagreement_layer": "L3" if direct_ok else "L2",
+            "contract_reference_status": "VERIFIED",
+            "owner_status": "ADF" if direct_ok else "DFDRAW",
             "derived_owner": "ADF_DRAW_BRIDGE" if direct_ok else "dfdraw",
         })
     except Exception as exc:
@@ -11093,6 +11809,8 @@ def _o1_neg_a_ownership_ladder(adf: Any, *, q1: float, expected: list[int],
             "L2_matches_truth": False,
             "L2_detail": f"{type(exc).__name__}: {exc}",
             "first_disagreement_layer": "L2",
+            "contract_reference_status": "VERIFIED",
+            "owner_status": "DFDRAW",
             "derived_owner": "dfdraw",
         })
     finally:
@@ -11139,6 +11857,8 @@ def _o1_neg_b_ownership_ladder(adf: Any, *, t_mid: float, expected_cells: dict,
             "L2_complete_cells": sorted(str(k) for k in direct),
             "L2_matches_truth": bool(direct_ok),
             "first_disagreement_layer": "L3" if direct_ok else "L2",
+            "contract_reference_status": "VERIFIED",
+            "owner_status": "ADF" if direct_ok else "DFDRAW",
             "derived_owner": "ADF_DRAW_BRIDGE" if direct_ok else "dfdraw",
         })
     except Exception as exc:
@@ -11147,6 +11867,8 @@ def _o1_neg_b_ownership_ladder(adf: Any, *, t_mid: float, expected_cells: dict,
             "L2_matches_truth": False,
             "L2_detail": f"{type(exc).__name__}: {exc}",
             "first_disagreement_layer": "L2",
+            "contract_reference_status": "VERIFIED",
+            "owner_status": "DFDRAW",
             "derived_owner": "dfdraw",
         })
     finally:
@@ -11209,6 +11931,48 @@ class _DirectInjectedGallery:
             facet_by="side_type", auto_title=False, return_data=True)
 
 
+def _it_typed_profile_delta_positive_control(adf: Any) -> dict:
+    """Positive neighbor for ORACLE-05: typed profile() normalization works."""
+    owner = _DirectDFDrawOwner(adf.df)
+    raw = owner.profile(
+        "[dcar_distorted_clean,dcar_tpc_vertex]:sector",
+        bins=INJECTED_TRUTH_BINS,
+        range=INJECTED_TRUTH_RANGE,
+        selection=INJECTED_TRUTH_BASE_SEL,
+        normalize="delta",
+        auto_title=False,
+        return_data=True,
+    )
+    try:
+        stats = raw[2] if isinstance(raw, tuple) and len(raw) >= 3 else None
+        nd = stats.get("normalize_data") if isinstance(stats, dict) else None
+        if nd is None or not hasattr(nd, "columns") or "value" not in nd.columns:
+            return {"status": "FAIL", "detail": "typed profile() returned no normalize_data.value"}
+        observed = np.asarray(nd["value"], dtype=float)
+        model = _it_semantic_model(adf)
+        ref = _it_profile(model["sector"], model["delta"], model["base"], accumulator="float64")
+        cmp = np.allclose(
+            np.asarray(ref["y_mean"], dtype=float), observed,
+            rtol=1e-8, atol=1e-9, equal_nan=True)
+        return {
+            "status": "PASS",
+            "detail": "typed DFDraw.profile bracket-vector exposes normalize_data.value",
+            "normalize_payload_present": True,
+            "numerically_within_current_oracle_tolerance": bool(cmp),
+            "max_abs": float(np.nanmax(np.abs(np.asarray(ref["y_mean"], dtype=float) - observed)))
+                       if np.any(np.isfinite(observed)) else float("nan"),
+            "atol": 1e-9,
+            "rtol": 1e-8,
+        }
+    except Exception as exc:
+        return {"status": "FAIL", "detail": f"{type(exc).__name__}: {exc}"}
+    finally:
+        try:
+            plt.close(raw[0])
+        except Exception:
+            pass
+
+
 def _it_direct_expected_observed(case_id: str, adf: Any) -> tuple[dict, dict]:
     owner = _DirectDFDrawOwner(adf.df)
     gallery = _DirectInjectedGallery()
@@ -11238,11 +12002,13 @@ def _case_observables_match(case: CaseSpec, expected: dict, observed: dict) -> t
 
 
 def _classify_injected_failure(case: CaseSpec, adf: Any, semantic_diag: dict) -> dict:
-    """Complete M4 L0/L1/L2/L3 attribution for a red injected-truth case."""
+    """Complete L0/L1/L2/L3 attribution without conflating divergence and ownership."""
     diag = copy.deepcopy(semantic_diag)
     if not diag.get("L1_all_within_tolerance", False):
         diag.update({
             "first_disagreement_layer": "L1",
+            "contract_reference_status": "VERIFIED",
+            "owner_status": "ADF",
             "derived_owner": "ADF",
             "L2": "not executed because L1 already disagrees",
             "L3": "adf.draw red",
@@ -11255,26 +12021,74 @@ def _classify_injected_failure(case: CaseSpec, adf: Any, semantic_diag: dict) ->
         diag["L2_matches_truth"] = bool(direct_ok)
         diag["L2_detail"] = detail
         diag["L3"] = "adf.draw red"
+
+        if case.case_id in {INJECTED_TRUTH_VECTOR_CASE_ID, INJECTED_TRUTH_SELECTION_CASE_ID}:
+            numeric = _it_numeric_recheck_diagnostics(case.case_id, adf, observed)
+            diag["numerical_recheck"] = numeric
+            diag.update(_numeric_owner_from_diagnostics(
+                l1_ok=True, diagnostics=numeric["comparisons"]))
+            return diag
+
+        if case.case_id == INJECTED_TRUTH_DELTA_CASE_ID:
+            diag.update({
+                "first_disagreement_layer": "L2" if not direct_ok else "L3",
+                "contract_reference_status": "VERIFIED",
+                "owner_status": "DFDRAW" if not direct_ok else "ADF",
+                "derived_owner": "dfdraw" if not direct_ok else "ADF_DRAW_BRIDGE",
+                "typed_profile_positive_control": _it_typed_profile_delta_positive_control(adf),
+                "confirmed_bug_scope": (
+                    "top-level draw() bracket-vector profile bypasses typed-profile normalization; "
+                    "normalize='delta' is silently lost"),
+            })
+            return diag
+
         if direct_ok:
             diag.update({
                 "first_disagreement_layer": "L3",
+                "contract_reference_status": "VERIFIED",
+                "owner_status": "ADF",
                 "derived_owner": "ADF_DRAW_BRIDGE",
             })
         else:
             diag.update({
                 "first_disagreement_layer": "L2",
+                "contract_reference_status": "VERIFIED",
+                "owner_status": "DFDRAW",
                 "derived_owner": "dfdraw",
             })
     except Exception as exc:
-        # A direct dfdraw refusal/malformed result is itself an L2 disagreement.
         diag.update({
             "L2": "direct DFDraw on materialized plain DataFrame",
             "L2_matches_truth": False,
             "L2_detail": f"{type(exc).__name__}: {exc}",
             "L3": "adf.draw red",
             "first_disagreement_layer": "L2",
-            "derived_owner": "dfdraw",
         })
+        if case.case_id == INJECTED_TRUTH_DELTA_CASE_ID:
+            # ORACLE-05 is structural: direct top-level draw() itself exposes no
+            # normalized payload.  That is a verified dispatch-door divergence,
+            # not a numerical-reference ambiguity.
+            diag.update({
+                "contract_reference_status": "VERIFIED",
+                "owner_status": "DFDRAW",
+                "derived_owner": "dfdraw",
+                "confirmed_bug_scope": (
+                    "top-level draw() bracket-vector profile bypasses typed-profile normalization; "
+                    "normalize='delta' is silently lost"),
+            })
+            try:
+                diag["typed_profile_positive_control"] = _it_typed_profile_delta_positive_control(adf)
+            except Exception as control_exc:
+                diag["typed_profile_positive_control"] = {
+                    "status": "FAIL",
+                    "detail": f"{type(control_exc).__name__}: {control_exc}",
+                }
+        else:
+            diag.update({
+                "contract_reference_status": "UNRESOLVED",
+                "owner_status": "UNRESOLVED",
+                "derived_owner": "UNKNOWN",
+            })
     return diag
 
 
@@ -11349,12 +12163,24 @@ def run_injected_truth_case(case: CaseSpec, root_path: str, *, gallery_module=No
             res.observed["ownership_ladder"] = _classify_injected_failure(
                 case, adf, semantic_diag)
             raise HarnessError(first_failure)
-        semantic_diag.update({
-            "first_disagreement_layer": "NONE",
-            "derived_owner": "NONE",
-            "L2": "not required: public correctness oracle is green",
-            "L3": "adf.draw matches truth",
-        })
+        if case.case_id in {INJECTED_TRUTH_VECTOR_CASE_ID, INJECTED_TRUTH_SELECTION_CASE_ID}:
+            numeric = _it_numeric_recheck_diagnostics(case.case_id, adf, observed)
+            semantic_diag["numerical_recheck"] = numeric
+            semantic_diag.update(_numeric_owner_from_diagnostics(
+                l1_ok=True, diagnostics=numeric["comparisons"]))
+            semantic_diag.update({
+                "L2": "public result matches corrected float64 contract",
+                "L3": "adf.draw matches corrected truth",
+            })
+        else:
+            semantic_diag.update({
+                "first_disagreement_layer": "NONE",
+                "contract_reference_status": "VERIFIED",
+                "owner_status": "NONE",
+                "derived_owner": "NONE",
+                "L2": "not required: public correctness oracle is green",
+                "L3": "adf.draw matches truth",
+            })
         res.observed["ownership_ladder"] = semantic_diag
         res.status = PASS
         res.detail = ""
