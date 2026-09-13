@@ -92,8 +92,24 @@ Gate 1A now exposes two static views for representative profile semantics:
 
 The first configuration-backed fields remain `bins`, `marker`, `markersize`,
 and `capsize`. Gate 1A also describes static branch/group identity and the
-reviewed normalize-door calibration. Data-derived `resolved` semantics remain a
-later bounded CRR and fail loudly for now.
+reviewed normalize-door calibration. `door="draw"` is the default diagnostic
+frontend; `door="profile"` is used only where the project already declares the
+typed profile door contract-equivalent. Data-derived `resolved` semantics
+remain a later bounded CRR and fail loudly for now.
+
+The request-level status vocabulary is intentionally small and fixed during
+PHASE_13_82:
+
+```text
+contract_status:       SUPPORTED | NOT_APPLICABLE | REFUSE_BY_DESIGN | UNRESOLVED
+implementation_status: PASSING | KNOWN_GAP | REFUSES_CORRECTLY | TEST_GAP | UNMEASURED
+```
+
+Status is compositional: a confirmed `KNOWN_GAP` is not weakened by a later
+`UNMEASURED` slice, refusal is terminal for the request, and evidence is kept
+with the status it proves. Current `KNOWN_GAP` annotations are locked to strict
+expected-failure product calibrations for ORACLE-01 and ORACLE-05 so a future
+bug fix cannot leave stale diagnostic metadata silently green.
 
 ```python
 # What did the user actually supply?

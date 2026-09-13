@@ -31,11 +31,16 @@ from dfextensions.dfdraw import DFDraw  # noqa: E402
 from dfextensions.dfdraw.plots._semantic import (  # noqa: E402
     BUILTIN_DEFAULT,
     CALL_ARGUMENT,
+    CONTRACT_REFUSE_BY_DESIGN,
     CONTRACT_SUPPORTED,
+    CONTRACT_UNRESOLVED,
     CURRENT_GLOBAL_CONFIGURATION,
     Description,
     IMPLEMENTATION_KNOWN_GAP,
     IMPLEMENTATION_PASSING,
+    IMPLEMENTATION_REFUSES_CORRECTLY,
+    IMPLEMENTATION_UNMEASURED,
+    KNOWN_GAP_EVIDENCE,
     ORIGIN_DETAIL_CHANGED,
     ORIGIN_DETAIL_UNKNOWN,
     resolve,
@@ -504,6 +509,7 @@ def test_G1A_S3_multibranch_selection_vector_has_named_branch_coordinate(df):
     out = DFDraw(df).explain(
         "y:x", type="profile",
         selection_vector=["x < 0", "x >= 0"],
+        vector_compose="outer",
     )
     assert out["selection"]["vector"] == ["x < 0", "x >= 0"]
     branch = out["coordinates"]["branch"]
@@ -592,3 +598,185 @@ def test_G1A_S7_does_not_overgeneralize_delta_evidence(df):
     )
     assert draw_ratio["_semantic"]["implementation_status"] == "UNMEASURED"
     assert draw_ratio["_semantic"]["evidence"] == []
+
+
+# --------------------------------------------------------------------------
+# Gate 1A / CRR-1 v1.1 corrections — review R1/R2/R3/R4
+# --------------------------------------------------------------------------
+
+def test_G1A_v11_status_known_gap_is_not_weakened_by_unmeasured(df):
+    out = DFDraw(df).explain(
+        "[y,y]:x", type="profile", door="draw",
+        selection_vector=["x < 0"], normalize="ratio",
+    )
+    assert out["_semantic"]["implementation_status"] == IMPLEMENTATION_KNOWN_GAP
+    assert out["_semantic"]["evidence"] == [
+        "PHASE_13_77 Stage-A ORACLE-01"
+    ]
+
+
+def test_G1A_v11_status_multiple_known_gap_evidence_coexists(df):
+    out = DFDraw(df).explain(
+        "[y,y]:x", type="profile", door="draw",
+        selection_vector=["x < 0"], normalize="delta",
+    )
+    assert out["_semantic"]["implementation_status"] == IMPLEMENTATION_KNOWN_GAP
+    assert set(out["_semantic"]["evidence"]) == {
+        "PHASE_13_77 Stage-A ORACLE-01",
+        "PHASE_13_77 Stage-A ORACLE-05",
+    }
+
+
+def test_G1A_v11_refusal_is_terminal_and_drops_downstream_gap_evidence(df):
+    out = DFDraw(df).explain(
+        "[y,y]:x", type="profile", door="draw",
+        selection_vector=["x < 0", "x >= 0", "y > 0"],
+        vector_compose="inner", normalize="delta",
+    )
+    assert out["_semantic"]["contract_status"] == CONTRACT_REFUSE_BY_DESIGN
+    assert out["_semantic"]["implementation_status"] == IMPLEMENTATION_REFUSES_CORRECTLY
+    assert out["_semantic"]["evidence"] == []
+    assert "refusal_reason" in out["composition"]
+
+
+def test_G1A_v11_vector_owner_empty_selection_refusal(df):
+    out = DFDraw(df).explain(
+        "y:x", type="profile", selection_vector=[]
+    )
+    assert out["_semantic"]["contract_status"] == CONTRACT_REFUSE_BY_DESIGN
+    assert out["_semantic"]["implementation_status"] == IMPLEMENTATION_REFUSES_CORRECTLY
+    assert out["selection"]["vector"] == []
+    assert "non-empty" in out["composition"]["refusal_reason"]
+
+
+def test_G1A_v11_vector_owner_scalar_y_two_selection_inner_refuses(df):
+    out = DFDraw(df).explain(
+        "y:x", type="profile",
+        selection_vector=["x < 0", "x >= 0"],
+        vector_compose="inner",
+    )
+    assert out["_semantic"]["contract_status"] == CONTRACT_REFUSE_BY_DESIGN
+    assert out["_semantic"]["implementation_status"] == IMPLEMENTATION_REFUSES_CORRECTLY
+    assert "branch" not in out.get("coordinates", {})
+    assert "equal lengths" in out["composition"]["refusal_reason"]
+
+
+def test_G1A_v11_vector_owner_scalar_y_two_selection_outer(df):
+    out = DFDraw(df).explain(
+        "y:x", type="profile",
+        selection_vector=["x < 0", "x >= 0"],
+        vector_compose="outer",
+    )
+    assert out["_semantic"]["contract_status"] == CONTRACT_SUPPORTED
+    assert out["coordinates"]["branch"] == {
+        "kind": "selection_vector",
+        "cardinality": 2,
+        "order": [0, 1],
+    }
+    assert out["composition"]["iteration_count"] == 2
+
+
+def test_G1A_v11_vector_owner_two_y_two_selection_inner(df):
+    out = DFDraw(df).explain(
+        "[y,y]:x", type="profile",
+        selection_vector=["x < 0", "x >= 0"],
+        vector_compose="inner",
+    )
+    assert out["coordinates"]["branch"] == {
+        "kind": "selection_vector",
+        "cardinality": 2,
+        "order": [0, 1],
+    }
+    assert out["composition"]["iteration_count"] == 2
+
+
+def test_G1A_v11_dependent_group_bins_without_group_is_explicit(df):
+    out = DFDraw(df).explain(
+        "y:x", type="profile", group_by_bins=4
+    )
+    assert out["grouping"]["bins"] == 4
+    assert out["grouping"]["parent"] is None
+    assert out["_semantic"]["contract_status"] == CONTRACT_UNRESOLVED
+    assert out["_semantic"]["implementation_status"] == IMPLEMENTATION_UNMEASURED
+
+
+@pytest.mark.xfail(
+    strict=True,
+    reason="PHASE_13_77 Stage-A ORACLE-01: one-element selection_vector must equal scalar selection",
+)
+def test_T_CAL_01_oracle01_one_element_selection_vector_product_equivalence():
+    rng = np.random.default_rng(13018201)
+    left_x = rng.normal(-1.0, 0.15, 100)
+    right_x = rng.normal(1.0, 0.15, 100)
+    frame = pd.DataFrame({
+        "x": np.concatenate([left_x, right_x]),
+        "y": np.arange(200, dtype=float),
+        "facet": np.concatenate([np.zeros(100, dtype=int), np.ones(100, dtype=int)]),
+    })
+    d = DFDraw(frame)
+    import matplotlib.pyplot as plt
+    try:
+        _, _, scalar_stats = d.profile(
+            "y:x", bins=4, return_data=True,
+            selection="x < 0", facet_by="facet",
+        )
+        _, _, vector_stats = d.profile(
+            "y:x", bins=4, return_data=True,
+            selection_vector=["x < 0"], facet_by="facet",
+        )
+        assert vector_stats["n_total"] == scalar_stats["n_total"]
+        assert vector_stats["groups"] == scalar_stats["groups"]
+    finally:
+        plt.close("all")
+
+
+@pytest.mark.xfail(
+    strict=True,
+    reason="PHASE_13_77 Stage-A ORACLE-05: draw/profile bracket-vector delta doors must agree",
+)
+def test_T_CAL_05_oracle05_draw_profile_normalize_product_equivalence():
+    rng = np.random.default_rng(13018205)
+    n = 400
+    frame = pd.DataFrame({
+        "x": rng.normal(size=n),
+        "y0": rng.normal(size=n),
+        "y1": rng.normal(size=n) + 0.5,
+    })
+    d = DFDraw(frame)
+    import matplotlib.pyplot as plt
+    try:
+        _, _, draw_stats = d.draw(
+            "[y0,y1]:x", type="profile", normalize="delta", bins=12
+        )
+        _, _, profile_stats = d.profile(
+            "[y0,y1]:x", normalize="delta", bins=12
+        )
+        assert isinstance(draw_stats, dict)
+        assert "normalize_data" in draw_stats
+        assert draw_stats["normalize_mode"] == profile_stats["normalize_mode"]
+        pd.testing.assert_frame_equal(
+            draw_stats["normalize_data"].reset_index(drop=True),
+            profile_stats["normalize_data"].reset_index(drop=True),
+        )
+    finally:
+        plt.close("all")
+
+
+STRICT_KNOWN_GAP_CALIBRATIONS = {
+    "PHASE_13_77 Stage-A ORACLE-01":
+        "test_T_CAL_01_oracle01_one_element_selection_vector_product_equivalence",
+    "PHASE_13_77 Stage-A ORACLE-05":
+        "test_T_CAL_05_oracle05_draw_profile_normalize_product_equivalence",
+}
+
+
+def test_G1A_v11_meta_every_known_gap_has_strict_calibration():
+    assert set(STRICT_KNOWN_GAP_CALIBRATIONS) == set(KNOWN_GAP_EVIDENCE)
+    for evidence, test_name in STRICT_KNOWN_GAP_CALIBRATIONS.items():
+        fn = globals()[test_name]
+        marks = getattr(fn, "pytestmark", [])
+        strict_xfail = [
+            mark for mark in marks
+            if mark.name == "xfail" and mark.kwargs.get("strict") is True
+        ]
+        assert strict_xfail, f"{evidence} calibration is not strict xfail"

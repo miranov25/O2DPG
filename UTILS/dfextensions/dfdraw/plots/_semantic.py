@@ -113,6 +113,26 @@ IMPLEMENTATION_STATUSES = (
     IMPLEMENTATION_UNMEASURED,
 )
 
+# Reviewed evidence owners for semantic KNOWN_GAP annotations. Keeping these
+# identifiers in one place prevents the diagnostic layer from inventing a gap
+# without a corresponding product calibration test.
+KNOWN_GAP_EVIDENCE = (
+    "PHASE_13_77 Stage-A ORACLE-01",
+    "PHASE_13_77 Stage-A ORACLE-05",
+)
+
+# Request-level summary precedence.  A request may collect status contributions
+# from several orthogonal semantic slices; the summary must be monotonic rather
+# than "last writer wins".  In particular a confirmed KNOWN_GAP must not be
+# weakened to UNMEASURED by a later slice.
+_IMPLEMENTATION_PRECEDENCE = {
+    IMPLEMENTATION_PASSING: 0,
+    IMPLEMENTATION_UNMEASURED: 1,
+    IMPLEMENTATION_TEST_GAP: 2,
+    IMPLEMENTATION_KNOWN_GAP: 3,
+    IMPLEMENTATION_REFUSES_CORRECTLY: 4,
+}
+
 # --------------------------------------------------------------------------
 # How precisely the contributor can be named (Rev2 R4, provenance honesty)
 # --------------------------------------------------------------------------
@@ -216,6 +236,10 @@ class Description:
             "implementation_status": IMPLEMENTATION_PASSING,
             "evidence": [],
         }
+        # Statuses from independent semantic slices are accumulated and
+        # reduced deterministically.  They are intentionally not exposed as a
+        # second public schema; only the derived request-level summary is.
+        self._status_contributions: List[Dict[str, Any]] = []
 
     def record(self, f: Field) -> Field:
         self._fields[f.path] = f
@@ -238,22 +262,103 @@ class Description:
         implementation_status: Optional[str] = None,
         evidence: Optional[List[str]] = None,
     ) -> None:
-        if contract_status is not None:
-            if contract_status not in CONTRACT_STATUSES:
+        """Add one semantic status contribution and recompute the summary.
+
+        Status is compositional.  Earlier versions overwrote the request-level
+        values directly, so a later ``UNMEASURED`` contribution could weaken a
+        proven ``KNOWN_GAP`` while leaving the old evidence attached.  This
+        method instead stores each contribution and derives one deterministic
+        request summary.
+
+        ``REFUSE_BY_DESIGN`` is terminal for the request: downstream execution
+        states are not meaningful once the request is contractually refused.
+        Evidence is attached only to the implementation status it proves.
+        """
+        if contract_status is not None and contract_status not in CONTRACT_STATUSES:
+            raise ValueError(
+                f"unknown contract_status {contract_status!r}; "
+                f"expected one of {CONTRACT_STATUSES}"
+            )
+        if (implementation_status is not None
+                and implementation_status not in IMPLEMENTATION_STATUSES):
+            raise ValueError(
+                f"unknown implementation_status {implementation_status!r}; "
+                f"expected one of {IMPLEMENTATION_STATUSES}"
+            )
+
+        ev = list(evidence or [])
+        if implementation_status == IMPLEMENTATION_KNOWN_GAP:
+            unknown = [item for item in ev if item not in KNOWN_GAP_EVIDENCE]
+            if unknown:
                 raise ValueError(
-                    f"unknown contract_status {contract_status!r}; "
-                    f"expected one of {CONTRACT_STATUSES}"
+                    "KNOWN_GAP evidence is not registered: " + ", ".join(unknown)
                 )
-            self._meta["contract_status"] = contract_status
-        if implementation_status is not None:
-            if implementation_status not in IMPLEMENTATION_STATUSES:
-                raise ValueError(
-                    f"unknown implementation_status {implementation_status!r}; "
-                    f"expected one of {IMPLEMENTATION_STATUSES}"
-                )
-            self._meta["implementation_status"] = implementation_status
-        if evidence is not None:
-            self._meta["evidence"] = list(evidence)
+            if not ev:
+                raise ValueError("KNOWN_GAP requires reviewed evidence")
+
+        self._status_contributions.append({
+            "contract_status": contract_status,
+            "implementation_status": implementation_status,
+            "evidence": ev,
+        })
+        self._recompute_status_summary()
+
+    def _recompute_status_summary(self) -> None:
+        contracts = [
+            c["contract_status"] for c in self._status_contributions
+            if c["contract_status"] is not None
+        ]
+
+        if CONTRACT_REFUSE_BY_DESIGN in contracts:
+            contract = CONTRACT_REFUSE_BY_DESIGN
+        elif CONTRACT_UNRESOLVED in contracts:
+            contract = CONTRACT_UNRESOLVED
+        elif CONTRACT_SUPPORTED in contracts:
+            contract = CONTRACT_SUPPORTED
+        elif contracts and all(x == CONTRACT_NOT_APPLICABLE for x in contracts):
+            contract = CONTRACT_NOT_APPLICABLE
+        else:
+            contract = CONTRACT_SUPPORTED
+
+        self._meta["contract_status"] = contract
+
+        # A refused request does not execute downstream semantic slices.  Force
+        # a coherent refusal summary and retain only evidence (if any) attached
+        # to the refusal contribution itself.
+        if contract == CONTRACT_REFUSE_BY_DESIGN:
+            impl = IMPLEMENTATION_REFUSES_CORRECTLY
+            evidence = []
+            for c in self._status_contributions:
+                if (c["contract_status"] == CONTRACT_REFUSE_BY_DESIGN
+                        or c["implementation_status"] == IMPLEMENTATION_REFUSES_CORRECTLY):
+                    for item in c["evidence"]:
+                        if item not in evidence:
+                            evidence.append(item)
+            self._meta["implementation_status"] = impl
+            self._meta["evidence"] = evidence
+            return
+
+        implementations = [
+            c["implementation_status"] for c in self._status_contributions
+            if c["implementation_status"] is not None
+        ]
+        if implementations:
+            impl = max(
+                implementations,
+                key=lambda value: _IMPLEMENTATION_PRECEDENCE[value],
+            )
+        else:
+            impl = IMPLEMENTATION_PASSING
+
+        evidence = []
+        for c in self._status_contributions:
+            if c["implementation_status"] == impl:
+                for item in c["evidence"]:
+                    if item not in evidence:
+                        evidence.append(item)
+
+        self._meta["implementation_status"] = impl
+        self._meta["evidence"] = evidence
 
     def get(self, path: str) -> Optional[Field]:
         return self._fields.get(path)

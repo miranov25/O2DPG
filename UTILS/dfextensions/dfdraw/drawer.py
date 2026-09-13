@@ -6185,6 +6185,7 @@ class DFDraw:
         from .plots._semantic import (
             PROFILE_STATIC_FIELDS,
             CONTRACT_REFUSE_BY_DESIGN,
+            CONTRACT_UNRESOLVED,
             Description,
             IMPLEMENTATION_KNOWN_GAP,
             IMPLEMENTATION_PASSING,
@@ -6231,68 +6232,112 @@ class DFDraw:
         else:
             raise ValueError(f"unsupported private explain view {view!r}")
 
-        # Selection / branch semantics (S3). SUPPLIED records the literal
-        # request. EFFECTIVE additionally applies AD-67's scalar lowering for
-        # one-element selection_vector using the existing composition helper.
+        # Selection / branch semantics (S3).  The production iteration helper
+        # is the single owner of vector cardinality/composition/refusal rules.
+        # Explain derives its coordinate description from those returned
+        # indices instead of re-implementing the same decisions.
         selection = kwargs.get("selection")
         selection_vector = kwargs.get("selection_vector")
         if selection is not None:
             d.record_semantic("selection.scalar", selection)
         if selection_vector is not None:
             sv = list(selection_vector)
-            if len(sv) == 0:
-                d.record_semantic("selection.vector", [])
+            vector_compose = kwargs.get("vector_compose", "inner")
+            parsed_y, _ = self._parse_expr(expr)
+            n_y = len(parsed_y) if isinstance(parsed_y, list) else 1
+
+            try:
+                iteration_indices = self._compute_vector_iteration_indices(
+                    n_y=n_y,
+                    selection_vector=sv,
+                    weights_vector=None,
+                    vector_compose=vector_compose,
+                )
+            except ValueError as exc:
+                d.record_semantic("selection.vector", sv)
+                d.record_semantic("composition.vector_compose", vector_compose)
+                # The existing production owner defines this request as a
+                # refusal (empty vector, inner-cardinality mismatch, invalid
+                # composition mode).  Describe the refusal; do not invent an
+                # explain-only branch state.
+                d.record_semantic("composition.refusal_reason", str(exc))
                 d.set_status(
                     contract_status=CONTRACT_REFUSE_BY_DESIGN,
                     implementation_status=IMPLEMENTATION_REFUSES_CORRECTLY,
                 )
-            elif len(sv) == 1:
-                # AD-67 contract: one-element vector lowers to scalar at zero
-                # channel cost. ORACLE-01 proves the current product can lose
-                # that scalar-equivalent selection, so the gap annotation is
-                # view-independent while the lowering itself is EFFECTIVE.
-                if view == "supplied":
-                    d.record_semantic("selection.vector", sv)
-                else:
-                    d.record_semantic(
-                        "selection.scalar",
-                        self._combine_selections(selection, sv[0]),
-                    )
-                    d.record_semantic(
-                        "selection.lowered_from", "selection_vector"
-                    )
-                    d.record_semantic("selection.vector_channel_cost", 0)
-                d.set_status(
-                    implementation_status=IMPLEMENTATION_KNOWN_GAP,
-                    evidence=["PHASE_13_77 Stage-A ORACLE-01"],
-                )
-            elif view == "supplied":
-                d.record_semantic("selection.vector", sv)
             else:
-                d.record_semantic("selection.vector", sv)
-                d.record_semantic(
-                    "coordinates.branch",
-                    {
-                        "kind": "selection_vector",
-                        "cardinality": len(sv),
-                        "order": list(range(len(sv))),
-                    },
-                )
-                d.record_semantic(
-                    "composition.vector_compose",
-                    kwargs.get("vector_compose", "inner"),
-                )
+                sel_order = []
+                for _, sel_idx, _ in iteration_indices:
+                    if sel_idx is not None and sel_idx not in sel_order:
+                        sel_order.append(sel_idx)
+
+                if len(sv) == 1:
+                    if view == "supplied":
+                        d.record_semantic("selection.vector", sv)
+                    # AD-67 contract: one-element vector lowers to scalar at
+                    # zero channel cost.  The iteration owner confirms there
+                    # is no active selection-vector coordinate (all sel_idx
+                    # are None).  ORACLE-01 proves current execution may lose
+                    # this scalar-equivalent selection.
+                    if view == "effective":
+                        d.record_semantic(
+                            "selection.scalar",
+                            self._combine_selections(selection, sv[0]),
+                        )
+                        d.record_semantic(
+                            "selection.lowered_from", "selection_vector"
+                        )
+                        d.record_semantic("selection.vector_channel_cost", 0)
+                    d.set_status(
+                        implementation_status=IMPLEMENTATION_KNOWN_GAP,
+                        evidence=["PHASE_13_77 Stage-A ORACLE-01"],
+                    )
+                else:
+                    d.record_semantic("selection.vector", sv)
+                    d.record_semantic("composition.vector_compose", vector_compose)
+                if sel_order and view == "effective":
+                    d.record_semantic(
+                        "coordinates.branch",
+                        {
+                            "kind": "selection_vector",
+                            "cardinality": len(sel_order),
+                            "order": sel_order,
+                        },
+                    )
+                    d.record_semantic(
+                        "composition.iteration_count", len(iteration_indices)
+                    )
 
         # Group identity (S6). CRR-1 describes only the supplied/effective
-        # coordinate contract; concrete labels/membership are CRR-2.
+        # coordinate contract; concrete labels/membership are CRR-2.  Companion
+        # kwargs are never silently omitted: if bins/quantiles are supplied
+        # without group_by, the current contract is not established, so the
+        # diagnostic says UNRESOLVED/UNMEASURED explicitly.
         group_by = kwargs.get("group_by")
+        group_by_bins = kwargs.get("group_by_bins")
+        group_by_quantiles = kwargs.get("group_by_quantiles")
         if group_by is not None:
             group_desc = {"expression": group_by}
-            if kwargs.get("group_by_bins") is not None:
-                group_desc["bins"] = kwargs.get("group_by_bins")
-            if kwargs.get("group_by_quantiles") is not None:
-                group_desc["quantiles"] = kwargs.get("group_by_quantiles")
+            if group_by_bins is not None:
+                group_desc["bins"] = group_by_bins
+            if group_by_quantiles is not None:
+                group_desc["quantiles"] = group_by_quantiles
             d.record_semantic("coordinates.group", group_desc)
+        elif group_by_bins is not None or group_by_quantiles is not None:
+            if group_by_bins is not None:
+                d.record_semantic("grouping.bins", group_by_bins)
+            if group_by_quantiles is not None:
+                d.record_semantic("grouping.quantiles", group_by_quantiles)
+            d.record_semantic("grouping.parent", None)
+            d.record_semantic(
+                "grouping.note",
+                "group_by_bins/group_by_quantiles supplied without group_by; "
+                "contract not yet specified",
+            )
+            d.set_status(
+                contract_status=CONTRACT_UNRESOLVED,
+                implementation_status=IMPLEMENTATION_UNMEASURED,
+            )
 
         # Derived transform / declared-door calibration (S7). This records the
         # contract on both doors, and truthfully annotates the confirmed top-
@@ -6304,14 +6349,9 @@ class DFDraw:
             bracket_vector = isinstance(parsed_y, list) and len(parsed_y) >= 2
             if bracket_vector and door == "draw":
                 if normalize == "delta":
-                    evidence = list(
-                        d.as_dict()["_semantic"].get("evidence", [])
-                    )
-                    if "PHASE_13_77 Stage-A ORACLE-05" not in evidence:
-                        evidence.append("PHASE_13_77 Stage-A ORACLE-05")
                     d.set_status(
                         implementation_status=IMPLEMENTATION_KNOWN_GAP,
-                        evidence=evidence,
+                        evidence=["PHASE_13_77 Stage-A ORACLE-05"],
                     )
                 else:
                     # ORACLE-05 establishes the delta case only. Do not
@@ -6322,15 +6362,13 @@ class DFDraw:
             elif bracket_vector and door == "profile":
                 # ORACLE-05 contains a typed-profile positive control for the
                 # delta case. Other modes remain unmeasured by this Gate.
-                if d.as_dict()["_semantic"]["implementation_status"] != \
-                        IMPLEMENTATION_KNOWN_GAP:
-                    d.set_status(
-                        implementation_status=(
-                            IMPLEMENTATION_PASSING
-                            if normalize == "delta"
-                            else IMPLEMENTATION_UNMEASURED
-                        )
+                d.set_status(
+                    implementation_status=(
+                        IMPLEMENTATION_PASSING
+                        if normalize == "delta"
+                        else IMPLEMENTATION_UNMEASURED
                     )
+                )
 
         return d
 
