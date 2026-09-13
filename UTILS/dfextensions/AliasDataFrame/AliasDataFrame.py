@@ -2828,15 +2828,15 @@ class _DrawDependencyPlan:
     # — with that test updated deliberately rather than as collateral.
 
     def prescan_text(self):
-        """Scalar-slot pre-scan text for the whole call (one string).
-        Vector slots are excluded deliberately: subframe-qualified
-        references inside vector slots are refused by the existing guard
-        (BUG_20260701_ADF_subframe_ref_slot_symmetry); pre-scanning them
-        would materialize a subframe immediately before its refusal —
-        an effect-before-refusal inversion. Widening waits for that
-        guard's symmetry fix, and this docstring is its owner record."""
+        """Qualified-reference pre-scan text for the whole call (one string).
+
+        PHASE_13_76_ADF B3.3d / AD-16/13.76.ADF: vector slots now follow
+        the same public qualified-reference policy as scalar slots.  The old
+        scalar-only restriction existed solely to preserve the retired
+        fail-loud vector-slot guard.
+        """
         return ' '.join(t for t in (
-            e.reference_text_blob(include_vector_slots=False)
+            e.reference_text_blob(include_vector_slots=True)
             for e in self.especs) if t)
 
     # required_branches() REMOVED in B3.2 part 2. It was the plan's only
@@ -4608,9 +4608,13 @@ class AliasDataFrame:
                         f"This is an ADF projection bug — please report it.")
 
     def _struct_rewrite_draw_slots(self, d):
-        """PHASE_13_66_ADF: rewrite logical struct refs -> internal in a draw spec
-        dict's value-bearing string slots, in place. Members are already columns
-        (A-1 / autoload), so no scatter — unlike subframes."""
+        """PHASE_13_66_ADF / PHASE_13_76_ADF B3.3b: rewrite logical
+        struct refs -> internal names in every reference-bearing draw slot.
+
+        Scalar strings retain the established behavior. Sequence-valued vector
+        slots preserve list/tuple shape while each string element is rewritten
+        through the same existing struct resolver.
+        """
         if not self._structs:
             return
         # PHASE_13_76_ADF temporary instrumentation: count every real
@@ -4619,10 +4623,14 @@ class AliasDataFrame:
         _prep = getattr(self, "_draw_prep", None)
         if _prep is not None:
             _prep["rewrite_full_runs"] += 1
-        for _slot in ('expr', 'selection', 'group_by', 'weights', 'facet_by', 'color'):
+        for _slot in ('expr',) + _EffectiveDrawSpec.SLOT_NAMES:
             v = d.get(_slot)
             if isinstance(v, str):
                 d[_slot] = self._prepare_struct_refs(v)
+            elif _slot.endswith('_vector') and isinstance(v, (list, tuple)):
+                rewritten = [self._prepare_struct_refs(x) if isinstance(x, str) else x
+                             for x in v]
+                d[_slot] = tuple(rewritten) if isinstance(v, tuple) else rewritten
 
     def _struct_physical_to_internal(self):
         """{physical_slash_name: internal_name} across all registered structs (A-1)."""
@@ -20427,13 +20435,12 @@ function collapseDepth(maxD) {{
                 expr, type, kwargs,
                 entry_begin=entry_begin, entry_end=entry_end,
                 entry_mask=entry_mask)
+            # PHASE_13_76_ADF B3.3a/B3.3b / AD-16/13.76.ADF:
+            # qualified-reference discovery is graph-scoped and uses the full
+            # reference-bearing slot vocabulary, including vector-slot elements.
+            self._lazy_ensure_subframe_refs(
+                _espec.reference_text_blob(include_vector_slots=True))
             if self._lazy_reader is not None:
-                # Phase 13.58 subframe pre-scan, fed from the one record.
-                # include_vector_slots=False: byte-equivalent to the old
-                # path's scalar-only scan (GPT27 item 3 — widening the scan
-                # is a B3.2-owned behavior change, not B3.1 restructuring).
-                self._lazy_ensure_subframe_refs(
-                    _espec.reference_text_blob(include_vector_slots=False))
                 _required_branches = self.get_required_branches(
                     **_espec.required_branch_kwargs())
 
@@ -20537,20 +20544,18 @@ function collapseDepth(maxD) {{
         subframe_replacements = {}
         if hasattr(self, '_subframes') and hasattr(self._subframes, 'subframes'):
             sf_names = set(self._subframes.subframes.keys())
-            all_text = expr
-            if kwargs.get('selection'):
-                all_text += ' ' + kwargs['selection']
-            if kwargs.get('group_by'):
-                all_text += ' ' + str(kwargs['group_by'])
-            # BUG_20260701: extend Scan-2 to the remaining value-bearing string
-            # slots so Subframe.col refs materialize symmetrically (was: only
-            # expr/selection/group_by; weights= raised in production).
-            for _slot in ('color', 'facet_by', 'weights'):
+            # PHASE_13_76_ADF B3.3b: collect qualified references from the
+            # same slot vocabulary used by _EffectiveDrawSpec. Vector slots
+            # contribute each string element instead of being refused.
+            _scan_parts = [expr] if isinstance(expr, str) else []
+            for _slot in _EffectiveDrawSpec.SLOT_NAMES:
                 _v = kwargs.get(_slot)
                 if isinstance(_v, str) and _v:
-                    all_text += ' ' + _v
-            self._guard_subframe_refs_in_vector_slots(
-                kwargs.get('weights_vector'), kwargs.get('selection_vector'))
+                    _scan_parts.append(_v)
+                elif isinstance(_v, (list, tuple)):
+                    _scan_parts.extend(
+                        _x for _x in _v if isinstance(_x, str) and _x)
+            all_text = ' '.join(_scan_parts)
             
             import re as _re
             refs_to_resolve = []
@@ -20663,16 +20668,23 @@ function collapseDepth(maxD) {{
                         kwargs['selection'] = kwargs['selection'].replace(dot_ref, flat_ref)
                     if 'group_by' in kwargs and isinstance(kwargs.get('group_by'), str):
                         kwargs['group_by'] = kwargs['group_by'].replace(dot_ref, flat_ref)
-                    for _slot in ('weights', 'facet_by', 'color'):
-                        if isinstance(kwargs.get(_slot), str):
-                            kwargs[_slot] = kwargs[_slot].replace(dot_ref, flat_ref)
+                    for _slot in _EffectiveDrawSpec.SLOT_NAMES:
+                        _v = kwargs.get(_slot)
+                        if isinstance(_v, str):
+                            kwargs[_slot] = _v.replace(dot_ref, flat_ref)
+                        elif _slot.endswith('_vector') and isinstance(_v, (list, tuple)):
+                            rewritten = [
+                                _x.replace(dot_ref, flat_ref) if isinstance(_x, str) else _x
+                                for _x in _v]
+                            kwargs[_slot] = (tuple(rewritten) if isinstance(_v, tuple)
+                                             else rewritten)
             # PHASE_13_75_ADF D3: struct rewrite moved BEFORE the reduced
             # projection (see block above the draw_dict gate); nothing here.
         
-        # ── group_by expression materialization (BUG_ADF_GroupByExpressionMaterialization) ──
-        # dfdraw requires group_by to be a real column (Phase 13.30 contract).
-        # If group_by is a computed expression (e.g., "row%3"), materialize it
-        # as a per-call temp column on df_subset. No persistent alias created.
+        # ── group/facet key expression materialization ──
+        # dfdraw requires group_by/facet_by to be real columns.  Reuse the
+        # existing group-key temporary-column policy for scalar facet_by
+        # expressions; channel enums remain dfdraw control names, not columns.
         group_by = kwargs.get('group_by')
         if (group_by is not None
                 and isinstance(group_by, str)
@@ -20680,6 +20692,21 @@ function collapseDepth(maxD) {{
                 and group_by not in self.aliases):
             df_subset = df_subset.copy()
             df_subset[group_by] = df_subset.eval(group_by)
+
+        facet_by = kwargs.get('facet_by')
+        if (facet_by is not None
+                and isinstance(facet_by, str)
+                and facet_by not in self._FACET_BY_CHANNEL_ENUMS
+                and facet_by not in df_subset.columns
+                and facet_by not in self.aliases):
+            df_subset = df_subset.copy()
+            try:
+                df_subset[facet_by] = df_subset.eval(facet_by)
+            except pd.errors.UndefinedVariableError as exc:
+                raise ValueError(
+                    f"Unable to materialize facet_by expression {facet_by!r}: "
+                    "a referenced column or variable is unavailable in the "
+                    "draw projection.") from exc
 
         # Create plotter and delegate
         self._assert_struct_projection(df_subset.columns, [expr] + [kwargs.get(_sl) for _sl in ('selection','group_by','weights','facet_by','color')], 'draw')
@@ -21523,6 +21550,29 @@ function collapseDepth(maxD) {{
         # One owner: delegates to the module-level _structural_copy_tree
         # (GPT24/GPT27 round-3 consolidation).
         return _structural_copy_tree(obj)
+
+    @staticmethod
+    def _draw_figures_effective_plot_spec(defaults, fig_spec, plot_spec):
+        """Return the effective draw_figures plot request without mutation.
+
+        PHASE_13_76_ADF B3.3 repair: this is the single owner of the
+        draw_figures three-level request cascade used by preparation and
+        rendering alike::
+
+            top-level defaults < per-figure defaults < per-plot spec
+
+        ``defaults`` is the already-resolved top-level defaults/kwargs view.
+        Short-form plot strings are normalized locally.  The returned mapping
+        is new, so preparation stages can normalize/rewrite it without
+        mutating caller-owned specifications.
+        """
+        _base = defaults if isinstance(defaults, dict) else {}
+        _fig_defaults = (fig_spec.get('defaults')
+                         if isinstance(fig_spec, dict)
+                         and isinstance(fig_spec.get('defaults'), dict)
+                         else {})
+        _plot = plot_spec if isinstance(plot_spec, dict) else {'expr': plot_spec}
+        return {**_base, **_fig_defaults, **_plot}
 
     @staticmethod
     def _draw_plan_items(value):
@@ -22531,9 +22581,10 @@ function collapseDepth(maxD) {{
             sf_names = set(self._subframes.subframes.keys())
             merged_defaults = {**(defaults or {}), **kwargs}
 
-            # Vector-slot refusal remains a runtime guard. Scalar dotted
-            # request identity comes from the pure plan when available, so
-            # projection does not collapse spec/slot provenance into one blob.
+            # PHASE_13_76_ADF B3.3d / AD-16/13.76.ADF: draw_batch uses
+            # the same qualified-reference slot policy as draw().  The pure
+            # plan is authoritative when present; the compatibility fallback
+            # scans scalar slots and string elements of vector slots alike.
             all_text_parts = []
             for name, spec in specs.items():
                 merged_spec = {**merged_defaults, **spec}
@@ -22543,12 +22594,15 @@ function collapseDepth(maxD) {{
                         all_text_parts.append(merged_spec['selection'])
                     if merged_spec.get('group_by'):
                         all_text_parts.append(str(merged_spec['group_by']))
-                    for _slot in ('color', 'facet_by', 'weights'):
+                    for _slot in ('color', 'facet_by', 'weights',
+                                  'weights_vector', 'selection_vector'):
                         _v = merged_spec.get(_slot)
                         if isinstance(_v, str) and _v:
                             all_text_parts.append(_v)
-                self._guard_subframe_refs_in_vector_slots(
-                    merged_spec.get('weights_vector'), merged_spec.get('selection_vector'))
+                        elif isinstance(_v, (list, tuple)):
+                            all_text_parts.extend(
+                                _x for _x in _v
+                                if isinstance(_x, str) and _x)
 
             if plan is not None and getattr(plan, "subframe_requests", ()):
                 _runtime_requests = [
@@ -22733,12 +22787,47 @@ function collapseDepth(maxD) {{
                             spec['selection'] = spec['selection'].replace(dot_ref, flat_ref)
                         if 'group_by' in spec and isinstance(spec.get('group_by'), str):
                             spec['group_by'] = spec['group_by'].replace(dot_ref, flat_ref)
-                        for _slot in ('weights', 'facet_by', 'color'):
-                            if isinstance(spec.get(_slot), str):
-                                spec[_slot] = spec[_slot].replace(dot_ref, flat_ref)
+                        for _slot in ('weights', 'facet_by', 'color',
+                                      'weights_vector', 'selection_vector'):
+                            _value = spec.get(_slot)
+                            if isinstance(_value, str):
+                                spec[_slot] = _value.replace(dot_ref, flat_ref)
+                            elif isinstance(_value, (list, tuple)):
+                                _rewritten = [
+                                    _x.replace(dot_ref, flat_ref)
+                                    if isinstance(_x, str) else _x
+                                    for _x in _value
+                                ]
+                                spec[_slot] = (tuple(_rewritten)
+                                               if isinstance(_value, tuple)
+                                               else _rewritten)
             # PHASE_13_76_ADF B3.2: the 13.66 struct-rewrite loop that lived
             # here is superseded — every spec dictionary was rewritten ONCE
             # by _execute_draw_plan (owner: Rev 2 §11.4).
+
+        # PHASE_13_76_ADF B3.3d / AD-16/13.76.ADF: key-like
+        # computed expressions belong to this existing projection-effect owner
+        # on draw_batch, not to a new surface-local effect after the executor.
+        # This mirrors draw() behavior while preserving B3.2 state accounting.
+        _key_copied_b33d = False
+        _key_defaults_b33d = {**(defaults or {}), **kwargs}
+        for _name_b33d, _spec_b33d in specs.items():
+            _effective_key = {**_key_defaults_b33d,
+                              **(_spec_b33d if isinstance(_spec_b33d, dict)
+                                 else {'expr': _spec_b33d})}
+            for _slot_key in ('group_by', 'facet_by'):
+                _key = _effective_key.get(_slot_key)
+                if not isinstance(_key, str) or not _key:
+                    continue
+                if (_slot_key == 'facet_by'
+                        and _key in self._FACET_BY_CHANNEL_ENUMS):
+                    continue
+                if _key in df_for_plot.columns or _key in self.aliases:
+                    continue
+                if not _key_copied_b33d:
+                    df_for_plot = df_for_plot.copy()
+                    _key_copied_b33d = True
+                df_for_plot[_key] = df_for_plot.eval(_key)
 
         _root_after = frozenset(map(str, self.df.columns))
         _red_after = frozenset(map(str, df_for_plot.columns))
@@ -23414,6 +23503,22 @@ function collapseDepth(maxD) {{
         # Validate specs structure
         self._validate_figure_specs(specs)
 
+        # PHASE_13_76_ADF B3.3 final public-form repair: normalize every
+        # short-form plot string in the PRIVATE structural copy before any
+        # preparation stage.  This makes ``"y:x"`` and ``{"expr": "y:x"}``
+        # share the same effective-request/vector-preparation path while
+        # preserving the caller-owned representation unchanged.  Derived
+        # preparation decisions (for example vector_compose) are therefore
+        # persisted on this private normalized plot mapping and are visible
+        # to the later render stage.
+        for _fig_norm in specs:
+            if not isinstance(_fig_norm, dict):
+                continue
+            _plots_norm = _fig_norm.get('plots', [])
+            for _plot_idx, _plot_norm in enumerate(_plots_norm):
+                if isinstance(_plot_norm, str):
+                    _plots_norm[_plot_idx] = {'expr': _plot_norm}
+
         # AD-6/13.76.ADF: draw_figures composes its own figure and axes grid
         # and cannot render into caller-supplied Axes — reject LOUDLY before
         # any figure/axes creation. Previously both forms crashed deep inside
@@ -23441,9 +23546,13 @@ function collapseDepth(maxD) {{
                         where=f"a plot spec of figure "
                               f"'{_fs_ad6.get('name', '?')}'"))
 
-        # Resolve parameters with 3-level precedence
-        effective_lazy = self._resolve_draw_param(lazy, 'lazy')
-        effective_clear = self._resolve_draw_param(clear_after, 'clear_after')
+        # PHASE_13_76_ADF B3.3d: draw_figures uses the same execution
+        # policy owner as draw()/draw_batch(); only the surface adapter remains
+        # separate until B3.4 removes duplicated orchestration.
+        _policy_b33d_fig = _DrawExecutionPolicy.resolve(
+            self, lazy=lazy, clear_after=clear_after)
+        effective_lazy = _policy_b33d_fig.lazy
+        effective_clear = _policy_b33d_fig.clear_after
         
         # Merge defaults
         merged_defaults = {**(defaults or {}), **kwargs}
@@ -23459,11 +23568,8 @@ function collapseDepth(maxD) {{
         for fig_spec in specs:
             plots = fig_spec.get('plots', [])
             for plot_spec in plots:
-                # Normalize short form: 'column' -> {'expr': 'column'}
-                if isinstance(plot_spec, str):
-                    plot_spec = {'expr': plot_spec}
-                
-                merged_plot = {**merged_defaults, **plot_spec}
+                merged_plot = self._draw_figures_effective_plot_spec(
+                    merged_defaults, fig_spec, plot_spec)
                 expr = merged_plot.get('expr', '')
                 group_by = merged_plot.get('group_by')
                 color = merged_plot.get('color')
@@ -23479,18 +23585,26 @@ function collapseDepth(maxD) {{
         # PHASE 2: Batch-load branches in lazy reader mode
         # ═══════════════════════════════════════════════════════════════════
         
+        # PHASE_13_76_ADF B3.3d / AD-16/13.76.ADF: qualified
+        # reference discovery is graph-scoped on draw_figures too.  Figure
+        # defaults participate in the same three-level precedence as render.
+        for _fig_scan in specs:
+            for _plot_scan in (_fig_scan.get('plots', [])
+                               if isinstance(_fig_scan, dict) else []):
+                _merged_scan = self._draw_figures_effective_plot_spec(
+                    merged_defaults, _fig_scan, _plot_scan)
+                _escan = _EffectiveDrawSpec.from_call(
+                    _merged_scan.get('expr', ''), _merged_scan.get('type'),
+                    _merged_scan)
+                self._lazy_ensure_subframe_refs(
+                    _escan.reference_text_blob(include_vector_slots=True))
+
         if self._lazy_reader is not None:
             all_required = set()
             for fig_spec in specs:
                 for plot_spec in fig_spec.get('plots', []):
-                    if isinstance(plot_spec, str):
-                        plot_spec = {'expr': plot_spec}
-                    merged_plot = {**merged_defaults, **plot_spec}
-                    # Phase 13.58: materialize lazy subframes referenced in this plot first
-                    self._lazy_ensure_subframe_refs(' '.join(str(t) for t in [
-                        merged_plot.get('expr', ''), merged_plot.get('selection'),
-                        merged_plot.get('group_by'), merged_plot.get('color'),
-                        merged_plot.get('facet_by'), merged_plot.get('weights')] if t))
+                    merged_plot = self._draw_figures_effective_plot_spec(
+                        merged_defaults, fig_spec, plot_spec)
                     required = self.get_required_branches(
                         expr=merged_plot.get('expr', ''),
                         selection=merged_plot.get('selection'),
@@ -23534,15 +23648,21 @@ function collapseDepth(maxD) {{
         # this into AST resolver consolidation.
         for _fig_spec in specs:
             for _plot_spec in _fig_spec.get('plots', []):
-                if isinstance(_plot_spec, str):
-                    continue  # short-form 'column' — no vector kwargs possible
-                _merged_plot = {**merged_defaults, **_plot_spec}
+                _merged_plot = self._draw_figures_effective_plot_spec(
+                    merged_defaults, _fig_spec, _plot_spec)
                 self._ensure_vector_kwargs_aliases(_merged_plot)
-                # Phase 13.35.ADF: auto-force vector_compose='outer' on the
-                # ORIGINAL plot spec so dfdraw sees it per-plot.
+                # Phase 13.35.ADF + PHASE_13_76 B3.3 repair: make the
+                # compose decision from the EFFECTIVE request, because vector
+                # slots may live only in per-figure defaults.  Persist only
+                # the derived vector_compose value into our private structural
+                # copy of the plot spec so final rendering sees the same
+                # decision without mutating caller-owned input.
                 self._normalize_vector_compose_kwargs(
-                    _plot_spec, expr=_merged_plot.get('expr', '')
+                    _merged_plot, expr=_merged_plot.get('expr', '')
                 )
+                if ('vector_compose' not in _plot_spec
+                        and 'vector_compose' in _merged_plot):
+                    _plot_spec['vector_compose'] = _merged_plot['vector_compose']
         
         # ═══════════════════════════════════════════════════════════════════
         # PHASE 4: Prepare DataFrame (with entry selection if specified)
@@ -23598,7 +23718,8 @@ function collapseDepth(maxD) {{
                 if not isinstance(_fs, dict):
                     continue
                 for _ps in _fs.get('plots', []):
-                    _m = {**_md_dict, **(_ps if isinstance(_ps, dict) else {'expr': _ps})}
+                    _m = self._draw_figures_effective_plot_spec(
+                        _md_dict, _fs, _ps)
                     _need_f |= self._dict_dispatch_columns(
                         _dfcols_f, expr=_m.get('expr', ''),
                         selection=_m.get('selection'), group_by=_m.get('group_by'),
@@ -23624,22 +23745,22 @@ function collapseDepth(maxD) {{
             all_text_parts = []
             for fig_spec in specs:
                 for plot_spec in fig_spec.get('plots', []):
-                    if isinstance(plot_spec, str):
-                        all_text_parts.append(plot_spec)
-                        continue
-                    merged_plot = {**merged_defaults, **plot_spec}
+                    merged_plot = self._draw_figures_effective_plot_spec(
+                        merged_defaults, fig_spec, plot_spec)
                     all_text_parts.append(merged_plot.get('expr', ''))
                     if merged_plot.get('selection'):
                         all_text_parts.append(merged_plot['selection'])
                     if merged_plot.get('group_by'):
                         all_text_parts.append(str(merged_plot['group_by']))
-                    # BUG_20260701: remaining value-bearing string slots (symmetry).
-                    for _slot in ('color', 'facet_by', 'weights'):
+                    for _slot in ('color', 'facet_by', 'weights',
+                                  'weights_vector', 'selection_vector'):
                         _v = merged_plot.get(_slot)
                         if isinstance(_v, str) and _v:
                             all_text_parts.append(_v)
-                    self._guard_subframe_refs_in_vector_slots(
-                        merged_plot.get('weights_vector'), merged_plot.get('selection_vector'))
+                        elif isinstance(_v, (list, tuple)):
+                            all_text_parts.extend(
+                                _x for _x in _v
+                                if isinstance(_x, str) and _x)
             all_text = ' '.join(all_text_parts)
             
             import re as _re
@@ -23735,6 +23856,34 @@ function collapseDepth(maxD) {{
                     df_subset[flat_ref] = merged[flat_ref].values
             
             if subframe_replacements:
+                _fig_rewrite_targets = [
+                    _d for _d in (defaults, kwargs) if isinstance(_d, dict)]
+                _fig_rewrite_targets += [
+                    _fs.get('defaults') for _fs in specs
+                    if isinstance(_fs, dict)
+                    and isinstance(_fs.get('defaults'), dict)]
+                _fig_rewrite_targets += [
+                    _ps for _fs in specs if isinstance(_fs, dict)
+                    for _ps in _fs.get('plots', []) if isinstance(_ps, dict)]
+                for _target in _fig_rewrite_targets:
+                    for dot_ref, flat_ref in subframe_replacements.items():
+                        for _slot in ('expr', 'selection', 'group_by',
+                                      'weights', 'facet_by', 'color',
+                                      'weights_vector', 'selection_vector'):
+                            _value = _target.get(_slot)
+                            if isinstance(_value, str):
+                                _target[_slot] = _value.replace(dot_ref, flat_ref)
+                            elif isinstance(_value, (list, tuple)):
+                                _rewritten = [
+                                    _x.replace(dot_ref, flat_ref)
+                                    if isinstance(_x, str) else _x
+                                    for _x in _value
+                                ]
+                                _target[_slot] = (tuple(_rewritten)
+                                                  if isinstance(_value, tuple)
+                                                  else _rewritten)
+                # Short-form plots carry only expr and cannot host vector/key
+                # slots, but still need the same dotted-reference rewrite.
                 for fig_spec in specs:
                     plots = fig_spec.get('plots', [])
                     for i, plot_spec in enumerate(plots):
@@ -23742,17 +23891,6 @@ function collapseDepth(maxD) {{
                             for dot_ref, flat_ref in subframe_replacements.items():
                                 plot_spec = plot_spec.replace(dot_ref, flat_ref)
                             plots[i] = plot_spec
-                            continue
-                        for dot_ref, flat_ref in subframe_replacements.items():
-                            if 'expr' in plot_spec:
-                                plot_spec['expr'] = plot_spec['expr'].replace(dot_ref, flat_ref)
-                            if 'selection' in plot_spec and plot_spec['selection']:
-                                plot_spec['selection'] = plot_spec['selection'].replace(dot_ref, flat_ref)
-                            if 'group_by' in plot_spec and isinstance(plot_spec.get('group_by'), str):
-                                plot_spec['group_by'] = plot_spec['group_by'].replace(dot_ref, flat_ref)
-                            for _slot in ('weights', 'facet_by', 'color'):
-                                if isinstance(plot_spec.get(_slot), str):
-                                    plot_spec[_slot] = plot_spec[_slot].replace(dot_ref, flat_ref)
             # PHASE_13_66_ADF: struct rewrite (runs regardless of subframes).
             if self._structs:
                 for _fig_spec in specs:
@@ -23895,10 +24033,8 @@ function collapseDepth(maxD) {{
             ncols = fig_spec.get('ncols', 2)
             nrows = (len(plots) + ncols - 1) // ncols
         
-        # Merge per-figure defaults into cascade: top-level < fig_defaults < plot_spec
-        fig_defaults = fig_spec.get('defaults', {})
-        effective_defaults = {**defaults, **fig_defaults}
-        
+        # PHASE_13_76_ADF B3.3: effective plot cascade is owned by
+        # _draw_figures_effective_plot_spec() and shared with preparation.
         # Calculate figure size
         figsize = fig_spec.get('figsize')
         if figsize is None:
@@ -23942,8 +24078,9 @@ function collapseDepth(maxD) {{
             if isinstance(plot_spec, str):
                 plot_spec = {'expr': plot_spec}
             
-            # Merge with defaults (plot-level overrides fig-level overrides top-level)
-            merged = {**effective_defaults, **plot_spec}
+            # Same effective request used by every preparation stage.
+            merged = self._draw_figures_effective_plot_spec(
+                defaults, fig_spec, plot_spec)
             expr = merged.pop('expr')
             plot_type = merged.pop('type', 'auto')
             title = merged.pop('title', None)
