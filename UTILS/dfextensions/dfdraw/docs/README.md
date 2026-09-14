@@ -107,9 +107,9 @@ implementation_status: PASSING | KNOWN_GAP | REFUSES_CORRECTLY | TEST_GAP | UNME
 
 Status is compositional: a confirmed `KNOWN_GAP` is not weakened by a later
 `UNMEASURED` slice, refusal is terminal for the request, and evidence is kept
-with the status it proves. Current `KNOWN_GAP` annotations are locked to strict
-expected-failure product calibrations for ORACLE-01 and ORACLE-05 so a future
-bug fix cannot leave stale diagnostic metadata silently green.
+with the status it proves. The historical ORACLE-01 and ORACLE-05 gaps were
+fixed in PHASE_13_83; their former strict expected-failure calibrations are now
+ordinary passing regressions, and the active `KNOWN_GAP` evidence ledger is empty.
 
 ```python
 # What did the user actually supply?
@@ -125,13 +125,13 @@ print(effective["statistic"]["bins"])
 # {'value': 80, 'source': 'CALL_ARGUMENT'}
 print(effective["_semantic"])
 
-# AD-67 calibration: one-element selection_vector lowers to scalar semantics
-# while the currently confirmed implementation defect stays visible.
+# AD-67 calibration: one-element selection_vector lowers to scalar semantics.
+# PHASE_13_83 fixed the historical ORACLE-01 implementation defect.
 one = drawer.explain(
     "y:x", type="profile", selection_vector=["x < 0"]
 )
 print(one["selection"])
-print(one["_semantic"]["implementation_status"])  # KNOWN_GAP
+print(one["_semantic"]["implementation_status"])  # PASSING
 
 # Human-readable form of the same structured description
 print(drawer.explain("y:x", type="profile", format="pretty"))
@@ -139,9 +139,9 @@ print(drawer.explain("y:x", type="profile", format="pretty"))
 
 For declared-door calibration, `door="draw"` and `door="profile"` describe the
 same canonical profile contract where the project already declares those doors
-equivalent. Known current disagreement, such as bracket-vector
-`normalize="delta"` at the top-level draw door, is reported as `KNOWN_GAP` with
-its reviewed evidence rather than normalized away.
+equivalent. PHASE_13_83 fixed the historical bracket-vector
+`normalize="delta"` top-level routing gap, so both declared-equivalent profile
+doors now report `PASSING` for the calibrated delta case.
 
 This interface describes the **current implementation plus its explicit
 contract/status annotations**; it is not an independent correctness oracle. Its

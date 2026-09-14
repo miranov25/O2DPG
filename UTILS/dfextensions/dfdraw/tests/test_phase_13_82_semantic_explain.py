@@ -527,10 +527,8 @@ def test_G1A_S3_one_element_vector_lowers_to_scalar_without_branch(df):
     assert out["selection"]["vector_channel_cost"] == 0
     assert "coordinates" not in out or "branch" not in out.get("coordinates", {})
     assert out["_semantic"]["contract_status"] == CONTRACT_SUPPORTED
-    assert out["_semantic"]["implementation_status"] == IMPLEMENTATION_KNOWN_GAP
-    assert out["_semantic"]["evidence"] == [
-        "PHASE_13_77 Stage-A ORACLE-01"
-    ]
+    assert out["_semantic"]["implementation_status"] == IMPLEMENTATION_PASSING
+    assert out["_semantic"]["evidence"] == []
 
 
 def test_G1A_S3_one_element_vector_combines_with_global_selection(df):
@@ -563,8 +561,8 @@ def test_G1A_S7_declared_profile_doors_share_contract_semantics(df):
     )
     assert _without_semantic_header(via_draw) == _without_semantic_header(via_profile)
     assert via_draw["transform"]["normalize"] == "delta"
-    assert via_draw["_semantic"]["implementation_status"] == IMPLEMENTATION_KNOWN_GAP
-    assert "PHASE_13_77 Stage-A ORACLE-05" in via_draw["_semantic"]["evidence"]
+    assert via_draw["_semantic"]["implementation_status"] == IMPLEMENTATION_PASSING
+    assert via_draw["_semantic"]["evidence"] == []
     assert via_profile["_semantic"]["implementation_status"] == IMPLEMENTATION_PASSING
 
 
@@ -584,7 +582,7 @@ def test_G1A_pretty_and_dict_are_same_semantic_owner(df):
         selection_vector=["x < 0"],
     )
     assert machine["_semantic"]["implementation_status"] in pretty
-    assert "ORACLE-01" in pretty
+    assert "PASSING" in pretty
 
 
 def test_G1A_unmodeled_kwarg_refuses_instead_of_returning_partial_answer(df):
@@ -609,10 +607,8 @@ def test_G1A_v11_status_known_gap_is_not_weakened_by_unmeasured(df):
         "[y,y]:x", type="profile", door="draw",
         selection_vector=["x < 0"], normalize="ratio",
     )
-    assert out["_semantic"]["implementation_status"] == IMPLEMENTATION_KNOWN_GAP
-    assert out["_semantic"]["evidence"] == [
-        "PHASE_13_77 Stage-A ORACLE-01"
-    ]
+    assert out["_semantic"]["implementation_status"] == IMPLEMENTATION_UNMEASURED
+    assert out["_semantic"]["evidence"] == []
 
 
 def test_G1A_v11_status_multiple_known_gap_evidence_coexists(df):
@@ -620,11 +616,8 @@ def test_G1A_v11_status_multiple_known_gap_evidence_coexists(df):
         "[y,y]:x", type="profile", door="draw",
         selection_vector=["x < 0"], normalize="delta",
     )
-    assert out["_semantic"]["implementation_status"] == IMPLEMENTATION_KNOWN_GAP
-    assert set(out["_semantic"]["evidence"]) == {
-        "PHASE_13_77 Stage-A ORACLE-01",
-        "PHASE_13_77 Stage-A ORACLE-05",
-    }
+    assert out["_semantic"]["implementation_status"] == IMPLEMENTATION_PASSING
+    assert out["_semantic"]["evidence"] == []
 
 
 def test_G1A_v11_refusal_is_terminal_and_drops_downstream_gap_evidence(df):
@@ -700,10 +693,7 @@ def test_G1A_v11_dependent_group_bins_without_group_is_explicit(df):
     assert out["_semantic"]["implementation_status"] == IMPLEMENTATION_UNMEASURED
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="PHASE_13_77 Stage-A ORACLE-01: one-element selection_vector must equal scalar selection",
-)
+# Historical ORACLE-01 calibration; now an ordinary passing regression.
 def test_T_CAL_01_oracle01_one_element_selection_vector_product_equivalence():
     rng = np.random.default_rng(13018201)
     left_x = rng.normal(-1.0, 0.15, 100)
@@ -730,10 +720,7 @@ def test_T_CAL_01_oracle01_one_element_selection_vector_product_equivalence():
         plt.close("all")
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="PHASE_13_77 Stage-A ORACLE-05: draw/profile bracket-vector delta doors must agree",
-)
+# Historical ORACLE-05 calibration; now an ordinary passing regression.
 def test_T_CAL_05_oracle05_draw_profile_normalize_product_equivalence():
     rng = np.random.default_rng(13018205)
     n = 400
@@ -762,7 +749,7 @@ def test_T_CAL_05_oracle05_draw_profile_normalize_product_equivalence():
         plt.close("all")
 
 
-STRICT_KNOWN_GAP_CALIBRATIONS = {
+FIXED_PRODUCT_CALIBRATIONS = {
     "PHASE_13_77 Stage-A ORACLE-01":
         "test_T_CAL_01_oracle01_one_element_selection_vector_product_equivalence",
     "PHASE_13_77 Stage-A ORACLE-05":
@@ -770,13 +757,12 @@ STRICT_KNOWN_GAP_CALIBRATIONS = {
 }
 
 
-def test_G1A_v11_meta_every_known_gap_has_strict_calibration():
-    assert set(STRICT_KNOWN_GAP_CALIBRATIONS) == set(KNOWN_GAP_EVIDENCE)
-    for evidence, test_name in STRICT_KNOWN_GAP_CALIBRATIONS.items():
+def test_phase_13_83_fixed_oracles_are_passing_regressions():
+    assert KNOWN_GAP_EVIDENCE == ()
+    for evidence, test_name in FIXED_PRODUCT_CALIBRATIONS.items():
         fn = globals()[test_name]
         marks = getattr(fn, "pytestmark", [])
-        strict_xfail = [
-            mark for mark in marks
-            if mark.name == "xfail" and mark.kwargs.get("strict") is True
-        ]
-        assert strict_xfail, f"{evidence} calibration is not strict xfail"
+        assert not any(mark.name == "xfail" for mark in marks), (
+            f"fixed {evidence} calibration must be an ordinary passing test"
+        )
+

@@ -113,13 +113,11 @@ IMPLEMENTATION_STATUSES = (
     IMPLEMENTATION_UNMEASURED,
 )
 
-# Reviewed evidence owners for semantic KNOWN_GAP annotations. Keeping these
-# identifiers in one place prevents the diagnostic layer from inventing a gap
-# without a corresponding product calibration test.
-KNOWN_GAP_EVIDENCE = (
-    "PHASE_13_77 Stage-A ORACLE-01",
-    "PHASE_13_77 Stage-A ORACLE-05",
-)
+# Reviewed evidence owners for currently active semantic KNOWN_GAP annotations.
+# PHASE_13_83 fixed the historical ORACLE-01 and ORACLE-05 product gaps, so the
+# active ledger is empty. Future gaps must be added here together with a strict
+# product calibration in the same change.
+KNOWN_GAP_EVIDENCE = ()
 
 # Request-level summary precedence.  A request may collect status contributions
 # from several orthogonal semantic slices; the summary must be monotonic rather

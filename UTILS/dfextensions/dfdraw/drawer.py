@@ -1761,6 +1761,74 @@ class DFDraw:
             return f"({global_w}) * ({per_curve_w})"
         return global_w or per_curve_w
 
+    @classmethod
+    def _lower_singleton_vectors(
+        cls, *, selection=None, weights=None,
+        selection_vector=None, weights_vector=None,
+        selection_labels=None, weights_labels=None,
+    ):
+        """Lower AD-67 one-element vectors to their scalar semantics.
+
+        A one-element list-valued channel has zero vector-channel cost but its
+        sole semantic effect must survive.  Selection composes with the scalar
+        selection by logical AND; weights compose multiplicatively, reusing
+        the existing scalar/vector composition owners.
+
+        Empty vectors retain the existing fail-loud contract.  Singleton
+        vector labels currently have no scalar-label owner, so refuse them
+        explicitly rather than silently discarding the user's label.
+        """
+        if selection_vector is not None:
+            n_selection = len(selection_vector)
+            if n_selection == 0:
+                raise ValueError(
+                    "selection_vector must be non-empty (use None to omit)"
+                )
+            if n_selection == 1:
+                if selection_labels is not None:
+                    if len(selection_labels) != 1:
+                        raise ValueError(
+                            "selection_labels length must match "
+                            "selection_vector length"
+                        )
+                    raise ValueError(
+                        "selection_labels is not applicable to a one-element "
+                        "selection_vector: AD-67 lowers the vector to scalar "
+                        "selection semantics. Omit selection_labels (or use "
+                        "the plot's scalar label= where applicable)."
+                    )
+                selection = cls._combine_selections(
+                    selection, selection_vector[0]
+                )
+                selection_vector = None
+
+        if weights_vector is not None:
+            n_weights = len(weights_vector)
+            if n_weights == 0:
+                raise ValueError(
+                    "weights_vector must be non-empty (use None to omit)"
+                )
+            if n_weights == 1:
+                if weights_labels is not None:
+                    if len(weights_labels) != 1:
+                        raise ValueError(
+                            "weights_labels length must match "
+                            "weights_vector length"
+                        )
+                    raise ValueError(
+                        "weights_labels is not applicable to a one-element "
+                        "weights_vector: AD-67 lowers the vector to scalar "
+                        "weights semantics. Omit weights_labels (or use the "
+                        "plot's scalar label= where applicable)."
+                    )
+                weights = cls._combine_weights(weights, weights_vector[0])
+                weights_vector = None
+
+        return (
+            selection, weights, selection_vector, weights_vector,
+            selection_labels, weights_labels,
+        )
+
     # =========================================================================
     # Phase 13.30.DF v1.0 — Class-2 column-reference parameter tuples.
     # (RESTORED in Phase 13.31 after the initial Phase 13.31 patch was
@@ -3511,7 +3579,7 @@ class DFDraw:
           stats dict (``groups`` / ``per_group`` / ``n_total`` / ``faceted`` /
           ``facet_by`` / ``facet_mode``, plus ``fit`` when requested).
         * vector x facet (``selection_vector`` or ``weights_vector`` with >= 2
-          branches, profile only) -> ``list[dict]``: one complete faceted
+          branches, profile or histogram) -> ``list[dict]``: one complete faceted
           stats dict PER VECTOR BRANCH, in vector iteration order. Each branch
           dict carries the same keys as the ordinary case, including its own
           per-branch ``fit``. This matches the existing vector-dispatch
@@ -4145,8 +4213,9 @@ class DFDraw:
             # low-level kwarg on ordinary facet calls; translate it only on the
             # vector-aware delegation path.
             _cell_profile_range = forwarded.get('x_range', None)
+            _cell_hist_range = forwarded.get('range', None)
             _cell_vector_active = (
-                plot_kind == 'profile'
+                plot_kind in ('profile', 'hist')
                 and (
                     (_cell_selection_vector is not None
                      and len(_cell_selection_vector) >= 2)
@@ -4155,7 +4224,10 @@ class DFDraw:
                 )
             )
             if _cell_vector_active:
-                forwarded.pop('x_range', None)
+                if plot_kind == 'profile':
+                    forwarded.pop('x_range', None)
+                elif plot_kind == 'hist':
+                    forwarded.pop('range', None)
 
             # Phase 13.42.DF FIX1 (B1/Sonet51): facet_mode sentinel — informs
             # per-cell draw call that it is rendering inside a facet grid, so
@@ -4262,13 +4334,45 @@ class DFDraw:
                     # hist is 1D: takes only x (the variable to histogram).
                     # Calling method passed col_expr as y_expr, so subplot_y
                     # is the variable. hist accepts group_by + top_k.
-                    _, _, stats = plot_fn(
-                        subplot_df, subplot_y,
-                        ax=ax_i,
-                        group_by=_inner_group_by,
-                        top_k=None,
-                        **forwarded
-                    )
+                    #
+                    # PHASE_13_83 BUG-02: when a list-valued selection/weights
+                    # channel is active, reuse the existing public hist()
+                    # vector owner on the already facet-filtered frame.  This
+                    # preserves DT-83-1 / AD-62 composition semantics:
+                    # explicit outer broadcasts branches within every facet,
+                    # while default inner reaches the normal cardinality
+                    # validator and refuses scalar-hist × multi-selection.
+                    if _cell_vector_active:
+                        _cell_draw = DFDraw(subplot_df)
+                        if hasattr(self, '_data_source'):
+                            _cell_draw._data_source = self._data_source
+                        _cell_draw._pending_channel_assignment = (
+                            _facet_resolved_channels
+                        )
+                        _, _, stats = _cell_draw.hist(
+                            str(subplot_y),
+                            ax=ax_i, same=True,
+                            range=_cell_hist_range,
+                            group_by=_inner_group_by,
+                            top_k=None,
+                            selection_vector=_cell_selection_vector,
+                            weights_vector=_cell_weights_vector,
+                            selection_labels=_cell_selection_labels,
+                            weights_labels=_cell_weights_labels,
+                            selection_categorical=_cell_selection_categorical,
+                            weights_categorical=_cell_weights_categorical,
+                            vector_compose=_cell_vector_compose,
+                            delta_facet=_cell_delta_facet,
+                            **forwarded
+                        )
+                    else:
+                        _, _, stats = plot_fn(
+                            subplot_df, subplot_y,
+                            ax=ax_i,
+                            group_by=_inner_group_by,
+                            top_k=None,
+                            **forwarded
+                        )
                 elif plot_kind == 'scatter':
                     # scatter accepts (x, y), group_by, top_k. No quantiles.
                     _, _, stats = plot_fn(
@@ -5001,6 +5105,66 @@ class DFDraw:
             if type is None:
                 # x_expr is a list with None entries for 1D vectors
                 type = "hist" if x_expr[0] is None else "scatter"
+
+            # PHASE_13_83 BUG-05: a bracket-vector profile request with an
+            # active normalize= transform must be owned by profile(), which
+            # already implements normalization.  The generic draw()-level
+            # vector dispatcher renders the curves independently and therefore
+            # loses the requested transform.  Delegate the whole request to
+            # the typed profile surface rather than duplicating normalize logic
+            # here.  The no-normalize vector path below is intentionally
+            # unchanged.
+            if type == "profile" and normalize is not None:
+                return self.profile(
+                    expr, selection=selection, bins=bins, stats=stats,
+                    title=title, ax=ax, sample=sample, save=save,
+                    group_by=group_by, same=same,
+                    fit=fit, fit_textbox_kwargs=fit_textbox_kwargs,
+                    summary_fit=summary_fit,
+                    legend=legend, show_legend=show_legend,
+                    normalize=normalize, normalize_layout=normalize_layout,
+                    facet_by=facet_by, facet_by_bins=facet_by_bins,
+                    facet_by_quantiles=facet_by_quantiles,
+                    share_x=share_x, share_y=share_y,
+                    share_across_figures=share_across_figures,
+                    selection_vector=selection_vector,
+                    weights_vector=weights_vector,
+                    selection_labels=selection_labels,
+                    weights_labels=weights_labels,
+                    selection_categorical=selection_categorical,
+                    weights_categorical=weights_categorical,
+                    vector_compose=vector_compose,
+                    delta_facet=delta_facet,
+                    nan_policy=nan_policy,
+                    color=color, marker=marker,
+                    **kwargs
+                )
+
+            # PHASE_13_83 BUG-01: draw() intercepts bracket-vector requests
+            # before the typed method, so apply the same singleton lowering
+            # here.  Scatter keeps its pre-existing weights-vector policy and
+            # therefore lowers selection only.
+            if type in ("hist", "profile"):
+                _draw_weights = kwargs.get('weights')
+                (selection, _draw_weights, selection_vector, weights_vector,
+                 selection_labels, weights_labels) = self._lower_singleton_vectors(
+                    selection=selection, weights=_draw_weights,
+                    selection_vector=selection_vector,
+                    weights_vector=weights_vector,
+                    selection_labels=selection_labels,
+                    weights_labels=weights_labels,
+                )
+                if _draw_weights is None:
+                    kwargs.pop('weights', None)
+                else:
+                    kwargs['weights'] = _draw_weights
+            elif type == "scatter":
+                (selection, _unused_weights, selection_vector, _unused_wv,
+                 selection_labels, _unused_wlabels) = self._lower_singleton_vectors(
+                    selection=selection, weights=None,
+                    selection_vector=selection_vector, weights_vector=None,
+                    selection_labels=selection_labels, weights_labels=None,
+                )
             
             # Map type to bound method
             method_map = {
@@ -5448,6 +5612,16 @@ class DFDraw:
         if kwargs:
             self._kwarg_typo_guard(kwargs, method='hist')
 
+        # PHASE_13_83 BUG-01 / AD-67: singleton list-valued channels have
+        # zero vector cost but retain their scalar semantic effect.  Lower
+        # before vector/facet routing so no downstream coordinator can drop
+        # the sole selection/weight.
+        (selection, weights, selection_vector, weights_vector,
+         selection_labels, weights_labels) = self._lower_singleton_vectors(
+            selection=selection, weights=weights,
+            selection_vector=selection_vector, weights_vector=weights_vector,
+            selection_labels=selection_labels, weights_labels=weights_labels,
+        )
 
         # Parse expression (take first part only for 1D)
         y_expr, x_expr = self._parse_expr(expr)
@@ -5645,6 +5819,18 @@ class DFDraw:
                 # spec and the GridSpec slot for placement='pad'/'subfigure'
                 # is never pre-planned.
                 summary_fit=summary_fit,
+                # PHASE_13_83 BUG-02: these are named hist() parameters, so
+                # they are not present in **kwargs after Python binding.
+                # Forward them explicitly so the facet coordinator can reuse
+                # the existing histogram vector owner within each facet.
+                selection_vector=selection_vector,
+                weights_vector=weights_vector,
+                selection_labels=selection_labels,
+                weights_labels=weights_labels,
+                selection_categorical=selection_categorical,
+                weights_categorical=weights_categorical,
+                vector_compose=vector_compose,
+                delta_facet=delta_facet,
                 **kwargs
             )
         # Facet mode (legacy path, same=True ignored in facet mode)
@@ -5887,6 +6073,16 @@ class DFDraw:
                 stacklevel=2,
             )
             weights_vector = None
+
+        # PHASE_13_83 BUG-01: selection singleton lowering applies to scatter;
+        # weights deliberately do not, preserving scatter's existing deferred
+        # weights policy above.
+        (selection, _unused_weights, selection_vector, _unused_wv,
+         selection_labels, _unused_wlabels) = self._lower_singleton_vectors(
+            selection=selection, weights=None,
+            selection_vector=selection_vector, weights_vector=None,
+            selection_labels=selection_labels, weights_labels=None,
+        )
 
         # Phase 13.27 Commit 2 FIX1-pending guard (Sonnet52_R1 P1-2 / Hard
         # Constraint §3) REMOVED in FIX1 §7a: single-Y + selection_vector now
@@ -6277,8 +6473,8 @@ class DFDraw:
                     # AD-67 contract: one-element vector lowers to scalar at
                     # zero channel cost.  The iteration owner confirms there
                     # is no active selection-vector coordinate (all sel_idx
-                    # are None).  ORACLE-01 proves current execution may lose
-                    # this scalar-equivalent selection.
+                    # are None).  PHASE_13_83 repaired the historical ORACLE-01
+                    # product gap, so the lowered request is now PASSING.
                     if view == "effective":
                         d.record_semantic(
                             "selection.scalar",
@@ -6289,8 +6485,7 @@ class DFDraw:
                         )
                         d.record_semantic("selection.vector_channel_cost", 0)
                     d.set_status(
-                        implementation_status=IMPLEMENTATION_KNOWN_GAP,
-                        evidence=["PHASE_13_77 Stage-A ORACLE-01"],
+                        implementation_status=IMPLEMENTATION_PASSING,
                     )
                 else:
                     d.record_semantic("selection.vector", sv)
@@ -6340,8 +6535,9 @@ class DFDraw:
             )
 
         # Derived transform / declared-door calibration (S7). This records the
-        # contract on both doors, and truthfully annotates the confirmed top-
-        # level bracket-vector loss as a product gap without fixing it here.
+        # contract on both doors. PHASE_13_83 repaired the historical ORACLE-05
+        # top-level bracket-vector delta routing gap; delta now passes on both
+        # declared-equivalent profile doors.
         normalize = kwargs.get("normalize")
         if normalize is not None:
             d.record_semantic("transform.normalize", normalize)
@@ -6350,18 +6546,17 @@ class DFDraw:
             if bracket_vector and door == "draw":
                 if normalize == "delta":
                     d.set_status(
-                        implementation_status=IMPLEMENTATION_KNOWN_GAP,
-                        evidence=["PHASE_13_77 Stage-A ORACLE-05"],
+                        implementation_status=IMPLEMENTATION_PASSING,
                     )
                 else:
-                    # ORACLE-05 establishes the delta case only. Do not
-                    # generalize that evidence to other normalize modes.
+                    # The repaired ORACLE-05 contract establishes the delta
+                    # case only. Other normalize modes remain unmeasured here.
                     d.set_status(
                         implementation_status=IMPLEMENTATION_UNMEASURED
                     )
             elif bracket_vector and door == "profile":
-                # ORACLE-05 contains a typed-profile positive control for the
-                # delta case. Other modes remain unmeasured by this Gate.
+                # ORACLE-05 includes the typed-profile positive control for
+                # the repaired delta case. Other modes remain unmeasured here.
                 d.set_status(
                     implementation_status=(
                         IMPLEMENTATION_PASSING
@@ -6654,6 +6849,16 @@ class DFDraw:
                 **_profile2d_kwargs,
             )
         # =====================================================================
+
+        # PHASE_13_83 BUG-01 / AD-67: lower one-element selection/weights
+        # vectors once before 1D profile vector/facet routing.  The 2D profile
+        # early-return above is intentionally unchanged by this bounded fix.
+        (selection, weights, selection_vector, weights_vector,
+         selection_labels, weights_labels) = self._lower_singleton_vectors(
+            selection=selection, weights=weights,
+            selection_vector=selection_vector, weights_vector=weights_vector,
+            selection_labels=selection_labels, weights_labels=weights_labels,
+        )
 
         # Parse expression
         y_expr, x_expr = self._parse_expr(expr)
