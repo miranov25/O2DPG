@@ -8203,7 +8203,8 @@ def run_preclean_c3(case: CaseSpec, root_path: str, *, gallery_module=None,
 # ─────────────────────────────────────────────────────────────────────────────
 
 PRECLEAN_C4_CASE_ID = "PRECLEAN-C4-QUALIFIED-CHAIN-EAGER-LAZY-BOTH-FULL-01"
-PRECLEAN_C4_REUSED_GALLERY_FUNCTION = "fig54_qualified_subframe_chain_truth"
+PRECLEAN_C4_REUSED_FIXTURE_FUNCTION = "_ensure_m3_subframe_chain"
+PRECLEAN_C4_SELECTION = "(ncl>60)&(side_type<2)"
 PRECLEAN_C4_TREE_NAME = A5_3_TREE_NAME
 
 
@@ -8229,29 +8230,33 @@ def preclean_c4_case(root_path: str, gallery_module=None) -> CaseSpec:
         loading_mode="BOTH",
         sample_mode="FULL",
         canonical_spec={
-            "gallery_function": PRECLEAN_C4_REUSED_GALLERY_FUNCTION,
+            "reused_fixture": PRECLEAN_C4_REUSED_FIXTURE_FUNCTION,
             "expr": "oracle_chain_with_shift:sector",
             "type": "profile",
             "group_by": "side_type",
-            "selection": INJECTED_TRUTH_SIDE_SEL,
+            "selection": PRECLEAN_C4_SELECTION,
             "bins": INJECTED_TRUTH_BINS,
             "range": list(INJECTED_TRUTH_RANGE),
             "tree_name": PRECLEAN_C4_TREE_NAME,
             "sample": None,
             "execution_legs": ["EAGER_FULL", "LAZY_FULL"],
             "public_query": (
-                "fig54_qualified_subframe_chain_truth(adf)  # same request in EAGER FULL and LAZY FULL"
+                "adf.draw('oracle_chain_with_shift:sector', type='profile', "
+                "selection='(ncl>60)&(side_type<2)', group_by='side_type', "
+                "bins=36, range=(-0.5,35.5), return_data=True)"
             ),
         },
         applicable=bool(root_path),
         applicability_reason="" if root_path else "ROOT input path is empty",
-        setup_contract=("reuse the existing M3 injected-truth alias/subframe fixture; build exactly one "
-                        "FULL EAGER ADF and one FULL LAZY ADF from the same ROOT identity; reconstruct "
+        setup_contract=("reuse the existing M3 injected-truth alias/subframe fixture; use the C4 "
+                        "dtype-stable row selection (ncl>60)&(side_type<2); build exactly one FULL "
+                        "EAGER ADF and one FULL LAZY ADF from the same ROOT identity; reconstruct "
                         "the M3 formula independently in each mode and compare each public result to truth"),
         preconditions=(
             "the trusted time-series ROOT input is readable",
             "build_adf supports sample=None in both eager and lazy modes",
-            "fig54_qualified_subframe_chain_truth and _ensure_m3_subframe_chain are available",
+            "_ensure_m3_subframe_chain is available",
+            "ncl and side_type have identical source representation in EAGER and LAZY",
             "side_type 0 and 1 are populated on the selected scientific domain",
         ),
         surfaces_under_test=("draw",),
@@ -8300,6 +8305,8 @@ def preclean_c4_case(root_path: str, gallery_module=None) -> CaseSpec:
             "C4 does not replace O3 dependency-sparsity/decoy instrumentation",
             "C4 is not part of the routine sampled FAST gallery",
             "C4 introduces no sampled-lazy semantics",
+            "C4 does not adjudicate eager/lazy source-compression dtype parity; that contract is "
+            "separate and explicitly deferred from this pre-cleaning oracle package",
         ),
         negative_control="PRECLEAN_C4:LAZY_RESULT_OR_ROW_POPULATION_MUTATION",
         reference_policy="same-process",
@@ -8321,7 +8328,19 @@ def _preclean_c4_grouped_truth_and_public(adf: Any, gallery: Any) -> dict:
     model = _it_semantic_model(adf)
     chain = _m3_independent_semantic_values(adf)
     l1 = _m3_materialization_diagnostics(adf, chain)
-    membership = _preclean_c4_membership_rows(adf, model, chain)
+
+    # C4 isolates loading/materialization parity from the separately deferred
+    # source-compression contract.  The historical M3 example uses BASE_SEL,
+    # whose abs(dcar_tpc_vertex)<10 boundary is representation-sensitive on the
+    # real file (EAGER float16 versus LAZY float32).  C4 therefore reuses the
+    # M3 alias/subframe fixture but selects only on ncl/side_type, which have
+    # identical source representation in both loading modes.
+    c4_selection = (
+        (np.asarray(adf.df["ncl"], dtype=np.int64) > 60)
+        & (np.asarray(adf.df["side_type"]) < 2)
+    )
+    membership = _preclean_c4_membership_rows(
+        adf, model, chain, selection_mask=c4_selection)
     source_dtypes = {
         name: str(np.asarray(adf.df[name]).dtype)
         for name in (
@@ -8331,7 +8350,17 @@ def _preclean_c4_grouped_truth_and_public(adf: Any, gallery: Any) -> dict:
         if name in adf.df.columns
     }
 
-    raw = getattr(gallery, PRECLEAN_C4_REUSED_GALLERY_FUNCTION)(adf)
+    raw = adf.draw(
+        f"{gallery.M3_CHAIN_FINAL}:sector",
+        type="profile",
+        bins=INJECTED_TRUTH_BINS,
+        range=INJECTED_TRUTH_RANGE,
+        selection=PRECLEAN_C4_SELECTION,
+        group_by="side_type",
+        min_entries=1,
+        return_data=True,
+        auto_title=True,
+    )
     try:
         stats = raw[2]
         groups = _m2_profile_groups(stats)
@@ -8353,7 +8382,7 @@ def _preclean_c4_grouped_truth_and_public(adf: Any, gallery: Any) -> dict:
         for (g, frame), side in zip(groups, (0, 1)):
             ref = _it_profile(
                 model["sector"], chain["final"],
-                model["side_sel"] & (model["side"] == side),
+                c4_selection & (model["side"] == side),
                 accumulator="float64")
             x = np.asarray(frame["x_center"], dtype=float)
             count = np.asarray(frame["count"], dtype=int)
@@ -8413,7 +8442,8 @@ def _preclean_c4_evaluate_prepared(adf: Any, gallery: Any, *, mode: str) -> dict
 
 
 
-def _preclean_c4_membership_rows(adf: Any, model: dict, chain: dict) -> dict:
+def _preclean_c4_membership_rows(adf: Any, model: dict, chain: dict, *,
+                                 selection_mask: Any) -> dict:
     """Compact stable-row evidence for rows entering the C4 independent profile.
 
     This is diagnostic data, not a second oracle.  It lets a failed FULL
@@ -8434,7 +8464,7 @@ def _preclean_c4_membership_rows(adf: Any, model: dict, chain: dict) -> dict:
     bin_idx = np.searchsorted(edges, x, side="right") - 1
     bin_idx[x == hi] = INJECTED_TRUTH_BINS - 1
     selected = (
-        np.asarray(model["side_sel"], dtype=bool)
+        np.asarray(selection_mask, dtype=bool)
         & np.isfinite(x)
         & np.isfinite(y)
         & ((side == 0) | (side == 1))
@@ -8834,7 +8864,8 @@ def run_preclean_c4_full_gate(root_path: str, *, manifest_path: str, pdf_path: s
             "loading_mode": "BOTH",
             "sample_mode": "FULL",
             "execution_legs": ["EAGER_FULL", "LAZY_FULL"],
-            "reused_gallery_function": PRECLEAN_C4_REUSED_GALLERY_FUNCTION,
+            "reused_fixture_function": PRECLEAN_C4_REUSED_FIXTURE_FUNCTION,
+            "selection": PRECLEAN_C4_SELECTION,
             "fast_gallery_page_count_effect": 0,
             "slow_primary_oracle_pages": 1,
             "tolerance_policy": (

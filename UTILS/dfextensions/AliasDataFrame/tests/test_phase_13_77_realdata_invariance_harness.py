@@ -7413,7 +7413,8 @@ def test_preclean_c4_case_is_primary_full_both_and_not_fast(tmp_path):
     assert H.proof_class_for_case(case) == H.PRIMARY_ORACLE
     assert case.loading_mode == "BOTH"
     assert case.sample_mode == "FULL"
-    assert case.canonical_spec["gallery_function"] == "fig54_qualified_subframe_chain_truth"
+    assert case.canonical_spec["reused_fixture"] == "_ensure_m3_subframe_chain"
+    assert case.canonical_spec["selection"] == "(ncl>60)&(side_type<2)"
     assert case.canonical_spec["execution_legs"] == ["EAGER_FULL", "LAZY_FULL"]
     assert H.validate_registry([case]) == []
     assert H.PRECLEAN_C4_CASE_ID not in [c.case_id for c in H._a6_3_fraction_cases(str(root))]
@@ -7440,6 +7441,35 @@ def test_preclean_c4_prepared_pair_matches_same_independent_truth():
     assert diag["max_abs_eager_lazy_y_mean_delta"] == 0.0
     assert eager["l1"]["L1_all_within_tolerance"] is True
     assert lazy["l1"]["L1_all_within_tolerance"] is True
+
+
+def test_preclean_c4_dcar_dtype_boundary_is_outside_c4_selection_contract():
+    """The real-file dcar dtype boundary must not contaminate C4 membership.
+
+    EAGER exposes dcar_tpc_vertex as float16 while LAZY exposes float32.  Rows
+    near abs(dcar)==10 can therefore cross BASE_SEL.  Compression/dtype parity
+    is a separately deferred contract, so C4 selects on ncl/side_type instead.
+    """
+    import time_series_draw as G
+
+    eager_adf = _it_attach_stable_ids(_hardening_adf(n=7200))
+    lazy_adf = _it_attach_stable_ids(_hardening_adf(n=7200))
+    selected = (
+        (np.asarray(eager_adf.df["ncl"], dtype=float) > 60)
+        & (np.asarray(eager_adf.df["side_type"]) < 2)
+    )
+    pos = int(np.flatnonzero(selected)[0])
+    col = eager_adf.df.columns.get_loc("dcar_tpc_vertex")
+    eager_adf.df.iloc[pos, col] = -10.0
+    lazy_adf.df.iloc[pos, col] = -9.997323989868164
+
+    eager = H._preclean_c4_evaluate_prepared(eager_adf, G, mode="EAGER_FULL")
+    lazy = H._preclean_c4_evaluate_prepared(lazy_adf, G, mode="LAZY_FULL")
+    case = H.preclean_c4_case("synthetic.root", gallery_module=G)
+    evidence, diag = H._preclean_c4_compare_pair(case, eager, lazy)
+
+    assert all(row["ok"] for row in evidence)
+    assert diag["mode_y_mean_exact"] is True
 
 
 def test_preclean_c4_nonzero_mode_residual_is_rejected():
