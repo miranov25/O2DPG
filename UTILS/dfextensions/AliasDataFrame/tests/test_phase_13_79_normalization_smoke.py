@@ -69,14 +69,15 @@ def test_bn0_contract_complete_and_ratified():
 def test_bn0_contract_measured_state_arithmetic():
     passing = [r for r in CELLS if r["current_state"] == "PASSING"]
     gaps = [r for r in CELLS if r["current_state"] == "KNOWN_GAP"]
-    assert len(passing) == 12
-    assert len(gaps) == 18
+    assert len(passing) == 20
+    assert len(gaps) == 10
     by_bug = {}
     for row in gaps:
         by_bug[row["owning_bug"]] = by_bug.get(row["owning_bug"], 0) + 1
         sig = row["current_gap_signature"]
         assert sig and sig["type"] and sig["message_fragment"]
-    assert by_bug == {BUG_VECTOR_QUALIFIED: 8, BUG_Y_VECTOR_ROUTING: 10}
+    assert BUG_VECTOR_QUALIFIED not in by_bug
+    assert by_bug == {BUG_Y_VECTOR_ROUTING: 10}
 
 
 def test_bn0_non_profile_decision_is_explicit_refusal_contract():

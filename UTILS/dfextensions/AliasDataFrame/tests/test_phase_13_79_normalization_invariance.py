@@ -4,7 +4,7 @@ Strengthens BN-1 SMOKE with independent raw-fixture numerical oracles.
 No dfdraw normalization helper is used to build expected values.
 
 Coverage:
-  * 30 ratified ratio core rows (12 numerical PASS + 18 strict current gaps),
+  * 30 ratified ratio core rows (20 numerical PASS + 10 current gaps),
   * 6 explicit eager/lazy equivalence pairs for the currently reachable core,
   * 5 bounded mode seams: delta/log_ratio/pull/callable-2/callable-4.
 """

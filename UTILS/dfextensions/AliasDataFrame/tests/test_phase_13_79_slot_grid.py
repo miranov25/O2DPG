@@ -10,9 +10,9 @@ No production code is modified by this checkpoint.
 The stable human node IDs are intentionally readable, e.g.
     test_slot_grid_smoke[facet_by-alias-lazy]
 
-Known product gaps remain strict xfail with their owning bug id.  A production
-repair therefore becomes XPASS(strict) and forces the B-0 current-state record
-to be updated instead of silently turning green.
+Current product gaps remain strict xfail with their owning bug id.  B3.3f-B1
+reconciles the 18 reviewed ADF-owned historical B-0 gaps to ordinary positive
+regressions while preserving their legacy node identities for audit custody.
 """
 
 from __future__ import annotations
@@ -630,22 +630,8 @@ def test_slot_grid_smoke(row, _b1_root_files):
 # These separate nodes prevent a wrong exception from being hidden as xfail.
 # ---------------------------------------------------------------------------
 
-KNOWN_GAP_CASES = tuple(row for row in CELLS if row["current_state"] == "KNOWN_GAP")
-
-
-@pytest.mark.parametrize("row", KNOWN_GAP_CASES, ids=_cell_pytest_id)
-def test_slot_grid_known_gap_signature(row, _b1_root_files):
-    adf = _make_adf(row, _b1_root_files)
-    expr, kwargs = _build_draw_request(adf, row)
-    with pytest.raises(Exception) as caught:
-        adf.draw(expr, **kwargs)
-    _assert_gap_signature(row, caught.value)
-
-
-def test_slot_grid_contract_has_expected_known_gap_ownership():
-    gaps = {row["cell_id"]: row for row in CELLS if row["current_state"] == "KNOWN_GAP"}
-    assert len(gaps) == 18
-
+def _reconciled_b33_cell_ids():
+    """B3.3f-B1: exact historical B-0 gaps retired by reviewed B3.3 behavior."""
     vector_base = {
         f"slotgrid:{slot}:{form}:{mode}"
         for slot, form, mode in product(
@@ -656,11 +642,60 @@ def test_slot_grid_contract_has_expected_known_gap_ownership():
     }
     facet_expr = {f"slotgrid:facet_by:expression:{mode}" for mode in BASE_MODES}
     mixed = {f"slotgrid:{slot}:subframe:eager_parent_lazy_child" for slot in SLOTS}
-    assert set(gaps) == vector_base | facet_expr | mixed
+    return vector_base | facet_expr | mixed
 
-    for cid in vector_base:
-        assert gaps[cid]["owning_bug"] == BUG_VECTOR_QUALIFIED
-    for cid in facet_expr:
-        assert gaps[cid]["owning_bug"] == "BUG_AliasDataFrame_20260903_facet_by_expression_not_materialized"
-    for cid in mixed:
-        assert gaps[cid]["owning_bug"] == "BUG_AliasDataFrame_20260116_lazy_subframe_init"
+
+RECONCILED_B33_CASE_IDS = _reconciled_b33_cell_ids()
+RECONCILED_B33_CASES = tuple(
+    row for row in CELLS if row["cell_id"] in RECONCILED_B33_CASE_IDS
+)
+
+
+@pytest.mark.parametrize("row", RECONCILED_B33_CASES, ids=_cell_pytest_id)
+def test_slot_grid_known_gap_signature(row, _b1_root_files):
+    """Legacy node id retained: the old gap-signature node is now a positive guard.
+
+    B3.3f does not delete the 18 historical nodes.  It proves that their active
+    gap signature is gone and that the same public request now executes.
+    """
+    assert row["current_state"] == "PASSING"
+    assert row["current_gap_signature"] is None
+    assert row["owning_bug"] is None
+    assert row["pytest_policy"] == "NORMAL"
+
+    adf = _make_adf(row, _b1_root_files)
+    expr, kwargs = _build_draw_request(adf, row)
+    fig = None
+    try:
+        result = adf.draw(expr, **kwargs)
+        _assert_public_result(result, row)
+        fig = result[0]
+    finally:
+        if fig is not None:
+            plt.close(fig)
+        else:
+            plt.close("all")
+
+
+def test_slot_grid_contract_has_expected_known_gap_ownership():
+    """Legacy node name retained until B3.3f-C Capability-Matrix reconciliation."""
+    gaps = {row["cell_id"]: row for row in CELLS if row["current_state"] == "KNOWN_GAP"}
+    assert gaps == {}
+
+    reconciled = {
+        row["cell_id"]: row
+        for row in CELLS
+        if row["cell_id"] in RECONCILED_B33_CASE_IDS
+    }
+    assert set(reconciled) == RECONCILED_B33_CASE_IDS
+    assert len(reconciled) == 18
+
+    for row in reconciled.values():
+        assert row["current_state"] == "PASSING"
+        assert row["current_gap_signature"] is None
+        assert row["owning_bug"] is None
+        assert row["owning_phase"] is None
+        assert row["matrix_glyph"] == "PASS"
+        assert row["pytest_policy"] == "NORMAL"
+        assert row["invariance_state"] == "PASSING_LOCAL_REFERENCE_ENV"
+        assert "Historical current-state gap" in row["rationale"]
