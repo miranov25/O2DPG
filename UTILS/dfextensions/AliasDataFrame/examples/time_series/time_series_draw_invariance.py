@@ -7341,6 +7341,1518 @@ def run_o1_neg_b(case: CaseSpec, root_path: str, *, gallery_module=None,
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# PHASE_13_76 pre-cleaning oracle addendum — C1
+# ORACLE-02 positive acceptance: hist × selection_vector × facet_by
+# ─────────────────────────────────────────────────────────────────────────────
+
+PRECLEAN_C1_CASE_ID = "PRECLEAN-C1-HIST-VECTOR-FACET-ACCEPTANCE-EAGER-20PCT-01"
+PRECLEAN_C1_GALLERY_FUNCTION = "fig55_preclean_hist_vector_facet_acceptance"
+PRECLEAN_C1_FACETS = (0, 1, 2)
+PRECLEAN_C1_BINS = 40
+PRECLEAN_C1_RANGE = (80.0, 160.0)
+
+
+def preclean_c1_case(root_path: str, gallery_module=None) -> CaseSpec:
+    """Reviewable positive acceptance oracle for the repaired ORACLE-02 path."""
+    case = _hardening_case(
+        case_id=PRECLEAN_C1_CASE_ID,
+        claim_id="I4.preclean.hist_vector_facet_acceptance.C1",
+        title="hist selection_vector×facet preserves complete 3×2 semantic product",
+        claim=("supported hist×selection_vector×facet_by renders every branch in every facet "
+               "and agrees with independent raw histogram truth"),
+        failure_means=("the repaired non-profile vector/facet route dropped, duplicated, swapped, "
+                       "or numerically changed a branch/facet histogram, or the non-faceted "
+                       "positive control regressed"),
+        expected_visual=("three side_type facet panels, each containing early and late histograms, "
+                         "plus a same-page non-faceted early/late positive control"),
+        purpose="CORRECTNESS", oracle_kind="CORRECTNESS", owner="dfdraw",
+        canonical_spec={
+            "gallery_function": PRECLEAN_C1_GALLERY_FUNCTION,
+            "expr": "ncl", "type": "hist",
+            "selection": "(ncl>60)&(side_type<3)",
+            "selection_vector": ["early", "late"],
+            "vector_compose": "outer", "facet_by": "side_type",
+            "facets": list(PRECLEAN_C1_FACETS),
+            "bins": PRECLEAN_C1_BINS, "range": list(PRECLEAN_C1_RANGE),
+            "public_query": (
+                "adf.draw('ncl', type='hist', selection='(ncl>60)&(side_type<3)', "
+                "selection_vector=['time_s<median(time_s)','time_s>=median(time_s)'], "
+                "vector_compose='outer', facet_by='side_type', bins=40, range=(80,160))"
+            ),
+        },
+        observables=(
+            Observable("facet_identities", "INDEPENDENT", "ARRAY",
+                       "raw side_type facet identities", comparator="exact"),
+            Observable("faceted_bin_counts", "INDEPENDENT", "ARRAY",
+                       "raw np.histogram branch×facet bins", comparator="exact"),
+            Observable("control_bin_counts", "INDEPENDENT", "ARRAY",
+                       "raw np.histogram non-faceted branch bins", comparator="exact"),
+            Observable("faceted_inrange_rows", "INDEPENDENT", "ARRAY",
+                       "raw in-range branch×facet row totals", comparator="exact"),
+            Observable("control_inrange_rows", "INDEPENDENT", "ARRAY",
+                       "raw in-range branch row totals", comparator="exact"),
+        ),
+        root_path=root_path, gallery_module=gallery_module,
+        gallery_function=PRECLEAN_C1_GALLERY_FUNCTION,
+        setup_contract=("reuse the shared EAGER 20% ADF and the exact gallery C1 request; "
+                        "three facets and two selection branches must be populated"),
+        preconditions=("side_type values 0, 1 and 2 are populated", "both time branches are populated"),
+        negative_control=("same-page no-facet early/late histogram must remain correct while the "
+                          "3-facet route is exercised"),
+    )
+    case.figure_contract = FigureContract(
+        expected_panels="three side_type facet panels plus one non-faceted positive-control inset",
+        panel_roles="facets side_type=0/1/2; inset is identical early/late request without facet_by",
+        expected_traces="early and late histogram branches in every facet and in the control",
+        expected_group_count="3 facets × 2 branches; control has 2 branches",
+        primary_comparison=("raw NumPy branch×facet histogram bins and in-range row totals -> "
+                            "rendered public histogram artists"),
+        residual_definition="rendered bin height - independent np.histogram bin count",
+        accepted_envelope="facet identities exact; all bin counts and in-range row totals exact",
+        case_ids=(PRECLEAN_C1_CASE_ID,), proof_kind="CORRECTNESS",
+    )
+    return case
+
+
+def _preclean_c1_axes_by_facet(axes: Any) -> dict[int, Any]:
+    """Map public facet axes to side_type identities; never trust subplot order."""
+    out = {}
+    for ax in np.asarray(axes, dtype=object).reshape(-1):
+        if ax is None or not getattr(ax, "get_visible", lambda: True)():
+            continue
+        title = str(getattr(ax, "get_title", lambda: "")())
+        match = re.search(r"side_type=([^\s]+)", title)
+        if match is None:
+            continue
+        try:
+            facet = int(float(match.group(1)))
+        except (TypeError, ValueError):
+            continue
+        if facet in out:
+            raise HarnessError(f"C1 duplicate rendered facet identity {facet}")
+        out[facet] = ax
+    return out
+
+
+def _preclean_c1_expected(df: Any, *, t_mid: float) -> dict:
+    ncl = np.asarray(df["ncl"], dtype=float)
+    side = np.asarray(df["side_type"])
+    ts = np.asarray(df["time_s"], dtype=float)
+    finite = np.isfinite(ncl) & np.isfinite(ts)
+    edges = np.linspace(PRECLEAN_C1_RANGE[0], PRECLEAN_C1_RANGE[1], PRECLEAN_C1_BINS + 1)
+    branch_masks = (ts < t_mid, ts >= t_mid)
+
+    faceted_cells = {}
+    faceted_rows = []
+    for branch_index, branch_mask in enumerate(branch_masks):
+        for facet in PRECLEAN_C1_FACETS:
+            mask = (ncl > 60) & (side < 3) & finite & branch_mask & (side == facet)
+            hist = np.histogram(ncl[mask], bins=edges)[0].astype(float)
+            faceted_cells[(branch_index, facet)] = hist
+            faceted_rows.append(int(np.sum(hist)))
+
+    control_cells = {}
+    control_rows = []
+    for branch_index, branch_mask in enumerate(branch_masks):
+        mask = (ncl > 60) & (side < 3) & finite & branch_mask
+        hist = np.histogram(ncl[mask], bins=edges)[0].astype(float)
+        control_cells[branch_index] = hist
+        control_rows.append(int(np.sum(hist)))
+
+    return {
+        "facet_identities": list(PRECLEAN_C1_FACETS),
+        "faceted_cells": faceted_cells,
+        "control_cells": control_cells,
+        "faceted_inrange_rows": faceted_rows,
+        "control_inrange_rows": control_rows,
+    }
+
+
+def _preclean_c1_direct_dfdraw(adf: Any, *, t_mid: float, expected: dict) -> dict:
+    """L2 direct-dfdraw attribution for C1; reuses the established direct owner."""
+    owner = _DirectDFDrawOwner(adf.df)
+    raw = owner.draw(
+        "ncl", type="hist", bins=PRECLEAN_C1_BINS, range=PRECLEAN_C1_RANGE,
+        selection="(ncl>60)&(side_type<3)",
+        selection_vector=[f"time_s<{t_mid}", f"time_s>={t_mid}"],
+        vector_compose="outer", facet_by="side_type", auto_title=False)
+    try:
+        by_facet = _preclean_c1_axes_by_facet(raw[1])
+        if set(by_facet) != set(PRECLEAN_C1_FACETS):
+            raise HarnessError(f"C1 direct facet identities {sorted(by_facet)}")
+        cells = {}
+        for facet in PRECLEAN_C1_FACETS:
+            rendered = _m1_bar_heights(by_facet[facet], n_series=2, n_bins=PRECLEAN_C1_BINS)
+            for branch_index, heights in enumerate(rendered):
+                cells[(branch_index, facet)] = np.asarray(heights, dtype=float)
+        ok = set(cells) == set(expected["faceted_cells"]) and all(
+            np.array_equal(cells[k], expected["faceted_cells"][k]) for k in cells)
+        return {"ok": bool(ok), "complete_cells": sorted(str(k) for k in cells)}
+    finally:
+        try:
+            plt.close(raw[0])
+        except Exception:
+            pass
+
+
+def run_preclean_c1(case: CaseSpec, root_path: str, *, gallery_module=None,
+                    prepared_adf=None, prepared_provenance=None) -> CaseResult:
+    _skip = _inapplicable(case)
+    if _skip is not None:
+        return _skip
+    t0 = time.time(); res = CaseResult(case_id=case.case_id, status=SKIP)
+    adf = prepared_adf
+    try:
+        if adf is None:
+            raise HarnessError("C1 requires shared FAST prepared_adf")
+        gallery = gallery_module if gallery_module is not None else _a5_2_import_gallery()
+        provenance = _a6_4_prepared_fraction_sample_evidence(
+            adf, prepared_provenance, root_path)
+        raw = getattr(gallery, PRECLEAN_C1_GALLERY_FUNCTION)(adf)
+        fig, axes_payload, meta = raw
+        t_mid = float(meta["t_mid"])
+        expected_model = _preclean_c1_expected(adf.df, t_mid=t_mid)
+
+        facet_axes = axes_payload.get("facets") if isinstance(axes_payload, dict) else None
+        control_ax = axes_payload.get("control") if isinstance(axes_payload, dict) else None
+        by_facet = _preclean_c1_axes_by_facet(facet_axes)
+        if set(by_facet) != set(PRECLEAN_C1_FACETS):
+            raise HarnessError(
+                f"C1 rendered facet identities mismatch: expected={list(PRECLEAN_C1_FACETS)} "
+                f"observed={sorted(by_facet)}")
+        if control_ax is None:
+            raise HarnessError("C1 gallery exposes no non-faceted positive-control axis")
+
+        observed_cells = {}
+        observed_rows = []
+        for branch_index in range(2):
+            for facet in PRECLEAN_C1_FACETS:
+                rendered = _m1_bar_heights(
+                    by_facet[facet], n_series=2, n_bins=PRECLEAN_C1_BINS)
+                heights = np.asarray(rendered[branch_index], dtype=float)
+                observed_cells[(branch_index, facet)] = heights
+                observed_rows.append(int(np.sum(heights)))
+
+        control_rendered = _m1_bar_heights(
+            control_ax, n_series=2, n_bins=PRECLEAN_C1_BINS)
+        control_cells = {i: np.asarray(h, dtype=float) for i, h in enumerate(control_rendered)}
+        control_rows = [int(np.sum(control_cells[i])) for i in range(2)]
+
+        expected = {
+            "facet_identities": expected_model["facet_identities"],
+            "faceted_bin_counts": np.concatenate([
+                expected_model["faceted_cells"][(b, f)]
+                for b in range(2) for f in PRECLEAN_C1_FACETS]).tolist(),
+            "control_bin_counts": np.concatenate([
+                expected_model["control_cells"][b] for b in range(2)]).tolist(),
+            "faceted_inrange_rows": expected_model["faceted_inrange_rows"],
+            "control_inrange_rows": expected_model["control_inrange_rows"],
+        }
+        observed = {
+            "facet_identities": sorted(by_facet),
+            "faceted_bin_counts": np.concatenate([
+                observed_cells[(b, f)] for b in range(2) for f in PRECLEAN_C1_FACETS]).tolist(),
+            "control_bin_counts": np.concatenate([
+                control_cells[b] for b in range(2)]).tolist(),
+            "faceted_inrange_rows": observed_rows,
+            "control_inrange_rows": control_rows,
+        }
+
+        first_failure = None
+        for obs in case.observables:
+            res.observable_contract.append(_contract(obs))
+            cmp = compare_observable(obs, expected[obs.name], observed[obs.name])
+            res.comparisons.append(comparison_evidence(
+                obs, cmp, reference_label="raw NumPy/pandas C1 truth",
+                candidate_label="public C1 rendered histograms"))
+            if not cmp.ok and first_failure is None:
+                first_failure = f"{obs.name}: {cmp.detail}"
+        res.executed_comparisons = len(case.observables)
+        res.observed.update({
+            "realdata_provenance": dict(prepared_provenance or provenance),
+            "facet_identities": observed["facet_identities"],
+            "branch_facet_cardinality": len(observed_cells),
+            "positive_control_branch_count": len(control_cells),
+        })
+        if first_failure is not None:
+            direct = _preclean_c1_direct_dfdraw(adf, t_mid=t_mid, expected=expected_model)
+            res.observed["ownership_ladder"] = {
+                "L0": "raw NumPy branch×facet histograms",
+                "L2": "direct DFDraw branch×facet histograms",
+                "L2_matches_truth": bool(direct.get("ok")),
+                "L2_complete_cells": direct.get("complete_cells", []),
+                "L3": "ADF public C1 gallery request",
+                "first_disagreement_layer": "L3" if direct.get("ok") else "L2",
+                "contract_reference_status": "VERIFIED",
+                "owner_status": "ADF" if direct.get("ok") else "DFDRAW",
+                "derived_owner": "ADF_DRAW_BRIDGE" if direct.get("ok") else "dfdraw",
+            }
+            raise HarnessError(first_failure)
+
+        res.observed["ownership_ladder"] = {
+            "L0": "raw NumPy branch×facet histograms",
+            "L2": "not required: public correctness oracle is green",
+            "L3": "ADF public C1 gallery request matches truth",
+            "first_disagreement_layer": "NONE",
+            "contract_reference_status": "VERIFIED",
+            "owner_status": "NONE",
+            "derived_owner": "NONE",
+        }
+        res.status = PASS; res.detail = ""
+        return res
+    except Exception as exc:
+        res.status = FAIL
+        res.detail = f"PRECLEAN_C1 HIST_VECTOR_FACET FAIL: {exc}"
+        res.exception = traceback.format_exc(limit=8)
+        return res
+    finally:
+        res.wall_time_s = round(time.time() - t0, 4)
+        if adf is not None:
+            _record_stage_a_machine_status(adf, res)
+        _close()
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# PHASE_13_76 pre-cleaning oracle addendum — C2
+# draw_figures short-form + per-figure effective defaults + independent truth
+# ─────────────────────────────────────────────────────────────────────────────
+
+PRECLEAN_C2_CASE_ID = "PRECLEAN-C2-DRAW-FIGURES-EFFECTIVE-DEFAULTS-EAGER-20PCT-01"
+PRECLEAN_C2_GALLERY_FUNCTION = "fig56_preclean_draw_figures_effective_defaults"
+PRECLEAN_C2_NAME = "preclean_c2_effective_defaults"
+PRECLEAN_C2_SELECTIONS = (
+    "O4Surface.selector==0",
+    "O4Surface.selector==1",
+)
+
+
+def preclean_c2_case(root_path: str, gallery_module=None) -> CaseSpec:
+    """Independent correctness oracle for the repaired draw_figures public form."""
+    case = _hardening_case(
+        case_id=PRECLEAN_C2_CASE_ID,
+        claim_id="I4.preclean.draw_figures_effective_defaults.C2",
+        title="draw_figures short-form figure defaults preserve qualified delta truth",
+        claim=("draw_figures() short-form plot strings use the same effective-default/vector path "
+               "as dictionary plots, preserve caller-owned specs, and reproduce independent "
+               "injected-truth profile arithmetic"),
+        failure_means=("effective-default precedence, short-form normalization, qualified vector "
+                       "preparation, vector_compose inference, caller-copy semantics, or final "
+                       "draw_figures rendering changed"),
+        expected_visual=("one draw_figures profile panel showing the two qualified side branches "
+                         "and their normalized delta over sector"),
+        purpose="CORRECTNESS", oracle_kind="CORRECTNESS", owner="ADF",
+        canonical_spec={
+            "gallery_function": PRECLEAN_C2_GALLERY_FUNCTION,
+            "surface": "draw_figures",
+            "surfaces": ["draw_figures"],
+            "figure_name": PRECLEAN_C2_NAME,
+            "short_form_plot": "known_delta:sector",
+            "top_defaults": {"type": "profile", "bins": 18, "selection": "ncl>0"},
+            "figure_defaults": {
+                "type": "profile",
+                "bins": INJECTED_TRUTH_BINS,
+                "range": list(INJECTED_TRUTH_RANGE),
+                "selection": f"{HARDENING_BASE_SEL}&(side_type<2)",
+                "selection_vector": list(PRECLEAN_C2_SELECTIONS),
+                "normalize": "delta",
+            },
+            "public_query": (
+                "adf.draw_figures([{'name':'preclean_c2_effective_defaults', "
+                "'defaults':{'type':'profile','bins':36,'range':[-0.5,35.5],"
+                "'selection':BASE_SEL+'&(side_type<2)',"
+                "'selection_vector':['O4Surface.selector==0','O4Surface.selector==1'],"
+                "'normalize':'delta'}, 'plots':['known_delta:sector']}], "
+                "defaults={'type':'profile','bins':18,'selection':'ncl>0'})"
+            ),
+            "injected_truth": (
+                "known_delta = 0.08*sin(2*pi*sector/36) + 0.03*tgl + 0.015*tgl^2; "
+                "qualified selector maps exactly to side_type"
+            ),
+        },
+        observables=(
+            Observable("x_center", "INDEPENDENT", "ARRAY", "raw sector bin centers",
+                       comparator="close", atol=1e-14, rtol=1e-12,
+                       rationale="same explicit 36-bin sector geometry"),
+            Observable("signal_count", "INDEPENDENT", "ARRAY", "raw side_type==0 bin counts",
+                       comparator="exact"),
+            Observable("reference_count", "INDEPENDENT", "ARRAY", "raw side_type==1 bin counts",
+                       comparator="exact"),
+            Observable("signal_central", "INDEPENDENT", "ARRAY", "raw side_type==0 known-delta means",
+                       comparator="close", atol=1e-12, rtol=1e-12,
+                       rationale="same float64 arithmetic mean on identical selected rows"),
+            Observable("reference_central", "INDEPENDENT", "ARRAY", "raw side_type==1 known-delta means",
+                       comparator="close", atol=1e-12, rtol=1e-12,
+                       rationale="same float64 arithmetic mean on identical selected rows"),
+            Observable("delta_values", "INDEPENDENT", "ARRAY", "raw signal-reference delta",
+                       comparator="close", atol=1e-12, rtol=1e-12,
+                       rationale="delta is direct subtraction of independent branch means"),
+            Observable("valid_bin_mask", "INDEPENDENT", "ARRAY", "raw bins populated in both branches",
+                       comparator="exact"),
+            Observable("caller_unchanged", "INDEPENDENT", "FLAT", "caller containers unchanged",
+                       comparator="exact"),
+            Observable("short_form_preserved", "INDEPENDENT", "FLAT", "caller plot remains a string",
+                       comparator="exact"),
+        ),
+        root_path=root_path, gallery_module=gallery_module,
+        gallery_function=PRECLEAN_C2_GALLERY_FUNCTION,
+        setup_contract=("reuse shared injected truth + O4Surface qualified selector; execute one "
+                        "short-form draw_figures request with conflicting top/figure defaults"),
+        preconditions=("known_delta injected truth is materialized", "side_type 0 and 1 are populated",),
+        negative_control=("top-level bins=18 and selection='ncl>0' must not override figure bins=36 "
+                          "and BASE_SEL; caller specs must not gain vector_compose or dict normalization"),
+    )
+    case.figure_contract = FigureContract(
+        expected_panels="one draw_figures profile panel with normalized delta evidence",
+        panel_roles="single short-form plot resolved entirely through figure defaults",
+        expected_traces="qualified signal/reference branch profiles and normalized delta",
+        expected_group_count="two qualified selection_vector branches",
+        primary_comparison=("raw NumPy/pandas per-sector side0/side1 means and counts -> "
+                            "draw_figures normalize_data payload"),
+        residual_definition="expected delta = side_type==0 mean - side_type==1 mean",
+        accepted_envelope=("36-bin geometry/count/mask identity exact; floating means/delta within "
+                           "declared tolerance; caller containers exactly unchanged"),
+        case_ids=(PRECLEAN_C2_CASE_ID,), proof_kind="CORRECTNESS",
+    )
+    return case
+
+
+def _preclean_c2_expected(adf: Any, gallery: Any) -> dict:
+    getattr(gallery, "_ensure_injected_truth")(adf)
+    _ensure_o4_surface_subframe(adf)
+    model = _it_semantic_model(adf)
+    side = np.asarray(model["side"])
+    signal = _it_profile(model["sector"], model["delta"], model["base"] & (side == 0))
+    reference = _it_profile(model["sector"], model["delta"], model["base"] & (side == 1))
+    valid = (signal["count"] > 0) & (reference["count"] > 0)
+    delta = np.asarray(signal["y_mean"] - reference["y_mean"], dtype=float)
+    delta[~valid] = np.nan
+    return {
+        "x_center": np.asarray(signal["x_center"], dtype=float),
+        "signal_count": np.asarray(signal["count"], dtype=int),
+        "reference_count": np.asarray(reference["count"], dtype=int),
+        "signal_central": np.asarray(signal["y_mean"], dtype=float),
+        "reference_central": np.asarray(reference["y_mean"], dtype=float),
+        "delta_values": delta,
+        "valid_bin_mask": np.asarray(valid, dtype=bool),
+        "caller_unchanged": True,
+        "short_form_preserved": True,
+    }
+
+
+def _preclean_c2_normalize_payload(stats: Any) -> dict:
+    if not isinstance(stats, dict):
+        raise HarnessError(f"C2 expected dict stats, got {type(stats).__name__}")
+    if stats.get("normalize_mode") != "delta":
+        raise HarnessError(f"C2 expected normalize_mode='delta', got {stats.get('normalize_mode')!r}")
+    nd = stats.get("normalize_data")
+    if nd is None:
+        raise HarnessError("C2 draw_figures stats expose no normalize_data")
+
+    def column(name: str):
+        if isinstance(nd, dict):
+            if name not in nd:
+                raise HarnessError(f"C2 normalize_data missing {name!r}")
+            return np.asarray(nd[name])
+        columns = getattr(nd, "columns", ())
+        if name not in columns:
+            raise HarnessError(f"C2 normalize_data frame missing {name!r}")
+        return np.asarray(nd[name])
+
+    mask_undefined = np.asarray(column("mask_undefined"), dtype=bool)
+    return {
+        "x_center": np.asarray(column("x_center"), dtype=float),
+        "signal_count": np.asarray(column("signal_count"), dtype=int),
+        "reference_count": np.asarray(column("reference_count"), dtype=int),
+        "signal_central": np.asarray(column("signal_central"), dtype=float),
+        "reference_central": np.asarray(column("reference_central"), dtype=float),
+        "delta_values": np.asarray(column("value"), dtype=float),
+        "valid_bin_mask": ~mask_undefined,
+    }
+
+
+def _preclean_c2_direct_dfdraw(adf: Any, expected: dict) -> dict:
+    """L2 diagnostic using materialized columns and equivalent unqualified selectors."""
+    fig = None
+    try:
+        owner = _DirectDFDrawOwner(adf.df)
+        raw = owner.draw(
+            "known_delta:sector", type="profile",
+            bins=INJECTED_TRUTH_BINS, range=INJECTED_TRUTH_RANGE,
+            selection=f"{HARDENING_BASE_SEL}&(side_type<2)",
+            selection_vector=["side_type==0", "side_type==1"],
+            normalize="delta", return_data=True, auto_title=False)
+        fig = raw[0]
+        observed = _preclean_c2_normalize_payload(raw[2])
+        names = ("x_center", "signal_count", "reference_count", "signal_central",
+                 "reference_central", "delta_values", "valid_bin_mask")
+        ok = True
+        for name in names:
+            exp = expected[name]
+            got = observed[name]
+            if name in {"signal_count", "reference_count", "valid_bin_mask"}:
+                ok &= bool(np.array_equal(np.asarray(exp), np.asarray(got)))
+            else:
+                ok &= bool(np.allclose(np.asarray(exp, float), np.asarray(got, float),
+                                       atol=1e-12, rtol=1e-12, equal_nan=True))
+        return {"ok": bool(ok)}
+    finally:
+        try:
+            if fig is not None:
+                plt.close(fig)
+        except Exception:
+            pass
+
+
+def run_preclean_c2(case: CaseSpec, root_path: str, *, gallery_module=None,
+                    prepared_adf=None, prepared_provenance=None) -> CaseResult:
+    _skip = _inapplicable(case)
+    if _skip is not None:
+        return _skip
+    t0 = time.time(); res = CaseResult(case_id=case.case_id, status=SKIP)
+    adf = prepared_adf
+    try:
+        if adf is None:
+            raise HarnessError("C2 requires shared FAST prepared_adf")
+        gallery = gallery_module if gallery_module is not None else _a5_2_import_gallery()
+        provenance = _a6_4_prepared_fraction_sample_evidence(
+            adf, prepared_provenance, root_path)
+        expected = _preclean_c2_expected(adf, gallery)
+        raw = getattr(gallery, PRECLEAN_C2_GALLERY_FUNCTION)(adf)
+        if not isinstance(raw, tuple) or len(raw) < 3 or not isinstance(raw[2], dict):
+            raise HarnessError("C2 gallery result does not expose metadata")
+        meta = raw[2]
+        observed = _preclean_c2_normalize_payload(meta.get("stats"))
+        observed.update({
+            "caller_unchanged": bool(meta.get("caller_unchanged")),
+            "short_form_preserved": bool(meta.get("short_form_preserved")),
+        })
+
+        first_failure = None
+        for obs in case.observables:
+            res.observable_contract.append(_contract(obs))
+            cmp = compare_observable(obs, expected[obs.name], observed[obs.name])
+            res.comparisons.append(comparison_evidence(
+                obs, cmp, reference_label="raw NumPy/pandas C2 truth",
+                candidate_label="draw_figures short-form/effective-default result"))
+            if not cmp.ok and first_failure is None:
+                first_failure = f"{obs.name}: {cmp.detail}"
+        res.executed_comparisons = len(case.observables)
+        res.observed.update({
+            "realdata_provenance": dict(prepared_provenance or provenance),
+            "caller_unchanged": observed["caller_unchanged"],
+            "short_form_preserved": observed["short_form_preserved"],
+            "caller_specs_before": meta.get("specs_before"),
+            "caller_specs_after": meta.get("specs_after"),
+            "caller_defaults_before": meta.get("defaults_before"),
+            "caller_defaults_after": meta.get("defaults_after"),
+        })
+        if first_failure is not None:
+            direct = _preclean_c2_direct_dfdraw(adf, expected)
+            res.observed["ownership_ladder"] = {
+                "L0": "raw NumPy/pandas injected truth + declared qualified selector mapping",
+                "L1": "ADF materialized injected truth / qualified-subframe preparation",
+                "L2": "direct DFDraw equivalent materialized-column request",
+                "L2_matches_truth": bool(direct.get("ok")),
+                "L3": "ADF draw_figures short-form/effective-default route",
+                "first_disagreement_layer": "L3" if direct.get("ok") else "L2",
+                "contract_reference_status": "VERIFIED",
+                "owner_status": "ADF" if direct.get("ok") else "DFDRAW",
+                "derived_owner": "ADF_DRAW_FIGURES" if direct.get("ok") else "dfdraw",
+            }
+            raise HarnessError(first_failure)
+
+        res.observed["ownership_ladder"] = {
+            "L0": "raw NumPy/pandas injected truth + declared qualified selector mapping",
+            "L1": "ADF materialized injected truth / qualified-subframe preparation",
+            "L2": "not required: public correctness oracle is green",
+            "L3": "draw_figures short-form/effective-default result matches truth",
+            "first_disagreement_layer": "NONE",
+            "contract_reference_status": "VERIFIED",
+            "owner_status": "NONE",
+            "derived_owner": "NONE",
+        }
+        res.status = PASS; res.detail = ""
+        return res
+    except Exception as exc:
+        res.status = FAIL
+        res.detail = f"PRECLEAN_C2 DRAW_FIGURES_DEFAULTS FAIL: {exc}"
+        res.exception = traceback.format_exc(limit=8)
+        return res
+    finally:
+        res.wall_time_s = round(time.time() - t0, 4)
+        if adf is not None:
+            _record_stage_a_machine_status(adf, res)
+        _close()
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# PHASE_13_76 pre-cleaning oracle addendum — C3
+# non-delta y-vector normalize=ratio with predeclared exact scaled truth
+# ─────────────────────────────────────────────────────────────────────────────
+
+PRECLEAN_C3_CASE_ID = "PRECLEAN-C3-RATIO-Y-VECTOR-TRUTH-EAGER-20PCT-01"
+PRECLEAN_C3_GALLERY_FUNCTION = "fig57_preclean_ratio_y_vector_truth"
+PRECLEAN_C3_BASE_EXPR = "1.0 + 0.02*sector + 0.01*tgl*tgl"
+PRECLEAN_C3_SCALE = 2.0
+PRECLEAN_C3_EXPECTED_RATIO = 1.0 / PRECLEAN_C3_SCALE
+
+
+def preclean_c3_case(root_path: str, gallery_module=None) -> CaseSpec:
+    """Independent numerical oracle for supported y-vector normalize='ratio'."""
+    case = _hardening_case(
+        case_id=PRECLEAN_C3_CASE_ID,
+        claim_id="I4.preclean.ratio_y_vector_truth.C3",
+        title="y-vector normalize=ratio recovers predeclared exact 0.5 truth",
+        claim=("a supported two-branch y-vector profile normalized with ratio preserves branch "
+               "order and returns the independently known signal/reference ratio"),
+        failure_means=("y-vector normalization routing was ignored, branch order changed, "
+                       "profile reduction changed, undefined-bin masking drifted, or ratio "
+                       "arithmetic differs from independent raw truth"),
+        expected_visual=("two strictly-positive source profiles with the second exactly 2× the "
+                         "first, plus a normalized ratio trace at 0.5 in every populated bin"),
+        purpose="CORRECTNESS", oracle_kind="CORRECTNESS", owner="dfdraw",
+        canonical_spec={
+            "gallery_function": PRECLEAN_C3_GALLERY_FUNCTION,
+            "surface": "draw",
+            "slot": "y_vector",
+            "expr": "[preclean_ratio_base,preclean_ratio_scaled]:sector",
+            "type": "profile",
+            "selection": HARDENING_BASE_SEL,
+            "bins": INJECTED_TRUTH_BINS,
+            "range": list(INJECTED_TRUTH_RANGE),
+            "normalize": "ratio",
+            "ratio_definition": "signal/reference = first y-vector branch / second y-vector branch",
+            "base_formula": PRECLEAN_C3_BASE_EXPR,
+            "scale": PRECLEAN_C3_SCALE,
+            "expected_ratio": PRECLEAN_C3_EXPECTED_RATIO,
+            "public_query": (
+                "adf.draw('[preclean_ratio_base,preclean_ratio_scaled]:sector', "
+                "type='profile', selection=BASE_SEL, bins=36, range=(-0.5,35.5), "
+                "normalize='ratio', return_data=True)"
+            ),
+        },
+        observables=(
+            Observable("x_center", "INDEPENDENT", "ARRAY", "raw sector bin centers",
+                       comparator="close", atol=1e-14, rtol=1e-12,
+                       rationale="same explicit 36-bin sector geometry"),
+            Observable("signal_count", "INDEPENDENT", "ARRAY", "raw first-branch bin counts",
+                       comparator="exact"),
+            Observable("reference_count", "INDEPENDENT", "ARRAY", "raw second-branch bin counts",
+                       comparator="exact"),
+            Observable("signal_central", "INDEPENDENT", "ARRAY", "raw base-formula bin means",
+                       comparator="close", atol=1e-12, rtol=1e-12,
+                       rationale="same float64 arithmetic mean on identical selected rows"),
+            Observable("reference_central", "INDEPENDENT", "ARRAY", "raw 2×base bin means",
+                       comparator="close", atol=2e-12, rtol=1e-12,
+                       rationale="same float64 arithmetic mean on exact scaled rows"),
+            Observable("ratio_values", "INDEPENDENT", "ARRAY", "raw signal/reference ratio",
+                       comparator="close", atol=2e-13, rtol=2e-13,
+                       rationale="ratio of independently reduced strictly-positive scaled branches"),
+            Observable("valid_bin_mask", "INDEPENDENT", "ARRAY", "raw jointly populated/nonzero bins",
+                       comparator="exact"),
+        ),
+        root_path=root_path, gallery_module=gallery_module,
+        gallery_function=PRECLEAN_C3_GALLERY_FUNCTION,
+        setup_contract=("construct a strictly-positive base formula from real sector/tgl rows, "
+                        "materialize an exact 2× y-vector companion, and normalize first/second"),
+        preconditions=("selected rows populate the sector profile", "reference branch is strictly positive"),
+        negative_control=("a swapped y-vector branch order must produce ratio 2.0 rather than 0.5 "
+                          "and therefore fail the declared oracle"),
+    )
+    case.figure_contract = FigureContract(
+        expected_panels="one profile normalization page with source overlay and ratio evidence",
+        panel_roles="source branches are base and exact 2×base; normalized result is base/scaled",
+        expected_traces="two positive source profiles and ratio=0.5 on populated bins",
+        expected_group_count="two ordered y-vector branches",
+        primary_comparison=("raw NumPy/pandas branch means/counts and predeclared 0.5 ratio -> "
+                            "public normalize_data payload"),
+        residual_definition="public ratio - 0.5 on independently valid bins",
+        accepted_envelope=("bin geometry/count/mask identity exact; source means and ratio within "
+                           "declared pre-set floating tolerances"),
+        case_ids=(PRECLEAN_C3_CASE_ID,), proof_kind="CORRECTNESS",
+    )
+    return case
+
+
+def _preclean_c3_expected(adf: Any) -> dict:
+    df = adf.df
+    sector = np.asarray(df["sector"], dtype=float)
+    tgl = np.asarray(df["tgl"], dtype=float)
+    ncl = np.asarray(df["ncl"], dtype=float)
+    dcar = np.asarray(df["dcar_tpc_vertex"], dtype=float)
+    base_mask = (ncl > 60) & (np.abs(dcar) < 10)
+    base_values = 1.0 + 0.02 * sector + 0.01 * tgl * tgl
+    scaled_values = PRECLEAN_C3_SCALE * base_values
+    # When the product-side aliases have already been materialized, use only
+    # their authoritative dtype as part of the contract reference.  Values are
+    # still reconstructed independently from raw sector/tgl; no ADF result is
+    # reused as expected data.
+    if "preclean_ratio_base" in df.columns:
+        base_values = _it_cast_expected_to_authoritative_dtype(
+            df, "preclean_ratio_base", base_values)
+    if "preclean_ratio_scaled" in df.columns:
+        scaled_values = _it_cast_expected_to_authoritative_dtype(
+            df, "preclean_ratio_scaled", scaled_values)
+    signal = _it_profile(sector, base_values, base_mask)
+    reference = _it_profile(sector, scaled_values, base_mask)
+    valid = ((signal["count"] > 0) & (reference["count"] > 0)
+             & np.isfinite(signal["y_mean"]) & np.isfinite(reference["y_mean"])
+             & (reference["y_mean"] != 0.0))
+    ratio = np.full_like(signal["y_mean"], np.nan, dtype=float)
+    ratio[valid] = signal["y_mean"][valid] / reference["y_mean"][valid]
+    if np.any(valid) and not np.allclose(
+            ratio[valid], PRECLEAN_C3_EXPECTED_RATIO, rtol=2e-13, atol=2e-13):
+        raise HarnessError("C3 independent construction does not produce the predeclared 0.5 ratio")
+    return {
+        "x_center": np.asarray(signal["x_center"], dtype=float),
+        "signal_count": np.asarray(signal["count"], dtype=int),
+        "reference_count": np.asarray(reference["count"], dtype=int),
+        "signal_central": np.asarray(signal["y_mean"], dtype=float),
+        "reference_central": np.asarray(reference["y_mean"], dtype=float),
+        "ratio_values": ratio,
+        "valid_bin_mask": np.asarray(valid, dtype=bool),
+    }
+
+
+def _preclean_c3_normalize_payload(stats: Any) -> dict:
+    if not isinstance(stats, dict):
+        raise HarnessError(f"C3 expected dict stats, got {type(stats).__name__}")
+    if stats.get("normalize_mode") != "ratio":
+        raise HarnessError(f"C3 expected normalize_mode='ratio', got {stats.get('normalize_mode')!r}")
+    nd = stats.get("normalize_data")
+    if nd is None:
+        raise HarnessError("C3 y-vector result exposes no normalize_data")
+
+    def column(name: str):
+        if isinstance(nd, dict):
+            if name not in nd:
+                raise HarnessError(f"C3 normalize_data missing {name!r}")
+            return np.asarray(nd[name])
+        columns = getattr(nd, "columns", ())
+        if name not in columns:
+            raise HarnessError(f"C3 normalize_data frame missing {name!r}")
+        return np.asarray(nd[name])
+
+    mask_undefined = np.asarray(column("mask_undefined"), dtype=bool)
+    return {
+        "x_center": np.asarray(column("x_center"), dtype=float),
+        "signal_count": np.asarray(column("signal_count"), dtype=int),
+        "reference_count": np.asarray(column("reference_count"), dtype=int),
+        "signal_central": np.asarray(column("signal_central"), dtype=float),
+        "reference_central": np.asarray(column("reference_central"), dtype=float),
+        "ratio_values": np.asarray(column("value"), dtype=float),
+        "valid_bin_mask": ~mask_undefined,
+    }
+
+
+def _preclean_c3_l1_materialization(adf: Any) -> dict:
+    df = adf.df
+    sector = np.asarray(df["sector"], dtype=float)
+    tgl = np.asarray(df["tgl"], dtype=float)
+    expected_base = 1.0 + 0.02 * sector + 0.01 * tgl * tgl
+    expected_scaled = PRECLEAN_C3_SCALE * expected_base
+    expected_base = _it_cast_expected_to_authoritative_dtype(
+        df, "preclean_ratio_base", expected_base)
+    expected_scaled = _it_cast_expected_to_authoritative_dtype(
+        df, "preclean_ratio_scaled", expected_scaled)
+    base = np.asarray(df["preclean_ratio_base"])
+    scaled = np.asarray(df["preclean_ratio_scaled"])
+    base_ok = bool(np.array_equal(base, expected_base, equal_nan=True))
+    scaled_ok = bool(np.array_equal(scaled, expected_scaled, equal_nan=True))
+    return {"base_ok": base_ok, "scaled_ok": scaled_ok, "all_ok": bool(base_ok and scaled_ok)}
+
+
+def _preclean_c3_direct_dfdraw(adf: Any, expected: dict) -> dict:
+    fig = None
+    try:
+        owner = _DirectDFDrawOwner(adf.df)
+        raw = owner.draw(
+            "[preclean_ratio_base,preclean_ratio_scaled]:sector",
+            type="profile", bins=INJECTED_TRUTH_BINS, range=INJECTED_TRUTH_RANGE,
+            selection=HARDENING_BASE_SEL, normalize="ratio",
+            return_data=True, auto_title=False)
+        fig = raw[0]
+        observed = _preclean_c3_normalize_payload(raw[2])
+        specs = {o.name: o for o in preclean_c3_case("synthetic.root").observables}
+        checks = [compare_observable(specs[name], expected[name], observed[name]).ok
+                  for name in ("x_center", "signal_count", "reference_count", "signal_central",
+                               "reference_central", "ratio_values", "valid_bin_mask")]
+        return {"ok": bool(all(checks)), "observed": observed}
+    except Exception as exc:
+        return {"ok": False, "detail": f"{type(exc).__name__}: {exc}"}
+    finally:
+        if fig is not None:
+            try:
+                import matplotlib.pyplot as plt
+                plt.close(fig)
+            except Exception:
+                pass
+
+
+def run_preclean_c3(case: CaseSpec, root_path: str, *, gallery_module=None,
+                    prepared_adf=None, prepared_provenance=None) -> CaseResult:
+    _skip = _inapplicable(case)
+    if _skip is not None:
+        return _skip
+    t0 = time.time(); res = CaseResult(case_id=case.case_id, status=SKIP)
+    adf = None
+    try:
+        gallery = gallery_module if gallery_module is not None else _a5_2_import_gallery()
+        adf = prepared_adf
+        if adf is None:
+            adf, provenance = _a6_4_build_fraction_adf_once(root_path, gallery_module=gallery)
+        else:
+            _a6_4_prepared_fraction_sample_evidence(adf, prepared_provenance, root_path)
+            provenance = dict(prepared_provenance or {})
+        ensure_truth = getattr(gallery, "_ensure_preclean_c3_ratio_truth", None)
+        if not callable(ensure_truth):
+            raise HarnessError("gallery has no _ensure_preclean_c3_ratio_truth owner")
+        ensure_truth(adf)
+        expected = _preclean_c3_expected(adf)
+        raw = getattr(gallery, PRECLEAN_C3_GALLERY_FUNCTION)(adf)
+        try:
+            observed = _preclean_c3_normalize_payload(raw[2])
+        finally:
+            try:
+                import matplotlib.pyplot as plt
+                fig = raw[0]
+                if isinstance(fig, (list, tuple)):
+                    for item in fig:
+                        if item is not None:
+                            plt.close(item)
+                elif fig is not None:
+                    plt.close(fig)
+            except Exception:
+                pass
+
+        first_failure = None
+        for obs in case.observables:
+            res.observable_contract.append(_contract(obs))
+            cmp = compare_observable(obs, expected[obs.name], observed[obs.name])
+            res.comparisons.append(comparison_evidence(
+                obs, cmp, reference_label="raw NumPy/pandas exact-scaled C3 truth",
+                candidate_label="public y-vector normalize=ratio result"))
+            if not cmp.ok and first_failure is None:
+                first_failure = f"{obs.name}: {cmp.detail}"
+        res.executed_comparisons = len(case.observables)
+        l1 = _preclean_c3_l1_materialization(adf)
+        res.observed.update({
+            "realdata_provenance": dict(prepared_provenance or provenance),
+            "expected_ratio": PRECLEAN_C3_EXPECTED_RATIO,
+            "L1_materialization": l1,
+        })
+        if not l1["all_ok"]:
+            res.observed["ownership_ladder"] = {
+                "L0": "raw formula from sector/tgl",
+                "L1": "ADF materialized preclean_ratio_base / preclean_ratio_scaled",
+                "first_disagreement_layer": "L1",
+                "contract_reference_status": "VERIFIED",
+                "owner_status": "ADF",
+                "derived_owner": "ADF_MATERIALIZATION",
+            }
+            raise HarnessError("C3 ADF alias materialization differs from declared raw formula")
+        if first_failure is not None:
+            direct = _preclean_c3_direct_dfdraw(adf, expected)
+            res.observed["ownership_ladder"] = {
+                "L0": "raw NumPy/pandas exact-scaled ratio truth",
+                "L1": "ADF materialized ratio source columns match raw formula",
+                "L2": "direct DFDraw y-vector normalize=ratio on materialized columns",
+                "L2_matches_truth": bool(direct.get("ok")),
+                "L3": "ADF adf.draw y-vector normalize=ratio",
+                "first_disagreement_layer": "L3" if direct.get("ok") else "L2",
+                "contract_reference_status": "VERIFIED",
+                "owner_status": "ADF" if direct.get("ok") else "DFDRAW",
+                "derived_owner": "ADF_DRAW" if direct.get("ok") else "dfdraw",
+            }
+            raise HarnessError(first_failure)
+        res.observed["ownership_ladder"] = {
+            "L0": "raw NumPy/pandas exact-scaled ratio truth",
+            "L1": "ADF materialized ratio source columns match raw formula",
+            "L2": "not required: public correctness oracle is green",
+            "L3": "ADF adf.draw y-vector normalize=ratio matches truth",
+            "first_disagreement_layer": "NONE",
+            "contract_reference_status": "VERIFIED",
+            "owner_status": "NONE",
+            "derived_owner": "NONE",
+        }
+        res.status = PASS; res.detail = ""
+        return res
+    except Exception as exc:
+        res.status = FAIL
+        res.detail = f"PRECLEAN_C3 RATIO_Y_VECTOR FAIL: {exc}"
+        res.exception = traceback.format_exc(limit=8)
+        return res
+    finally:
+        res.wall_time_s = round(time.time() - t0, 4)
+        if adf is not None:
+            _record_stage_a_machine_status(adf, res)
+        _close()
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# PHASE_13_76 pre-cleaning oracle addendum — C4
+# FULL EAGER↔LAZY same-truth qualified/chained-alias numerical oracle
+#
+# C4 deliberately reuses the existing M3 scientific fixture instead of adding
+# another subframe/oracle framework.  The public request is the normal example
+# ``fig54_qualified_subframe_chain_truth``: a two-level alias chain plus the
+# qualified ``OracleShift.oracle_offset`` projection, grouped by side_type.
+# The only new responsibility here is to execute that same scientific request
+# once in FULL EAGER and once in FULL LAZY mode and compare both to the same
+# independently reconstructed NumPy/pandas truth.
+# ─────────────────────────────────────────────────────────────────────────────
+
+PRECLEAN_C4_CASE_ID = "PRECLEAN-C4-QUALIFIED-CHAIN-EAGER-LAZY-BOTH-FULL-01"
+PRECLEAN_C4_REUSED_GALLERY_FUNCTION = "fig54_qualified_subframe_chain_truth"
+PRECLEAN_C4_TREE_NAME = A5_3_TREE_NAME
+
+
+def preclean_c4_case(root_path: str, gallery_module=None) -> CaseSpec:
+    """PRIMARY ORACLE: the same qualified injected truth in FULL EAGER/LAZY."""
+    return CaseSpec(
+        case_id=PRECLEAN_C4_CASE_ID,
+        claim_id="I4.preclean.qualified_chain_eager_lazy_truth.C4",
+        title="FULL EAGER and LAZY resolve the same qualified chained-alias truth",
+        claim=("the existing M3 chained injected-truth expression plus qualified OracleShift "
+               "subframe produces the same independently known grouped sector profile in FULL "
+               "EAGER and FULL LAZY loading modes"),
+        failure_means=("loading-mode dependency discovery/materialization, chained alias evaluation, "
+                       "qualified subframe projection, grouping, row population or floating reduction "
+                       "changed between EAGER and LAZY or disagrees with independent raw truth"),
+        expected_visual=("for side_type 0 and 1, EAGER and LAZY profiles overlay the same independently "
+                         "known chained+qualified truth; the lower LAZY-EAGER residual is exactly zero "
+                         "on every jointly populated bin"),
+        owner_on_failure="ADF",
+        purpose="CORRECTNESS",
+        gate="ENVIRONMENT_GATED",
+        oracle_kind="CORRECTNESS",
+        loading_mode="BOTH",
+        sample_mode="FULL",
+        canonical_spec={
+            "gallery_function": PRECLEAN_C4_REUSED_GALLERY_FUNCTION,
+            "expr": "oracle_chain_with_shift:sector",
+            "type": "profile",
+            "group_by": "side_type",
+            "selection": INJECTED_TRUTH_SIDE_SEL,
+            "bins": INJECTED_TRUTH_BINS,
+            "range": list(INJECTED_TRUTH_RANGE),
+            "tree_name": PRECLEAN_C4_TREE_NAME,
+            "sample": None,
+            "execution_legs": ["EAGER_FULL", "LAZY_FULL"],
+            "public_query": (
+                "fig54_qualified_subframe_chain_truth(adf)  # same request in EAGER FULL and LAZY FULL"
+            ),
+        },
+        applicable=bool(root_path),
+        applicability_reason="" if root_path else "ROOT input path is empty",
+        setup_contract=("reuse the existing M3 injected-truth alias/subframe fixture; build exactly one "
+                        "FULL EAGER ADF and one FULL LAZY ADF from the same ROOT identity; reconstruct "
+                        "the M3 formula independently in each mode and compare each public result to truth"),
+        preconditions=(
+            "the trusted time-series ROOT input is readable",
+            "build_adf supports sample=None in both eager and lazy modes",
+            "fig54_qualified_subframe_chain_truth and _ensure_m3_subframe_chain are available",
+            "side_type 0 and 1 are populated on the selected scientific domain",
+        ),
+        surfaces_under_test=("draw",),
+        observables=(
+            Observable("eager_group_values", "INDEPENDENT", "ARRAY", "raw side_type group identities",
+                       comparator="exact"),
+            Observable("lazy_group_values", "INDEPENDENT", "ARRAY", "raw side_type group identities",
+                       comparator="exact"),
+            Observable("eager_x_center", "INDEPENDENT", "ARRAY", "explicit sector-bin centers",
+                       comparator="exact"),
+            Observable("lazy_x_center", "INDEPENDENT", "ARRAY", "explicit sector-bin centers",
+                       comparator="exact"),
+            Observable("eager_count", "INDEPENDENT", "ARRAY", "raw side/sector selected counts",
+                       comparator="exact"),
+            Observable("lazy_count", "INDEPENDENT", "ARRAY", "raw side/sector selected counts",
+                       comparator="exact"),
+            Observable("eager_valid_mask", "INDEPENDENT", "ARRAY", "raw populated finite-bin mask",
+                       comparator="exact"),
+            Observable("lazy_valid_mask", "INDEPENDENT", "ARRAY", "raw populated finite-bin mask",
+                       comparator="exact"),
+            Observable("eager_y_mean", "INDEPENDENT", "ARRAY", "raw chained+qualified group means",
+                       comparator="close", rtol=1e-8, atol=1e-9,
+                       rationale="same M3 independent float64/bin reduction contract"),
+            Observable("lazy_y_mean", "INDEPENDENT", "ARRAY", "raw chained+qualified group means",
+                       comparator="close", rtol=1e-8, atol=1e-9,
+                       rationale="same M3 independent float64/bin reduction contract"),
+            Observable("mode_count_delta", "INDEPENDENT", "ARRAY", "LAZY count - EAGER count",
+                       comparator="exact"),
+            Observable("mode_y_mean_delta", "INDEPENDENT", "ARRAY", "LAZY mean - EAGER mean on valid bins",
+                       comparator="exact"),
+        ),
+        figure_contract=FigureContract(
+            expected_panels="two panels in a separate C4 FULL slow-gate PDF",
+            panel_roles="top: EAGER/LAZY grouped scientific profiles; bottom: LAZY-EAGER residual",
+            expected_traces="two side_type groups for each loading mode plus zero residual traces",
+            expected_group_count="two side_type groups in EAGER and two in LAZY",
+            primary_comparison=("independent raw chained+qualified M3 truth -> EAGER and -> LAZY; "
+                                "then exact EAGER↔LAZY identity on count/mask/bin/result arrays"),
+            residual_definition="LAZY public y_mean - EAGER public y_mean on jointly valid bins",
+            accepted_envelope=("group/bin/count/mask identities exact; each mode matches independent "
+                               "truth within existing M3 tolerance; EAGER↔LAZY public floating result "
+                               "must be exactly identical in this first measurement"),
+            case_ids=(PRECLEAN_C4_CASE_ID,), proof_kind="CORRECTNESS",
+        ),
+        non_claims=(
+            "C4 does not replace O3 dependency-sparsity/decoy instrumentation",
+            "C4 is not part of the routine sampled FAST gallery",
+            "C4 introduces no sampled-lazy semantics",
+        ),
+        negative_control="PRECLEAN_C4:LAZY_RESULT_OR_ROW_POPULATION_MUTATION",
+        reference_policy="same-process",
+    )
+
+
+def _preclean_c4_grouped_truth_and_public(adf: Any, gallery: Any) -> dict:
+    """Run the existing M3 example and return independent/public comparison arrays.
+
+    The expected values are reconstructed from physical source columns and the
+    declared injected-truth/subframe formulas.  Public aggregation is used only
+    for the candidate arrays.  This keeps the example function readable while
+    the detailed machine-oracle bookkeeping remains in the harness.
+    """
+    ensure = getattr(gallery, "_ensure_m3_subframe_chain", None)
+    if not callable(ensure):
+        raise HarnessError("C4 gallery has no _ensure_m3_subframe_chain owner")
+    ensure(adf)
+    model = _it_semantic_model(adf)
+    chain = _m3_independent_semantic_values(adf)
+    l1 = _m3_materialization_diagnostics(adf, chain)
+    membership = _preclean_c4_membership_rows(adf, model, chain)
+    source_dtypes = {
+        name: str(np.asarray(adf.df[name]).dtype)
+        for name in (
+            "oracle_row_id", "sector", "side_type", "ncl", "dcar_tpc_vertex",
+            "tgl", "oracle_chain_l1", "oracle_chain_l2", "oracle_chain_with_shift"
+        )
+        if name in adf.df.columns
+    }
+
+    raw = getattr(gallery, PRECLEAN_C4_REUSED_GALLERY_FUNCTION)(adf)
+    try:
+        stats = raw[2]
+        groups = _m2_profile_groups(stats)
+        group_ids = [int(float(g)) for g, _ in groups]
+        if group_ids != [0, 1]:
+            raise HarnessError(f"C4 group identity/order mismatch: {group_ids}")
+
+        exp_group = []
+        got_group = []
+        exp_x = []
+        got_x = []
+        exp_count = []
+        got_count = []
+        exp_mean = []
+        got_mean = []
+        exp_valid = []
+        got_valid = []
+
+        for (g, frame), side in zip(groups, (0, 1)):
+            ref = _it_profile(
+                model["sector"], chain["final"],
+                model["side_sel"] & (model["side"] == side),
+                accumulator="float64")
+            x = np.asarray(frame["x_center"], dtype=float)
+            count = np.asarray(frame["count"], dtype=int)
+            mean = np.asarray(frame["y_mean"], dtype=float)
+            if not (len(x) == len(count) == len(mean) == INJECTED_TRUTH_BINS):
+                raise HarnessError(
+                    f"C4 side_type={side} profile shape drift: "
+                    f"x={len(x)}, count={len(count)}, mean={len(mean)}")
+            valid_ref = (np.asarray(ref["count"], dtype=int) > 0) & np.isfinite(ref["y_mean"])
+            valid_got = (count > 0) & np.isfinite(mean)
+
+            exp_group.extend([side] * INJECTED_TRUTH_BINS)
+            got_group.extend([int(float(g))] * INJECTED_TRUTH_BINS)
+            exp_x.extend(np.asarray(ref["x_center"], dtype=float).tolist())
+            got_x.extend(x.tolist())
+            exp_count.extend(np.asarray(ref["count"], dtype=int).tolist())
+            got_count.extend(count.tolist())
+            exp_mean.extend(np.asarray(ref["y_mean"], dtype=float).tolist())
+            got_mean.extend(mean.tolist())
+            exp_valid.extend(valid_ref.tolist())
+            got_valid.extend(valid_got.tolist())
+
+        return {
+            "expected": {
+                "group_values": np.asarray(exp_group, dtype=int),
+                "x_center": np.asarray(exp_x, dtype=float),
+                "count": np.asarray(exp_count, dtype=int),
+                "y_mean": np.asarray(exp_mean, dtype=float),
+                "valid_mask": np.asarray(exp_valid, dtype=bool),
+            },
+            "observed": {
+                "group_values": np.asarray(got_group, dtype=int),
+                "x_center": np.asarray(got_x, dtype=float),
+                "count": np.asarray(got_count, dtype=int),
+                "y_mean": np.asarray(got_mean, dtype=float),
+                "valid_mask": np.asarray(got_valid, dtype=bool),
+            },
+            "l1": l1,
+            "membership": membership,
+            "source_dtypes": source_dtypes,
+        }
+    finally:
+        try:
+            import matplotlib.pyplot as plt
+            plt.close(raw[0])
+        except Exception:
+            pass
+
+
+def _preclean_c4_evaluate_prepared(adf: Any, gallery: Any, *, mode: str) -> dict:
+    """Evaluate one already-built FULL loading-mode leg against independent truth."""
+    payload = _preclean_c4_grouped_truth_and_public(adf, gallery)
+    payload["mode"] = mode
+    payload["source_rows"] = int(len(adf.df))
+    payload["lazy_reader_present"] = bool(getattr(adf, "_lazy_reader", None) is not None)
+    return payload
+
+
+
+def _preclean_c4_membership_rows(adf: Any, model: dict, chain: dict) -> dict:
+    """Compact stable-row evidence for rows entering the C4 independent profile.
+
+    This is diagnostic data, not a second oracle.  It lets a failed FULL
+    EAGER/LAZY comparison identify the exact row IDs and scientific values
+    behind a count mismatch after the memory-heavy EAGER ADF is released.
+    """
+    df = adf.df
+    row_id = np.asarray(df["oracle_row_id"], dtype=np.int64)
+    x = np.asarray(model["sector"], dtype=float)
+    y = np.asarray(chain["final"], dtype=float)
+    side = np.asarray(model["side"])
+    ncl = np.asarray(df["ncl"], dtype=float)
+    dcar = np.asarray(df["dcar_tpc_vertex"], dtype=float)
+    tgl = np.asarray(df["tgl"], dtype=float)
+
+    lo, hi = INJECTED_TRUTH_RANGE
+    edges = np.linspace(lo, hi, INJECTED_TRUTH_BINS + 1)
+    bin_idx = np.searchsorted(edges, x, side="right") - 1
+    bin_idx[x == hi] = INJECTED_TRUTH_BINS - 1
+    selected = (
+        np.asarray(model["side_sel"], dtype=bool)
+        & np.isfinite(x)
+        & np.isfinite(y)
+        & ((side == 0) | (side == 1))
+        & (bin_idx >= 0)
+        & (bin_idx < INJECTED_TRUTH_BINS)
+    )
+    flat_bin = (
+        np.asarray(side, dtype=np.int64) * INJECTED_TRUTH_BINS
+        + np.asarray(bin_idx, dtype=np.int64)
+    )
+    return {
+        "row_id": row_id[selected],
+        "flat_bin": flat_bin[selected].astype(np.int16, copy=False),
+        "sector": x[selected],
+        "side_type": np.asarray(side[selected]),
+        "ncl": ncl[selected],
+        "dcar_tpc_vertex": dcar[selected],
+        "tgl": tgl[selected],
+        "final": np.asarray(y[selected], dtype=float),
+    }
+
+
+def _preclean_c4_membership_records(payload: dict, row_ids: Any, *, limit: int = 12) -> list[dict]:
+    """Return small JSON-safe source records for selected row IDs."""
+    wanted = np.asarray(row_ids, dtype=np.int64)
+    if wanted.size == 0:
+        return []
+    rows = np.asarray(payload["row_id"], dtype=np.int64)
+    pos_by_id = {int(rid): i for i, rid in enumerate(rows)}
+    records = []
+    for rid in wanted[:limit]:
+        pos = pos_by_id.get(int(rid))
+        if pos is None:
+            continue
+        flat = int(np.asarray(payload["flat_bin"])[pos])
+        records.append({
+            "oracle_row_id": int(rid),
+            "flat_index": flat,
+            "side_type": int(flat // INJECTED_TRUTH_BINS),
+            "sector_bin": int(flat % INJECTED_TRUTH_BINS),
+            "sector": float(np.asarray(payload["sector"])[pos]),
+            "ncl": float(np.asarray(payload["ncl"])[pos]),
+            "dcar_tpc_vertex": float(np.asarray(payload["dcar_tpc_vertex"])[pos]),
+            "tgl": float(np.asarray(payload["tgl"])[pos]),
+            "final": float(np.asarray(payload["final"])[pos]),
+        })
+    return records
+
+
+def _preclean_c4_pair_diagnostics(eager: dict, lazy: dict) -> dict:
+    """Locate independent EAGER/LAZY membership disagreement before tolerance logic."""
+    ecount = np.asarray(eager["expected"]["count"], dtype=np.int64)
+    lcount = np.asarray(lazy["expected"]["count"], dtype=np.int64)
+    mismatch = np.flatnonzero(ecount != lcount)
+
+    em = eager.get("membership", {})
+    lm = lazy.get("membership", {})
+    erows = np.asarray(em.get("row_id", ()), dtype=np.int64)
+    lrows = np.asarray(lm.get("row_id", ()), dtype=np.int64)
+    eflat = np.asarray(em.get("flat_bin", ()), dtype=np.int64)
+    lflat = np.asarray(lm.get("flat_bin", ()), dtype=np.int64)
+
+    bins = []
+    for flat in mismatch:
+        eids = np.sort(erows[eflat == flat])
+        lids = np.sort(lrows[lflat == flat])
+        only_e = np.setdiff1d(eids, lids, assume_unique=False)
+        only_l = np.setdiff1d(lids, eids, assume_unique=False)
+        bins.append({
+            "flat_index": int(flat),
+            "side_type": int(flat // INJECTED_TRUTH_BINS),
+            "sector_bin": int(flat % INJECTED_TRUTH_BINS),
+            "eager_count": int(ecount[flat]),
+            "lazy_count": int(lcount[flat]),
+            "count_delta_lazy_minus_eager": int(lcount[flat] - ecount[flat]),
+            "only_eager_row_count": int(only_e.size),
+            "only_lazy_row_count": int(only_l.size),
+            "only_eager_row_ids": [int(x) for x in only_e[:20]],
+            "only_lazy_row_ids": [int(x) for x in only_l[:20]],
+            "only_eager_rows": _preclean_c4_membership_records(em, only_e),
+            "only_lazy_rows": _preclean_c4_membership_records(lm, only_l),
+        })
+
+    global_only_e = np.setdiff1d(np.sort(erows), np.sort(lrows), assume_unique=False)
+    global_only_l = np.setdiff1d(np.sort(lrows), np.sort(erows), assume_unique=False)
+    return {
+        "independent_count_mismatch_flat_indices": [int(x) for x in mismatch],
+        "independent_count_mismatch_bins": bins,
+        "selected_row_count_eager": int(erows.size),
+        "selected_row_count_lazy": int(lrows.size),
+        "selected_row_ids_equal_globally": bool(
+            erows.size == lrows.size and np.array_equal(np.sort(erows), np.sort(lrows))
+        ),
+        "global_only_eager_row_count": int(global_only_e.size),
+        "global_only_lazy_row_count": int(global_only_l.size),
+        "global_only_eager_row_ids": [int(x) for x in global_only_e[:20]],
+        "global_only_lazy_row_ids": [int(x) for x in global_only_l[:20]],
+        "eager_source_dtypes": dict(eager.get("source_dtypes", {})),
+        "lazy_source_dtypes": dict(lazy.get("source_dtypes", {})),
+        "source_dtypes_equal": bool(
+            eager.get("source_dtypes", {}) == lazy.get("source_dtypes", {})
+        ),
+        "first_disagreement_layer": "L0_REFERENCE_MEMBERSHIP" if mismatch.size else "NONE",
+        "derived_owner": "UNRESOLVED_REFERENCE_INPUT" if mismatch.size else "NONE",
+        "diagnostic_contract": (
+            "exact stable-row membership before public-result or tolerance comparison"
+        ),
+    }
+
+
+def _preclean_c4_failure_annotation(case: CaseSpec, result: CaseResult,
+                                    diagnostics: Mapping[str, Any] | None = None) -> str:
+    """Add compact observed failure evidence to the C4 PRIMARY ORACLE PDF."""
+    lines = [
+        footer_text(case),
+        "",
+        "OBSERVED:",
+        f"  STATUS: {result.status}",
+        f"  {result.detail or 'public result matched declared truth'}",
+    ]
+    if isinstance(diagnostics, Mapping):
+        bins = diagnostics.get("independent_count_mismatch_bins", [])
+        if bins:
+            lines.append("  independent membership mismatches:")
+            for row in bins[:6]:
+                lines.append(
+                    "    side_type={side_type} sector_bin={sector_bin}: "
+                    "EAGER={eager_count} LAZY={lazy_count} "
+                    "only_E={only_eager_row_count} only_L={only_lazy_row_count}".format(**row)
+                )
+    return "\n".join(lines)
+
+
+def _preclean_c4_compare_pair(case: CaseSpec, eager: dict, lazy: dict) -> tuple[list[dict], dict]:
+    """Compare EAGER and LAZY to truth and pin the first measured mode parity."""
+    eexp, eobs = eager["expected"], eager["observed"]
+    lexp, lobs = lazy["expected"], lazy["observed"]
+
+    # The independent truth itself must describe the same FULL row population
+    # in both loading modes before any product-result comparison is accepted.
+    for name in ("group_values", "x_center", "count", "valid_mask"):
+        cmp = compare_array(eexp[name], lexp[name], comparator="exact")
+        if not cmp.ok:
+            raise HarnessError(f"C4 independent EAGER/LAZY {name} differs: {cmp.detail}")
+    truth_mean_cmp = compare_array(eexp["y_mean"], lexp["y_mean"], comparator="exact")
+    if not truth_mean_cmp.ok:
+        raise HarnessError(
+            "C4 independent EAGER/LAZY y_mean is not bit-identical; "
+            "the mechanism must be adjudicated before any tolerance is introduced: "
+            + truth_mean_cmp.detail)
+
+    valid = eobs["valid_mask"] & lobs["valid_mask"]
+    mode_mean_delta = np.zeros_like(eobs["y_mean"], dtype=float)
+    mode_mean_delta[valid] = lobs["y_mean"][valid] - eobs["y_mean"][valid]
+    mode_count_delta = np.asarray(lobs["count"], dtype=np.int64) - np.asarray(eobs["count"], dtype=np.int64)
+
+    expected = {
+        "eager_group_values": eexp["group_values"],
+        "lazy_group_values": eexp["group_values"],
+        "eager_x_center": eexp["x_center"],
+        "lazy_x_center": eexp["x_center"],
+        "eager_count": eexp["count"],
+        "lazy_count": eexp["count"],
+        "eager_valid_mask": eexp["valid_mask"],
+        "lazy_valid_mask": eexp["valid_mask"],
+        "eager_y_mean": eexp["y_mean"],
+        "lazy_y_mean": eexp["y_mean"],
+        "mode_count_delta": np.zeros_like(mode_count_delta),
+        "mode_y_mean_delta": np.zeros_like(mode_mean_delta),
+    }
+    observed = {
+        "eager_group_values": eobs["group_values"],
+        "lazy_group_values": lobs["group_values"],
+        "eager_x_center": eobs["x_center"],
+        "lazy_x_center": lobs["x_center"],
+        "eager_count": eobs["count"],
+        "lazy_count": lobs["count"],
+        "eager_valid_mask": eobs["valid_mask"],
+        "lazy_valid_mask": lobs["valid_mask"],
+        "eager_y_mean": eobs["y_mean"],
+        "lazy_y_mean": lobs["y_mean"],
+        "mode_count_delta": mode_count_delta,
+        "mode_y_mean_delta": mode_mean_delta,
+    }
+
+    evidence = []
+    first_failure = None
+    for obs in case.observables:
+        cmp = compare_observable(obs, expected[obs.name], observed[obs.name])
+        evidence.append(comparison_evidence(
+            obs, cmp,
+            reference_label="same independent raw M3 chained+qualified truth",
+            candidate_label="FULL EAGER/LAZY public grouped profile"))
+        if not cmp.ok and first_failure is None:
+            first_failure = f"{obs.name}: {cmp.detail}"
+    if first_failure is not None:
+        raise HarnessError(first_failure)
+
+    max_abs = 0.0
+    if np.any(valid):
+        max_abs = float(np.max(np.abs(mode_mean_delta[valid])))
+    diagnostics = {
+        "joint_valid_bins": int(np.count_nonzero(valid)),
+        "max_abs_eager_lazy_y_mean_delta": max_abs,
+        "mode_y_mean_exact": bool(np.array_equal(
+            eobs["y_mean"], lobs["y_mean"], equal_nan=True)),
+        "independent_truth_y_mean_exact": bool(np.array_equal(
+            eexp["y_mean"], lexp["y_mean"], equal_nan=True)),
+    }
+    return evidence, diagnostics
+
+
+def _preclean_c4_build_full(root_path: str, gallery: Any, *, lazy: bool) -> tuple[Any, dict]:
+    """Build one unsampled FULL ADF leg and prove sampling was not invoked."""
+    original_sample = pd.DataFrame.sample
+    calls = []
+
+    def forbidden_sample(self, *args, **kwargs):
+        calls.append((args, kwargs))
+        return original_sample(self, *args, **kwargs)
+
+    pd.DataFrame.sample = forbidden_sample
+    try:
+        adf = gallery.build_adf(
+            root_path, sample=None, lazy=lazy, tree_name=PRECLEAN_C4_TREE_NAME)
+    finally:
+        pd.DataFrame.sample = original_sample
+    if calls:
+        raise HarnessError(f"C4 FULL {'LAZY' if lazy else 'EAGER'} unexpectedly sampled rows")
+    reader = getattr(adf, "_lazy_reader", None)
+    if lazy and reader is None:
+        raise HarnessError("C4 LAZY_FULL unexpectedly fell back to eager loading")
+    if not lazy and reader is not None:
+        raise HarnessError("C4 EAGER_FULL unexpectedly exposes a lazy reader")
+    st = os.stat(root_path)
+    provenance = {
+        "input_path": os.path.abspath(root_path),
+        "input_size_bytes": int(st.st_size),
+        "input_mtime_ns": int(st.st_mtime_ns),
+        "tree_name": PRECLEAN_C4_TREE_NAME,
+        "loading_mode": "LAZY" if lazy else "EAGER",
+        "sample_mode": "FULL",
+        "sample_fraction": None,
+        "sample_seed": None,
+        "source_rows": int(len(adf.df)),
+    }
+    return adf, provenance
+
+
+def _preclean_c4_render_pdf(path: str, case: CaseSpec, eager: dict, lazy: dict,
+                            result: CaseResult) -> None:
+    """Render the one approved C4 PRIMARY ORACLE slow-gate page."""
+    import matplotlib.pyplot as plt
+    from matplotlib.backends.backend_pdf import PdfPages
+
+    e = eager["observed"]
+    l = lazy["observed"]
+    fig, axes = plt.subplots(2, 1, figsize=(11.0, 8.5), sharex=True,
+                             gridspec_kw={"height_ratios": [2.2, 1.0]})
+    for side in (0, 1):
+        mask_e = (e["group_values"] == side) & e["valid_mask"]
+        mask_l = (l["group_values"] == side) & l["valid_mask"]
+        axes[0].plot(e["x_center"][mask_e], e["y_mean"][mask_e],
+                     marker="o", ms=2.5, lw=1.0, label=f"EAGER side={side}")
+        axes[0].plot(l["x_center"][mask_l], l["y_mean"][mask_l],
+                     marker=".", ms=2.5, lw=1.0, label=f"LAZY side={side}")
+        joint = (e["group_values"] == side) & e["valid_mask"] & l["valid_mask"]
+        residual = l["y_mean"][joint] - e["y_mean"][joint]
+        axes[1].plot(e["x_center"][joint], residual,
+                     marker=".", ms=2.5, lw=0.9, label=f"side={side}")
+
+    axes[0].set_ylabel("oracle_chain_with_shift mean")
+    axes[0].set_title("C4 PRIMARY ORACLE — FULL EAGER ↔ LAZY qualified-chain truth")
+    axes[0].legend(loc="best", fontsize=8)
+    axes[0].grid(True, alpha=0.25)
+    axes[1].axhline(0.0, lw=0.8)
+    axes[1].set_xlabel("sector")
+    axes[1].set_ylabel("LAZY - EAGER")
+    axes[1].legend(loc="best", fontsize=8)
+    axes[1].grid(True, alpha=0.25)
+    diagnostics = None
+    if isinstance(result.observed, Mapping):
+        diagnostics = result.observed.get("pair_diagnostics")
+    _annotate_stage_a_figure(
+        fig, _preclean_c4_failure_annotation(case, result, diagnostics))
+    os.makedirs(os.path.dirname(os.path.abspath(path)), exist_ok=True)
+    with PdfPages(path) as pdf:
+        pdf.savefig(fig)
+    plt.close(fig)
+
+
+def run_preclean_c4_full_gate(root_path: str, *, manifest_path: str, pdf_path: str,
+                              gallery_module=None) -> tuple[list[CaseResult], dict, int]:
+    """Execute C4 FULL EAGER then FULL LAZY, compare both to one truth contract."""
+    case = preclean_c4_case(root_path, gallery_module=gallery_module)
+    result = CaseResult(case_id=case.case_id, status=FAIL)
+    t0 = time.time()
+    eager_adf = lazy_adf = None
+    eager = lazy = None
+    eager_prov = lazy_prov = None
+    try:
+        gallery = gallery_module if gallery_module is not None else _a5_2_import_gallery()
+        if not case.applicable:
+            result.status = SKIP
+            result.detail = case.applicability_reason
+        else:
+            print(f"[C4 EAGER_FULL] {_o3_timestamp()} BUILD BEGIN")
+            eager_adf, eager_prov = _preclean_c4_build_full(root_path, gallery, lazy=False)
+            eager = _preclean_c4_evaluate_prepared(eager_adf, gallery, mode="EAGER_FULL")
+            print(f"[C4 EAGER_FULL] {_o3_timestamp()} END rows={eager['source_rows']}")
+
+            # Keep only small comparison arrays before constructing the LAZY leg.
+            del eager_adf
+            eager_adf = None
+            _close()
+            try:
+                import gc
+                gc.collect()
+            except Exception:
+                pass
+
+            print(f"[C4 LAZY_FULL] {_o3_timestamp()} BUILD BEGIN")
+            lazy_adf, lazy_prov = _preclean_c4_build_full(root_path, gallery, lazy=True)
+            lazy = _preclean_c4_evaluate_prepared(lazy_adf, gallery, mode="LAZY_FULL")
+            print(f"[C4 LAZY_FULL] {_o3_timestamp()} END rows={lazy['source_rows']}")
+
+            identity_fields = ("input_path", "input_size_bytes", "input_mtime_ns", "tree_name", "source_rows")
+            mismatch = {k: {"eager": eager_prov[k], "lazy": lazy_prov[k]}
+                        for k in identity_fields if eager_prov[k] != lazy_prov[k]}
+            if mismatch:
+                raise HarnessError(f"C4 FULL source identity mismatch: {mismatch}")
+            if not eager["l1"].get("L1_all_within_tolerance", False):
+                raise HarnessError("C4 EAGER_FULL ADF materialized chain differs from independent formula")
+            if not lazy["l1"].get("L1_all_within_tolerance", False):
+                raise HarnessError("C4 LAZY_FULL ADF materialized chain differs from independent formula")
+
+            pair_diag = _preclean_c4_pair_diagnostics(eager, lazy)
+            result.observed = {
+                "realdata_provenance": {"eager": eager_prov, "lazy": lazy_prov},
+                "L1_materialization": {"eager": eager["l1"], "lazy": lazy["l1"]},
+                "pair_diagnostics": pair_diag,
+            }
+            comparisons, diag = _preclean_c4_compare_pair(case, eager, lazy)
+            result.comparisons = comparisons
+            result.executed_comparisons = len(comparisons)
+            result.observable_contract = [_contract(obs) for obs in case.observables]
+            result.observed.update({
+                "mode_parity": diag,
+                "ownership_ladder": {
+                    "L0": "same independently reconstructed M3 raw/chained/qualified truth",
+                    "L1": "ADF materialized chain matches independent truth in EAGER and LAZY",
+                    "L2": "public grouped profile in each mode matches the same independent truth",
+                    "L3": "EAGER and LAZY public counts/masks/binning/y_mean are exactly identical",
+                    "first_disagreement_layer": "NONE",
+                    "contract_reference_status": "VERIFIED",
+                    "owner_status": "NONE",
+                    "derived_owner": "NONE",
+                },
+            })
+            result.status = PASS
+            result.detail = ""
+            _preclean_c4_render_pdf(pdf_path, case, eager, lazy, result)
+            result.payload_paths["C4/slow_pdf"] = os.path.abspath(pdf_path)
+    except Exception as exc:
+        result.status = FAIL
+        result.detail = f"PRECLEAN_C4 FULL EAGER_LAZY FAIL: {exc}"
+        result.exception = traceback.format_exc(limit=8)
+        pair_diag = result.observed.get("pair_diagnostics", {}) if isinstance(result.observed, Mapping) else {}
+        first = pair_diag.get("first_disagreement_layer", "UNRESOLVED")
+        owner = pair_diag.get("derived_owner", "UNRESOLVED")
+        if not result.observed.get("ownership_ladder"):
+            result.observed["ownership_ladder"] = {
+                "L0": "same ROOT identity plus exact stable-row independent membership",
+                "L1": "ADF materialization checked independently in each loading mode",
+                "L2": "public grouped profiles compared independently to truth",
+                "L3": "exact EAGER↔LAZY parity",
+                "first_disagreement_layer": first,
+                "contract_reference_status": "VERIFIED" if eager is not None and lazy is not None else "UNRESOLVED",
+                "owner_status": owner,
+                "derived_owner": owner,
+            }
+        if eager is not None and lazy is not None:
+            try:
+                _preclean_c4_render_pdf(pdf_path, case, eager, lazy, result)
+                result.payload_paths["C4/slow_pdf"] = os.path.abspath(pdf_path)
+            except Exception as pdf_exc:
+                result.observed["failure_pdf_error"] = f"{type(pdf_exc).__name__}: {pdf_exc}"
+    finally:
+        eager_adf = None
+        lazy_adf = None
+        _close()
+        result.wall_time_s = round(time.time() - t0, 4)
+
+    extra = {
+        "stage_a_gate": "PRECLEAN_C4_FULL_EAGER_LAZY_PRIMARY_ORACLE",
+        "preclean_c4": {
+            "loading_mode": "BOTH",
+            "sample_mode": "FULL",
+            "execution_legs": ["EAGER_FULL", "LAZY_FULL"],
+            "reused_gallery_function": PRECLEAN_C4_REUSED_GALLERY_FUNCTION,
+            "fast_gallery_page_count_effect": 0,
+            "slow_primary_oracle_pages": 1,
+            "tolerance_policy": (
+                "each mode uses existing M3 independent-truth tolerance; first measured "
+                "EAGER↔LAZY y_mean parity is pinned exact and must be adjudicated before any relaxation"
+            ),
+            "diagnostic_revision": (
+                "v06 records exact stable-row membership deltas by side_type/sector bin "
+                "and writes the PRIMARY ORACLE PDF even when C4 is red"
+            ),
+        },
+        "stage_a_closure": stage_a_closure_metadata(gallery_module),
+    }
+    manifest = write_manifest(manifest_path, [result], [case], extra=extra)
+    return [result], manifest, strict_exit_code([result], [case])
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # PHASE_13_77 post-Stage-A gallery-oracle hardening v0.2 — STEP 2 / O5
 # selection_vector × facet_by × normalize=delta correctness
 # ─────────────────────────────────────────────────────────────────────────────
@@ -7724,6 +9236,10 @@ def current_stage_a_contract_amendment() -> dict:
         "previous_checkpoint_gallery_pages": 53,
         "injected_truth_primary_pages": 6,
         "commissioning_addition_pages": 3,
+        "preclean_c1_primary_pages": 1,
+        "preclean_c2_primary_pages": 1,
+        "preclean_c3_primary_pages": 1,
+        "preclean_c4_slow_primary_pages": 1,
         "superseded_nodes": [
             {
                 "node": ("tests/test_phase_13_77_realdata_invariance_harness.py::"
@@ -7749,8 +9265,8 @@ def current_stage_a_contract_amendment() -> dict:
         "target_a7_commit": HARDENING_O4_A7_COMMIT,
         "target_aliasdataframe_md5": HARDENING_O4_ADF_SOURCE_MD5,
         "target_aliasdataframe_sha256": HARDENING_O4_ADF_SOURCE_SHA256,
-        "current_step_gallery_pages": 56,
-        "approved_final_fast_gallery_pages": 56,
+        "current_step_gallery_pages": 59,
+        "approved_final_fast_gallery_pages": 59,
     }
 
 
@@ -8020,6 +9536,9 @@ _GALLERY_DISPOSITION = {
     "fig52_hist_vector_truth": ("REUSED_CORE", "M1 histogram selection/weight vector independent truth"),
     "fig53_grouping_truth": ("REUSED_CORE", "M2 categorical and binned grouping independent truth"),
     "fig54_qualified_subframe_chain_truth": ("REUSED_CORE", "M3 qualified-subframe/chained-alias independent truth"),
+    "fig55_preclean_hist_vector_facet_acceptance": ("REUSED_CORE", "C1 repaired ORACLE-02 hist×selection_vector×facet acceptance truth"),
+    "fig56_preclean_draw_figures_effective_defaults": ("REUSED_CORE", "C2 draw_figures short-form effective-defaults injected-truth correctness"),
+    "fig57_preclean_ratio_y_vector_truth": ("REUSED_CORE", "C3 y-vector normalize=ratio predeclared exact-scaled numerical truth"),
 }
 
 _NUMERICAL_CORRECTNESS_ANCHORS = (
@@ -8027,6 +9546,16 @@ _NUMERICAL_CORRECTNESS_ANCHORS = (
         "family": "histogram",
         "evidence": "test_phase_13_77_realdata_invariance_harness.py::test_a1_correctness_case_agrees_with_numpy",
         "meaning": "independent NumPy histogram/count anchor",
+    },
+    {
+        "family": "hist_selection_vector_facet_acceptance",
+        "evidence": "test_phase_13_77_realdata_invariance_harness.py::test_preclean_c1_runner_matches_3x2_histogram_truth",
+        "meaning": "independent 3-facet × 2-branch NumPy histogram/count acceptance anchor for repaired ORACLE-02",
+    },
+    {
+        "family": "y_vector_ratio_exact_scaled_truth",
+        "evidence": "test_phase_13_77_realdata_invariance_harness.py::test_preclean_c3_runner_matches_exact_ratio_truth",
+        "meaning": "independent raw positive/scaled y-vector profile ratio oracle with predeclared 0.5 truth",
     },
     {
         "family": "grouped_profile_keyed_subframe",
@@ -8147,6 +9676,9 @@ def _stage_a_case_for_gallery_function(name: str, root_path: str, gallery_module
         M1_HIST_GALLERY_FUNCTION: m1_hist_vector_case,
         M2_GROUP_GALLERY_FUNCTION: m2_grouping_case,
         M3_SUBFRAME_GALLERY_FUNCTION: m3_subframe_chain_case,
+        PRECLEAN_C1_GALLERY_FUNCTION: lambda **_: preclean_c1_case(root_path, gallery_module=gallery_module),
+        PRECLEAN_C2_GALLERY_FUNCTION: lambda **_: preclean_c2_case(root_path, gallery_module=gallery_module),
+        PRECLEAN_C3_GALLERY_FUNCTION: lambda **_: preclean_c3_case(root_path, gallery_module=gallery_module),
     }
     factory = commissioning.get(name)
     if callable(factory):
@@ -8480,6 +10012,9 @@ def _a6_3_fraction_cases(root_path: str, gallery_module=None) -> tuple[CaseSpec,
         a7_1_realdata_case(root_path, gallery_module=gallery_module),
         o1_neg_a_case(root_path, gallery_module=gallery_module),
         o1_neg_b_case(root_path, gallery_module=gallery_module),
+        preclean_c1_case(root_path, gallery_module=gallery_module),
+        preclean_c2_case(root_path, gallery_module=gallery_module),
+        preclean_c3_case(root_path, gallery_module=gallery_module),
         o5_realdata_case(root_path, gallery_module=gallery_module),
         o4_realdata_case(root_path, gallery_module=gallery_module),
         o2_oracle_case(gallery_module=gallery_module),
@@ -8494,7 +10029,7 @@ def _a6_3_fraction_cases(root_path: str, gallery_module=None) -> tuple[CaseSpec,
 
 def _a6_3_fraction_runners():
     return (
-        run_a7_1_realdata, run_o1_neg_a, run_o1_neg_b, run_o5_realdata,
+        run_a7_1_realdata, run_o1_neg_a, run_o1_neg_b, run_preclean_c1, run_preclean_c2, run_preclean_c3, run_o5_realdata,
         run_o4_surface_equivalence, run_o2_realdata,
         run_injected_truth_case, run_injected_truth_case, run_injected_truth_case,
         run_injected_truth_case, run_injected_truth_case, run_injected_truth_case,
@@ -8811,6 +10346,9 @@ def build_stage_a_cli_parser():
     mode.add_argument(
         "--numeric-recheck", action="store_true",
         help="rerun ORACLE-03/04/06/07 with float64 reference diagnostics plus positive controls")
+    mode.add_argument(
+        "--preclean-c4", action="store_true",
+        help="run the FULL EAGER↔LAZY C4 qualified-chain PRIMARY ORACLE slow gate")
     parser.add_argument(
         "--lazy", action="store_true",
         help="with --full, use the existing unsampled lazy loader (read branches on demand)")
@@ -8933,7 +10471,15 @@ def stage_a_cli_main(argv: Sequence[str] | None = None, *, gallery_module=None) 
             return 0
 
         _require_cli_evidence_paths(args)
-        if args.numeric_recheck:
+        if args.preclean_c4:
+            if any((args.compare, args.accept_reference, args.update_reference,
+                    args.previous_reference)):
+                raise HarnessError(
+                    "C4 FULL slow gate cannot perform reference mutation/comparison")
+            results, manifest, gate_code = run_preclean_c4_full_gate(
+                args.root_path, manifest_path=args.manifest, pdf_path=args.pdf,
+                gallery_module=gallery)
+        elif args.numeric_recheck:
             if any((args.compare, args.accept_reference, args.update_reference,
                     args.previous_reference)):
                 raise HarnessError(
@@ -10060,6 +11606,26 @@ _PRIMARY_ORACLE_REVIEW_CHECKS = {
         "Confirm both side_type panels are present and residual means fluctuate around zero rather than showing a coherent sector-dependent bias.",
         "Check there is no systematic A/C-side offset or repeated sector structure larger than the expected statistical fluctuations.",
         "Confirm per-facet/per-sector counts and means are compared with the raw stable-row oracle_noise partition.",
+    ),
+    PRECLEAN_C1_CASE_ID: (
+        "Confirm three side_type facets are visible and every facet contains both early and late histogram branches; 3×2 cardinality is load-bearing.",
+        "Confirm the same-page non-faceted positive control contains the same two early/late branches and has not regressed while facet composition is exercised.",
+        "Confirm the machine oracle compares facet identities, exact branch×facet bin counts and in-range row totals against independent raw NumPy histograms.",
+    ),
+    PRECLEAN_C2_CASE_ID: (
+        "Confirm the page is the draw_figures short-form request and that figure-level defaults, not the conflicting top-level defaults, determine the 36-bin normalized result.",
+        "Confirm the two qualified O4Surface selector branches are present with the declared signal/reference ordering and that the visible delta follows the independently computed side_type=0 minus side_type=1 known-delta profile.",
+        "Confirm the machine oracle checks raw counts, branch means, delta, valid-bin mask, caller non-mutation, and preservation of the caller short-form string rather than only successful rendering.",
+    ),
+    PRECLEAN_C3_CASE_ID: (
+        "Confirm the two y-vector source profiles are strictly positive and the second trace is visibly the declared 2× scaled companion of the first.",
+        "Confirm the normalized ratio result exists and stays at 0.5 on every independently valid sector bin; absence of normalize_data is itself a FAIL.",
+        "Confirm the machine oracle checks branch order, exact counts/mask, independent raw branch means, and public ratio values rather than only successful rendering.",
+    ),
+    PRECLEAN_C4_CASE_ID: (
+        "Confirm EAGER and LAZY show both side_type groups for the same oracle_chain_with_shift:sector scientific request; no group may disappear or swap identity.",
+        "Confirm the lower LAZY-EAGER residual is exactly zero on every jointly populated sector bin; any non-zero residual requires adjudication before introducing a tolerance.",
+        "Confirm each loading mode is independently compared with the raw chained-alias plus qualified OracleShift truth, not only with the other mode.",
     ),
     M1_HIST_CASE_ID: (
         "On the left, identify early and late histogram branches; on the right, identify flat and tgl-weighted branches. No branch may silently disappear.",

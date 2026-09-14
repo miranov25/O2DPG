@@ -22,6 +22,7 @@ Groups:
   G11 — Hardening oracles       (fig44 weights-vector, fig45 public-surface)
   G12 — Injected-truth oracles  (fig46–fig51, PHASE_13_77 scientific correctness)
   G13 — Commissioning safety net (fig52–fig54, hist/group/subframe truth)
+  G14 — Pre-cleaning oracles      (fig55+, PHASE_13_76 cleanup safety net)
 
 Known limitations:
   central='median' + group_by=: silently returns mean (KNOWN.grouped_central_median).
@@ -30,6 +31,7 @@ Known limitations:
 """
 
 import sys
+import copy
 import matplotlib; matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import numpy as np
@@ -892,6 +894,174 @@ def fig34_gb_correction_sector(adf):
         print(f"  fig34 skipped: {e}"); return None
 
 
+# ── G14 — PHASE_13_76 pre-cleaning oracle addendum ───────────────────────────
+
+PRECLEAN_C1_HIST_BINS = 40
+PRECLEAN_C1_HIST_RANGE = (80.0, 160.0)
+PRECLEAN_C1_FACETS = (0, 1, 2)
+
+
+def fig55_preclean_hist_vector_facet_acceptance(adf):
+    """G14.55 — PRIMARY ORACLE — hist × selection_vector × 3 facets + control"""
+    t_mid = float(adf.df["time_s"].median())
+    selections = [f"time_s<{t_mid}", f"time_s>={t_mid}"]
+
+    faceted = adf.draw(
+        "ncl", type="hist",
+        bins=PRECLEAN_C1_HIST_BINS, range=PRECLEAN_C1_HIST_RANGE,
+        selection="(ncl>60)&(side_type<3)",
+        selection_vector=selections,
+        selection_labels=["early", "late"],
+        vector_compose="outer",
+        facet_by="side_type",
+        auto_title=True,
+    )
+    fig, facet_axes, facet_stats = faceted
+    try:
+        fig.set_size_inches(15.0, 5.7, forward=True)
+        fig.subplots_adjust(right=0.76)
+    except Exception:
+        pass
+
+    # Same-page positive control: identical two selection branches with no
+    # facet_by.  The public non-faceted route must remain visibly intact while
+    # the 3×2 faceted route proves branch/facet composition.
+    control_ax = fig.add_axes([0.79, 0.48, 0.19, 0.34])
+    control = adf.draw(
+        "ncl", type="hist",
+        bins=PRECLEAN_C1_HIST_BINS, range=PRECLEAN_C1_HIST_RANGE,
+        selection="(ncl>60)&(side_type<3)",
+        selection_vector=selections,
+        selection_labels=["early", "late"],
+        vector_compose="outer",
+        ax=control_ax,
+        auto_title=False,
+    )
+    control_ax.set_title("positive control: same branches, no facet", fontsize=8)
+    control_ax.tick_params(labelsize=7)
+
+    return fig, {"facets": facet_axes, "control": control_ax}, {
+        "faceted_stats": facet_stats,
+        "control_stats": control[2],
+        "t_mid": t_mid,
+        "facet_values": list(PRECLEAN_C1_FACETS),
+        "selection_vector": selections,
+    }
+
+
+PRECLEAN_C2_NAME = "preclean_c2_effective_defaults"
+PRECLEAN_C2_SELECTIONS = (
+    f"{O4_SUBFRAME_NAME}.selector==0",
+    f"{O4_SUBFRAME_NAME}.selector==1",
+)
+
+
+def _preclean_c2_request(adf):
+    """Execute the one reviewed draw_figures short-form/effective-default request.
+
+    The request owner lives here so the gallery page and machine oracle execute
+    exactly the same public call.  Independent numerical truth remains in the
+    invariance harness, not in this helper.
+    """
+    _ensure_injected_truth(adf)
+    _ensure_o4_surface_subframe(adf)
+
+    # Intentionally weaker/wrong top-level defaults are overridden by the
+    # per-figure defaults.  This makes the effective-default precedence
+    # load-bearing without creating a second plot-spec implementation.
+    top_defaults = {
+        "type": "profile",
+        "bins": 18,
+        "selection": "ncl>0",
+        "return_data": True,
+    }
+    specs = [{
+        "name": PRECLEAN_C2_NAME,
+        "suptitle": "C2 PRIMARY ORACLE — draw_figures short form + effective defaults",
+        "defaults": {
+            "type": "profile",
+            "bins": INJECTED_TRUTH_SECTOR_BINS,
+            "range": list(INJECTED_TRUTH_SECTOR_RANGE),
+            "selection": INJECTED_TRUTH_SIDE_SEL,
+            "selection_vector": list(PRECLEAN_C2_SELECTIONS),
+            "normalize": "delta",
+            "return_data": True,
+            "auto_title": True,
+        },
+        "plots": ["known_delta:sector"],
+    }]
+    specs_before = copy.deepcopy(specs)
+    defaults_before = copy.deepcopy(top_defaults)
+
+    result = adf.draw_figures(
+        specs, defaults=top_defaults,
+        lazy=True, clear_after=False, verbose=False)
+    if PRECLEAN_C2_NAME not in result:
+        raise RuntimeError(
+            f"draw_figures did not return {PRECLEAN_C2_NAME!r}: {sorted(result)}")
+    entry = result[PRECLEAN_C2_NAME]
+    stats_list = entry.get("stats") if isinstance(entry, dict) else None
+    if not isinstance(stats_list, (list, tuple)) or len(stats_list) != 1:
+        raise RuntimeError("C2 draw_figures result must expose exactly one plot stats payload")
+
+    caller_unchanged = specs == specs_before and top_defaults == defaults_before
+    short_form_preserved = isinstance(specs[0]["plots"][0], str)
+    return entry["fig"], entry["axes"], {
+        "stats": stats_list[0],
+        "caller_unchanged": bool(caller_unchanged),
+        "short_form_preserved": bool(short_form_preserved),
+        "specs_before": specs_before,
+        "specs_after": specs,
+        "defaults_before": defaults_before,
+        "defaults_after": top_defaults,
+    }
+
+
+def fig56_preclean_draw_figures_effective_defaults(adf):
+    """G14.56 — PRIMARY ORACLE — short-form draw_figures effective defaults."""
+    return _preclean_c2_request(adf)
+
+
+PRECLEAN_C3_BASE_ALIAS = "preclean_ratio_base"
+PRECLEAN_C3_SCALED_ALIAS = "preclean_ratio_scaled"
+PRECLEAN_C3_BASE_EXPR = "1.0 + 0.02*sector + 0.01*tgl*tgl"
+PRECLEAN_C3_SCALE = 2.0
+
+
+def _ensure_preclean_c3_ratio_truth(adf):
+    """Install the C3 positive/scaled ratio pair through the canonical alias engine."""
+    adf.ensure_columns(["sector", "tgl", "ncl", "dcar_tpc_vertex"])
+    aliases = {
+        PRECLEAN_C3_BASE_ALIAS: PRECLEAN_C3_BASE_EXPR,
+        PRECLEAN_C3_SCALED_ALIAS: f"{PRECLEAN_C3_SCALE}*{PRECLEAN_C3_BASE_ALIAS}",
+    }
+    for name, expression in aliases.items():
+        existing = getattr(adf, "aliases", {}).get(name)
+        if existing is None:
+            adf.add_alias(name, expression)
+        elif str(existing) != expression:
+            raise ValueError(f"existing alias {name!r} has unexpected definition {existing!r}")
+    adf.materialize_aliases(
+        names=list(aliases), with_dependencies=True,
+        only_unmaterialized=True, cleanTemporary=False)
+    return adf
+
+
+def fig57_preclean_ratio_y_vector_truth(adf):
+    """G14.57 — PRIMARY ORACLE — y-vector normalize=ratio exact scaled truth."""
+    _ensure_preclean_c3_ratio_truth(adf)
+    return adf.draw(
+        f"[{PRECLEAN_C3_BASE_ALIAS},{PRECLEAN_C3_SCALED_ALIAS}]:sector",
+        type="profile",
+        bins=INJECTED_TRUTH_SECTOR_BINS,
+        range=INJECTED_TRUTH_SECTOR_RANGE,
+        selection=BASE_SEL,
+        normalize="ratio",
+        auto_title=True,
+        return_data=True,
+    )
+
+
 # ── Figure lists ──────────────────────────────────────────────────────────────
 
 FIGURES_G1 = [fig01_hist_ncl, fig02_hist_time, fig03_hist_cumulative,
@@ -935,9 +1105,16 @@ FIGURES_G13 = [
     fig54_qualified_subframe_chain_truth,
 ]
 
+FIGURES_G14 = [
+    fig55_preclean_hist_vector_facet_acceptance,
+    fig56_preclean_draw_figures_effective_defaults,
+    fig57_preclean_ratio_y_vector_truth,
+]
+
 FIGURES_MANDATORY = (FIGURES_G1 + FIGURES_G2 + FIGURES_G3 + FIGURES_G4
                      + FIGURES_G5 + FIGURES_G6 + FIGURES_G8 + FIGURES_G9
-                     + FIGURES_G10 + FIGURES_G11 + FIGURES_G12 + FIGURES_G13)
+                     + FIGURES_G10 + FIGURES_G11 + FIGURES_G12 + FIGURES_G13
+                     + FIGURES_G14)
 FIGURES_OPTIONAL  = [fig32_subframe_vertex, fig33_gb_correction_tgl, fig34_gb_correction_sector]
 
 

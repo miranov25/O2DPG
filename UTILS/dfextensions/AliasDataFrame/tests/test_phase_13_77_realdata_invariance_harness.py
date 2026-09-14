@@ -4965,9 +4965,9 @@ def test_a6_22_pdf_wrapper_reuses_gallery_pdf_owner_and_annotates_pages(tmp_path
         object(), str(tmp_path / "stage_a.pdf"), root_path=str(root),
         gallery_module=gallery)
     assert evidence["ok"] is True
-    assert evidence["page_count"] == 56
-    assert evidence["expected_page_count"] == 56
-    assert len(gallery.saved) == 56
+    assert evidence["page_count"] == 59
+    assert evidence["expected_page_count"] == 59
+    assert len(gallery.saved) == 59
     assert len(gallery.perf_messages) == 2 * (len(gallery.FIGURES_MANDATORY) + len(gallery.FIGURES_OPTIONAL))
     assert gallery.perf_messages[0].endswith(": BEGIN")
     assert gallery.perf_messages[-1].endswith(": END")
@@ -5222,8 +5222,8 @@ def test_a6_33_reused_core_optional_skip_is_strict_failure(tmp_path):
     assert results[0].status == H.FAIL
     evidence = results[0].observed["visual_evidence"]
     assert evidence["ok"] is False
-    assert evidence["page_count"] == 55
-    assert evidence["expected_page_count"] == 56
+    assert evidence["page_count"] == 56
+    assert evidence["expected_page_count"] == 59
     assert any(e["gallery_function"] == "fig32_subframe_vertex"
                for e in evidence["errors"])
     assert any(e["gallery_function"] == "__page_count__"
@@ -5238,12 +5238,14 @@ def test_a6_34_current_pdf_contract_requires_all_live_pages(tmp_path):
         object(), str(tmp_path / "stage_a.pdf"), root_path=str(root),
         gallery_module=gallery)
     assert evidence["ok"] is True
-    assert evidence["page_count"] == 56
-    assert evidence["expected_page_count"] == 56
+    assert evidence["page_count"] == 59
+    assert evidence["expected_page_count"] == 59
     assert set(("fig32_subframe_vertex", "fig33_gb_correction_tgl",
                 "fig34_gb_correction_sector", "fig43_vector_facet_summary_fit",
                 "fig44_weights_vector_facet_fit_oracle",
                 "fig45_public_surface_equivalence_oracle",
+                "fig55_preclean_hist_vector_facet_acceptance",
+                "fig56_preclean_draw_figures_effective_defaults",
                 "fig46_injected_truth_vector_overlay",
                 "fig51_injected_truth_facet_residual")).issubset(
                     set(evidence["required_gallery_functions"]))
@@ -5551,21 +5553,23 @@ def test_a7_08_current_gallery_contract_extends_committed_a7_without_rewriting_h
     assert evidence["ok"] is True
     # Historical Stage-A (43 pages) and the committed v0.2 checkpoint (47 pages)
     # remain immutable references.  The injected-truth increment adds six mandatory
-    # scientific-oracle pages and therefore makes the injected-truth checkpoint 53 pages; the finite commissioning additions make the live contract 56 pages.
+    # scientific-oracle pages and therefore makes the injected-truth checkpoint 53 pages; the finite commissioning additions made 56 pages; pre-cleaning C1+C2+C3 make the live contract 59 pages.
     rec = H.current_stage_a_contract_amendment()
     assert rec["historical_stage_a_gallery_pages"] == 43
     assert rec["pre_injected_checkpoint_gallery_pages"] == 47
     assert rec["previous_checkpoint_gallery_pages"] == 53
     assert rec["injected_truth_primary_pages"] == 6
-    assert rec["current_step_gallery_pages"] == 56
-    assert rec["approved_final_fast_gallery_pages"] == 56
-    assert evidence["page_count"] == 56
-    assert evidence["expected_page_count"] == 56
+    assert rec["preclean_c1_primary_pages"] == 1
+    assert rec["preclean_c2_primary_pages"] == 1
+    assert rec["current_step_gallery_pages"] == 59
+    assert rec["approved_final_fast_gallery_pages"] == 59
+    assert evidence["page_count"] == 59
+    assert evidence["expected_page_count"] == 59
     assert "fig43_vector_facet_summary_fit" in evidence["required_gallery_functions"]
     assert "fig45_public_surface_equivalence_oracle" in evidence["required_gallery_functions"]
     assert "fig46_injected_truth_vector_overlay" in evidence["required_gallery_functions"]
     assert "fig51_injected_truth_facet_residual" in evidence["required_gallery_functions"]
-    assert len(gallery.saved) == 56
+    assert len(gallery.saved) == 59
 
 
 # ── PHASE_13_77 hardening v0.2 — STEP 1 / O1 ──
@@ -5648,6 +5652,59 @@ def test_a7_13_o1_neg_b_current_product_applies_supported_nonprofile_vector(tmp_
     assert result.status == H.PASS, result.detail
     assert result.executed_comparisons == 1
     assert result.comparisons[0]["ok"] is True
+
+
+def test_preclean_c1_case_is_primary_3x2_acceptance_and_gallery_owned(tmp_path):
+    import time_series_draw as G
+    root = tmp_path / "synthetic.root"
+    root.write_bytes(b"root")
+    case = H.preclean_c1_case(str(root), gallery_module=G)
+    assert case.case_id == H.PRECLEAN_C1_CASE_ID
+    assert H.proof_class_for_case(case) == H.PRIMARY_ORACLE
+    assert case.canonical_spec["facets"] == [0, 1, 2]
+    assert case.canonical_spec["selection_vector"] == ["early", "late"]
+    assert case.figure_contract.expected_group_count.startswith("3 facets × 2 branches")
+    assert H.validate_registry([case]) == []
+    assert H.PRECLEAN_C1_GALLERY_FUNCTION in {fn.__name__ for fn in G.FIGURES_MANDATORY}
+    row = next(r for r in H.gallery_disposition_table(G)
+               if r["gallery_function"] == H.PRECLEAN_C1_GALLERY_FUNCTION)
+    assert row["disposition"] == "REUSED_CORE"
+    owned = H._stage_a_case_for_gallery_function(
+        H.PRECLEAN_C1_GALLERY_FUNCTION, str(root), gallery_module=G)
+    assert owned is not None and owned.case_id == H.PRECLEAN_C1_CASE_ID
+    footer = H.footer_text(case)
+    assert "PROOF CLASS: PRIMARY ORACLE" in footer
+    assert "3 facets" in footer or "three side_type facet panels" in footer
+
+
+def test_preclean_c1_runner_matches_3x2_histogram_truth(tmp_path):
+    """C1 protects repaired ORACLE-02 with unequal facet/branch cardinality."""
+    import time_series_draw as G
+    adf = _hardening_adf(n=7200)
+    root = tmp_path / "synthetic.root"
+    root.write_bytes(b"root")
+    case = H.preclean_c1_case(str(root), gallery_module=G)
+    result = H.run_preclean_c1(
+        case, str(root), gallery_module=G, prepared_adf=adf,
+        prepared_provenance=_a7_provenance(str(root), len(adf.df)))
+    assert result.status == H.PASS, result.detail
+    assert result.executed_comparisons == 5
+    assert all(cmp["ok"] for cmp in result.comparisons)
+    assert result.observed["facet_identities"] == [0, 1, 2]
+    assert result.observed["branch_facet_cardinality"] == 6
+    assert result.observed["positive_control_branch_count"] == 2
+    assert result.observed["ownership_ladder"]["first_disagreement_layer"] == "NONE"
+
+
+def test_preclean_c1_expected_model_is_structurally_asymmetric():
+    adf = _hardening_adf(n=7200)
+    t_mid = float(adf.df["time_s"].median())
+    expected = H._preclean_c1_expected(adf.df, t_mid=t_mid)
+    assert expected["facet_identities"] == [0, 1, 2]
+    assert len(expected["faceted_cells"]) == 6
+    assert len(expected["control_cells"]) == 2
+    assert len(expected["faceted_inrange_rows"]) == 6
+    assert len(expected["control_inrange_rows"]) == 2
 
 
 # ── PHASE_13_77 hardening v0.2 — STEP 2 / O5 ──
@@ -5834,8 +5891,10 @@ def test_a7_19_o4_current_state_amendment_is_persistent_and_pinned():
     assert rec["target_aliasdataframe_md5"] == "698410cf846183d8f8f362be1516409c"
     assert rec["previous_checkpoint_gallery_pages"] == 53
     assert rec["injected_truth_primary_pages"] == 6
-    assert rec["current_step_gallery_pages"] == 56
-    assert rec["approved_final_fast_gallery_pages"] == 56
+    assert rec["preclean_c1_primary_pages"] == 1
+    assert rec["preclean_c2_primary_pages"] == 1
+    assert rec["current_step_gallery_pages"] == 59
+    assert rec["approved_final_fast_gallery_pages"] == 59
     assert len(rec["superseded_nodes"]) == 2
     assert all("current_contract" in row for row in rec["superseded_nodes"])
 
@@ -6150,21 +6209,21 @@ def test_a7_37_o2_fig44_is_reused_core_and_owned_by_o2_case(tmp_path):
 
 
 def test_a7_38_fast_gallery_reaches_approved_47_page_contract(tmp_path):
-    """Historical node retained: 47-page v0.2 -> 53-page injected truth -> 56-page commissioning extension."""
+    """Historical node retained: 47-page v0.2 -> 53-page injected truth -> 56-page commissioning -> 59-page C1+C2+C3 extension."""
     gallery = _a6_3_fake_gallery()
     root = tmp_path / "input.root"
     root.write_bytes(b"root")
     evidence = H.write_stage_a_pdf(
-        object(), str(tmp_path / "fast56.pdf"), root_path=str(root), gallery_module=gallery)
+        object(), str(tmp_path / "fast59.pdf"), root_path=str(root), gallery_module=gallery)
     assert evidence["ok"] is True, evidence
-    assert evidence["page_count"] == 56
-    assert evidence["expected_page_count"] == 56
+    assert evidence["page_count"] == 59
+    assert evidence["expected_page_count"] == 59
     assert H.HARDENING_O2_GALLERY_FUNCTION in evidence["required_gallery_functions"]
     assert H.HARDENING_O4_GALLERY_FUNCTION in evidence["required_gallery_functions"]
     rec = H.current_stage_a_contract_amendment()
     assert rec["previous_checkpoint_gallery_pages"] == 53
-    assert rec["current_step_gallery_pages"] == 56
-    assert rec["approved_final_fast_gallery_pages"] == 56
+    assert rec["current_step_gallery_pages"] == 59
+    assert rec["approved_final_fast_gallery_pages"] == 59
 
 
 def test_a7_39_fast_fraction_registry_includes_o2_without_second_build_owner():
@@ -6184,6 +6243,16 @@ def test_a7_39_fast_fraction_registry_includes_o2_without_second_build_owner():
 
 
 # ── PHASE_13_77 hardening v0.2 — STEP 5a / O3 contract + instrumentation ──
+
+def test_preclean_c1_fast_fraction_registry_pairs_case_with_runner():
+    cases = H._a6_3_fraction_cases("/tmp/not-opened.root", gallery_module=_a6_3_fake_gallery())
+    runners = H._a6_3_fraction_runners()
+    assert len(cases) == len(runners)
+    ids = [case.case_id for case in cases]
+    assert H.PRECLEAN_C1_CASE_ID in ids
+    idx = ids.index(H.PRECLEAN_C1_CASE_ID)
+    assert runners[idx] is H.run_preclean_c1
+
 
 def test_a7_40_o3_case_reuses_exact_g7_32_and_is_both_full(tmp_path):
     root = tmp_path / "input.root"
@@ -6793,6 +6862,7 @@ def test_a8_08b_primary_oracles_have_explicit_human_ai_review_contracts():
         H.o5_realdata_case("synthetic.root"),
         H.a7_1_realdata_case("synthetic.root"),
         H.o2_oracle_case(),
+        H.preclean_c1_case("synthetic.root"),
         H.injected_truth_vector_case(),
         H.injected_truth_delta_case(),
         H.injected_truth_selection_case(),
@@ -6900,14 +6970,16 @@ def test_a8_08_fast_gallery_reaches_approved_53_page_contract(tmp_path):
     root = tmp_path / "input.root"
     root.write_bytes(b"root")
     evidence = H.write_stage_a_pdf(
-        object(), str(tmp_path / "fast56.pdf"), root_path=str(root), gallery_module=gallery)
+        object(), str(tmp_path / "fast59.pdf"), root_path=str(root), gallery_module=gallery)
     assert evidence["ok"] is True, evidence
-    assert evidence["page_count"] == 56
-    assert evidence["expected_page_count"] == 56
+    assert evidence["page_count"] == 59
+    assert evidence["expected_page_count"] == 59
     rec = H.current_stage_a_contract_amendment()
     assert rec["previous_checkpoint_gallery_pages"] == 53
     assert rec["injected_truth_primary_pages"] == 6
-    assert rec["current_step_gallery_pages"] == 56
+    assert rec["preclean_c1_primary_pages"] == 1
+    assert rec["preclean_c2_primary_pages"] == 1
+    assert rec["current_step_gallery_pages"] == 59
     required = set(evidence["required_gallery_functions"])
     assert set(H.INJECTED_TRUTH_GALLERY_CASES).issubset(required)
 
@@ -7090,3 +7162,408 @@ def test_a9_08_stage_a_console_summary_is_compact_and_uses_derived_ownership(cap
     assert args.numeric_recheck is True
     assert args.pdf is None
 
+
+
+# ── PHASE_13_76 pre-cleaning oracle addendum — C2 ───────────────────────────
+
+def test_preclean_c2_case_is_primary_short_form_defaults_and_gallery_owned(tmp_path):
+    import time_series_draw as G
+    root = tmp_path / "synthetic.root"
+    root.write_bytes(b"root")
+    case = H.preclean_c2_case(str(root), gallery_module=G)
+    assert case.case_id == H.PRECLEAN_C2_CASE_ID
+    assert H.proof_class_for_case(case) == H.PRIMARY_ORACLE
+    assert case.canonical_spec["surface"] == "draw_figures"
+    assert case.canonical_spec["short_form_plot"] == "known_delta:sector"
+    assert case.canonical_spec["top_defaults"]["bins"] == 18
+    assert case.canonical_spec["figure_defaults"]["bins"] == 36
+    assert case.canonical_spec["figure_defaults"]["selection_vector"] == [
+        "O4Surface.selector==0", "O4Surface.selector==1"]
+    assert H.validate_registry([case]) == []
+    assert H.PRECLEAN_C2_GALLERY_FUNCTION in {fn.__name__ for fn in G.FIGURES_MANDATORY}
+    row = next(r for r in H.gallery_disposition_table(G)
+               if r["gallery_function"] == H.PRECLEAN_C2_GALLERY_FUNCTION)
+    assert row["disposition"] == "REUSED_CORE"
+    owned = H._stage_a_case_for_gallery_function(
+        H.PRECLEAN_C2_GALLERY_FUNCTION, str(root), gallery_module=G)
+    assert owned is not None and owned.case_id == H.PRECLEAN_C2_CASE_ID
+    footer = H.footer_text(case)
+    assert "PROOF CLASS: PRIMARY ORACLE" in footer
+    assert "draw_figures" in footer
+
+
+def test_preclean_c2_runner_matches_independent_truth_and_preserves_caller(tmp_path):
+    import time_series_draw as G
+    adf = _it_attach_stable_ids(_hardening_adf(n=7200))
+    root = tmp_path / "synthetic.root"
+    root.write_bytes(b"root")
+    case = H.preclean_c2_case(str(root), gallery_module=G)
+    result = H.run_preclean_c2(
+        case, str(root), gallery_module=G, prepared_adf=adf,
+        prepared_provenance=_a7_provenance(str(root), len(adf.df)))
+    assert result.status == H.PASS, result.detail
+    assert result.executed_comparisons == len(case.observables) == 9
+    assert all(cmp["ok"] for cmp in result.comparisons)
+    assert result.observed["caller_unchanged"] is True
+    assert result.observed["short_form_preserved"] is True
+    assert isinstance(result.observed["caller_specs_after"][0]["plots"][0], str)
+    assert result.observed["caller_specs_before"] == result.observed["caller_specs_after"]
+    assert result.observed["caller_defaults_before"] == result.observed["caller_defaults_after"]
+    assert result.observed["ownership_ladder"]["first_disagreement_layer"] == "NONE"
+
+
+def test_preclean_c2_effective_default_precedence_is_load_bearing():
+    import time_series_draw as G
+    adf = _it_attach_stable_ids(_hardening_adf(n=7200))
+    G._ensure_injected_truth(adf)
+    G._ensure_o4_surface_subframe(adf)
+    fig, axes, meta = G.fig56_preclean_draw_figures_effective_defaults(adf)
+    try:
+        nd = H._preclean_c2_normalize_payload(meta["stats"])
+        # Figure defaults must override top-level bins=18 -> exactly 36 sector bins.
+        assert len(nd["x_center"]) == 36
+        assert meta["caller_unchanged"] is True
+        assert meta["short_form_preserved"] is True
+        assert meta["defaults_after"]["bins"] == 18
+        assert meta["specs_after"][0]["defaults"]["bins"] == 36
+    finally:
+        import matplotlib.pyplot as plt
+        plt.close(fig)
+
+
+def test_preclean_c2_wrong_caller_mutation_is_detected(tmp_path):
+    import types
+    import time_series_draw as G
+    adf = _it_attach_stable_ids(_hardening_adf(n=7200))
+    root = tmp_path / "synthetic.root"
+    root.write_bytes(b"root")
+    original = G.fig56_preclean_draw_figures_effective_defaults
+
+    def mutated(owner):
+        fig, axes, meta = original(owner)
+        meta = dict(meta)
+        meta["caller_unchanged"] = False
+        return fig, axes, meta
+
+    proxy = types.SimpleNamespace(**{
+        name: getattr(G, name) for name in dir(G) if not name.startswith("__")
+    })
+    proxy.fig56_preclean_draw_figures_effective_defaults = mutated
+    case = H.preclean_c2_case(str(root), gallery_module=proxy)
+    result = H.run_preclean_c2(
+        case, str(root), gallery_module=proxy, prepared_adf=adf,
+        prepared_provenance=_a7_provenance(str(root), len(adf.df)))
+    assert result.status == H.FAIL
+    assert "caller_unchanged" in result.detail
+
+
+def test_preclean_c2_fast_fraction_registry_pairs_case_with_runner():
+    cases = H._a6_3_fraction_cases("synthetic.root")
+    runners = H._a6_3_fraction_runners()
+    assert len(cases) == len(runners)
+    ids = [case.case_id for case in cases]
+    assert H.PRECLEAN_C2_CASE_ID in ids
+    idx = ids.index(H.PRECLEAN_C2_CASE_ID)
+    assert runners[idx] is H.run_preclean_c2
+    assert ids.index(H.PRECLEAN_C1_CASE_ID) < idx
+
+
+def test_preclean_current_live_gallery_contract_is_59_pages():
+    rec = H.current_stage_a_contract_amendment()
+    assert rec["preclean_c1_primary_pages"] == 1
+    assert rec["preclean_c2_primary_pages"] == 1
+    assert rec["preclean_c3_primary_pages"] == 1
+    assert rec["current_step_gallery_pages"] == 59
+    assert rec["approved_final_fast_gallery_pages"] == 59
+def test_preclean_c3_case_is_primary_ratio_y_vector_and_gallery_owned(tmp_path):
+    import time_series_draw as G
+    root = tmp_path / "synthetic.root"
+    root.write_bytes(b"root")
+    case = H.preclean_c3_case(str(root), gallery_module=G)
+    assert case.case_id == H.PRECLEAN_C3_CASE_ID
+    assert H.proof_class_for_case(case) == H.PRIMARY_ORACLE
+    assert case.canonical_spec["slot"] == "y_vector"
+    assert case.canonical_spec["normalize"] == "ratio"
+    assert case.canonical_spec["expected_ratio"] == 0.5
+    assert case.canonical_spec["expr"] == "[preclean_ratio_base,preclean_ratio_scaled]:sector"
+    assert H.validate_registry([case]) == []
+    assert H.PRECLEAN_C3_GALLERY_FUNCTION in {fn.__name__ for fn in G.FIGURES_MANDATORY}
+    row = next(r for r in H.gallery_disposition_table(G)
+               if r["gallery_function"] == H.PRECLEAN_C3_GALLERY_FUNCTION)
+    assert row["disposition"] == "REUSED_CORE"
+    owned = H._stage_a_case_for_gallery_function(
+        H.PRECLEAN_C3_GALLERY_FUNCTION, str(root), gallery_module=G)
+    assert owned is not None and owned.case_id == H.PRECLEAN_C3_CASE_ID
+    footer = H.footer_text(case)
+    assert "PROOF CLASS: PRIMARY ORACLE" in footer
+    assert "normalize='ratio'" in footer
+
+
+def test_preclean_c3_runner_matches_exact_ratio_truth(tmp_path):
+    import time_series_draw as G
+    adf = _it_attach_stable_ids(_hardening_adf(n=7200))
+    root = tmp_path / "synthetic.root"
+    root.write_bytes(b"root")
+    case = H.preclean_c3_case(str(root), gallery_module=G)
+    result = H.run_preclean_c3(
+        case, str(root), gallery_module=G, prepared_adf=adf,
+        prepared_provenance=_a7_provenance(str(root), len(adf.df)))
+    assert result.status == H.PASS, result.detail
+    assert result.executed_comparisons == len(case.observables) == 7
+    assert all(cmp["ok"] for cmp in result.comparisons)
+    assert result.observed["expected_ratio"] == 0.5
+    assert result.observed["L1_materialization"]["all_ok"] is True
+    assert result.observed["ownership_ladder"]["first_disagreement_layer"] == "NONE"
+
+
+def test_preclean_c3_independent_model_is_predeclared_positive_and_exactly_scaled():
+    adf = _it_attach_stable_ids(_hardening_adf(n=7200))
+    expected = H._preclean_c3_expected(adf)
+    valid = expected["valid_bin_mask"]
+    assert valid.any()
+    assert np.all(expected["signal_central"][valid] > 0.0)
+    assert np.all(expected["reference_central"][valid] > 0.0)
+    np.testing.assert_allclose(
+        expected["reference_central"][valid],
+        2.0 * expected["signal_central"][valid],
+        rtol=2e-13, atol=2e-13)
+    np.testing.assert_allclose(
+        expected["ratio_values"][valid], 0.5,
+        rtol=2e-13, atol=2e-13)
+
+
+def test_preclean_c3_wrong_ratio_is_detected(tmp_path):
+    import types
+    import time_series_draw as G
+    adf = _it_attach_stable_ids(_hardening_adf(n=7200))
+    root = tmp_path / "synthetic.root"
+    root.write_bytes(b"root")
+    original = G.fig57_preclean_ratio_y_vector_truth
+
+    def mutated(owner):
+        fig, axes, stats = original(owner)
+        nd = stats["normalize_data"]
+        if isinstance(nd, dict):
+            nd = dict(nd)
+            nd["value"] = np.asarray(nd["value"], dtype=float) + 0.125
+            stats = dict(stats)
+            stats["normalize_data"] = nd
+        else:
+            nd = nd.copy()
+            nd.loc[:, "value"] = nd["value"].to_numpy(dtype=float) + 0.125
+            stats = dict(stats)
+            stats["normalize_data"] = nd
+        return fig, axes, stats
+
+    proxy = types.SimpleNamespace(**{
+        name: getattr(G, name) for name in dir(G) if not name.startswith("__")
+    })
+    proxy.fig57_preclean_ratio_y_vector_truth = mutated
+    case = H.preclean_c3_case(str(root), gallery_module=proxy)
+    result = H.run_preclean_c3(
+        case, str(root), gallery_module=proxy, prepared_adf=adf,
+        prepared_provenance=_a7_provenance(str(root), len(adf.df)))
+    assert result.status == H.FAIL
+    assert "ratio_values" in result.detail
+
+
+def test_preclean_c3_fast_fraction_registry_pairs_case_with_runner():
+    cases = H._a6_3_fraction_cases("synthetic.root")
+    runners = H._a6_3_fraction_runners()
+    assert len(cases) == len(runners)
+    ids = [case.case_id for case in cases]
+    assert H.PRECLEAN_C3_CASE_ID in ids
+    idx = ids.index(H.PRECLEAN_C3_CASE_ID)
+    assert runners[idx] is H.run_preclean_c3
+    assert ids.index(H.PRECLEAN_C2_CASE_ID) < idx
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# PHASE_13_76 pre-cleaning oracle addendum — C4 focused tests
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+def _preclean_c4_proxy_gallery():
+    """Synthetic full-loader proxy: reuse real gallery functions, replace ROOT build only."""
+    import types
+    import time_series_draw as G
+
+    def build_adf(_root_path, *, sample=None, lazy=False, tree_name=None):
+        assert sample is None
+        assert tree_name == H.PRECLEAN_C4_TREE_NAME
+        adf = _it_attach_stable_ids(_hardening_adf(n=7200))
+        if lazy:
+            adf._lazy_reader = types.SimpleNamespace(
+                available_branches={"sector", "tgl", "dcar_tpc_vertex", "ncl", "side_type"},
+                loaded_branches=set(),
+            )
+        return adf
+
+    attrs = {name: getattr(G, name) for name in dir(G) if not name.startswith("__")}
+    attrs["build_adf"] = build_adf
+    return types.SimpleNamespace(**attrs)
+
+
+def test_preclean_c4_case_is_primary_full_both_and_not_fast(tmp_path):
+    import time_series_draw as G
+    root = tmp_path / "synthetic.root"
+    root.write_bytes(b"root")
+    case = H.preclean_c4_case(str(root), gallery_module=G)
+    assert case.case_id == H.PRECLEAN_C4_CASE_ID
+    assert H.proof_class_for_case(case) == H.PRIMARY_ORACLE
+    assert case.loading_mode == "BOTH"
+    assert case.sample_mode == "FULL"
+    assert case.canonical_spec["gallery_function"] == "fig54_qualified_subframe_chain_truth"
+    assert case.canonical_spec["execution_legs"] == ["EAGER_FULL", "LAZY_FULL"]
+    assert H.validate_registry([case]) == []
+    assert H.PRECLEAN_C4_CASE_ID not in [c.case_id for c in H._a6_3_fraction_cases(str(root))]
+    rec = H.current_stage_a_contract_amendment()
+    assert rec["preclean_c4_slow_primary_pages"] == 1
+    assert rec["approved_final_fast_gallery_pages"] == 59
+    footer = H.footer_text(case)
+    assert "PROOF CLASS: PRIMARY ORACLE" in footer
+    assert "EAGER" in footer and "LAZY" in footer
+
+
+def test_preclean_c4_prepared_pair_matches_same_independent_truth():
+    import time_series_draw as G
+    eager_adf = _it_attach_stable_ids(_hardening_adf(n=7200))
+    lazy_adf = _it_attach_stable_ids(_hardening_adf(n=7200))
+    eager = H._preclean_c4_evaluate_prepared(eager_adf, G, mode="EAGER_FULL")
+    lazy = H._preclean_c4_evaluate_prepared(lazy_adf, G, mode="LAZY_FULL")
+    case = H.preclean_c4_case("synthetic.root", gallery_module=G)
+    evidence, diag = H._preclean_c4_compare_pair(case, eager, lazy)
+    assert len(evidence) == len(case.observables) == 12
+    assert all(row["ok"] for row in evidence)
+    assert diag["mode_y_mean_exact"] is True
+    assert diag["independent_truth_y_mean_exact"] is True
+    assert diag["max_abs_eager_lazy_y_mean_delta"] == 0.0
+    assert eager["l1"]["L1_all_within_tolerance"] is True
+    assert lazy["l1"]["L1_all_within_tolerance"] is True
+
+
+def test_preclean_c4_nonzero_mode_residual_is_rejected():
+    import copy
+    import time_series_draw as G
+    eager_adf = _it_attach_stable_ids(_hardening_adf(n=7200))
+    lazy_adf = _it_attach_stable_ids(_hardening_adf(n=7200))
+    eager = H._preclean_c4_evaluate_prepared(eager_adf, G, mode="EAGER_FULL")
+    lazy = H._preclean_c4_evaluate_prepared(lazy_adf, G, mode="LAZY_FULL")
+    lazy = copy.deepcopy(lazy)
+    valid = np.flatnonzero(lazy["observed"]["valid_mask"])
+    assert len(valid) > 0
+    lazy["observed"]["y_mean"][valid[0]] += 1e-12
+    case = H.preclean_c4_case("synthetic.root", gallery_module=G)
+    with pytest.raises(H.HarnessError, match="mode_y_mean_delta"):
+        H._preclean_c4_compare_pair(case, eager, lazy)
+
+
+
+def test_preclean_c4_membership_diagnostic_identifies_exact_changed_row():
+    import time_series_draw as G
+
+    eager_adf = _it_attach_stable_ids(_hardening_adf(n=7200))
+    lazy_adf = _it_attach_stable_ids(_hardening_adf(n=7200))
+    eager = H._preclean_c4_evaluate_prepared(eager_adf, G, mode="EAGER_FULL")
+    rid = int(eager["membership"]["row_id"][0])
+
+    pos = np.flatnonzero(np.asarray(lazy_adf.df["oracle_row_id"], dtype=np.int64) == rid)
+    assert pos.size == 1
+    lazy_adf.df.iloc[int(pos[0]), lazy_adf.df.columns.get_loc("ncl")] = 0
+    lazy = H._preclean_c4_evaluate_prepared(lazy_adf, G, mode="LAZY_FULL")
+
+    diag = H._preclean_c4_pair_diagnostics(eager, lazy)
+    assert diag["first_disagreement_layer"] == "L0_REFERENCE_MEMBERSHIP"
+    assert diag["derived_owner"] == "UNRESOLVED_REFERENCE_INPUT"
+    assert rid in diag["global_only_eager_row_ids"]
+    assert diag["global_only_eager_row_count"] >= 1
+    assert diag["independent_count_mismatch_bins"]
+    rows = [
+        row
+        for bin_row in diag["independent_count_mismatch_bins"]
+        for row in bin_row["only_eager_rows"]
+    ]
+    assert any(row["oracle_row_id"] == rid for row in rows)
+
+
+def test_preclean_c4_red_gate_keeps_diagnostics_and_writes_failure_pdf(tmp_path):
+    import types
+    import time_series_draw as G
+
+    calls = {"n": 0}
+
+    def build_adf(_root_path, *, sample=None, lazy=False, tree_name=None):
+        calls["n"] += 1
+        adf = _it_attach_stable_ids(_hardening_adf(n=7200))
+        if lazy:
+            selected = (
+                (np.asarray(adf.df["ncl"], dtype=float) > 60)
+                & (np.abs(np.asarray(adf.df["dcar_tpc_vertex"], dtype=float)) < 10)
+                & (np.asarray(adf.df["side_type"]) < 2)
+            )
+            pos = int(np.flatnonzero(selected)[0])
+            adf.df.iloc[pos, adf.df.columns.get_loc("ncl")] = 0
+            adf._lazy_reader = types.SimpleNamespace(
+                available_branches={"sector", "tgl", "dcar_tpc_vertex", "ncl", "side_type"},
+                loaded_branches=set(),
+            )
+        return adf
+
+    attrs = {name: getattr(G, name) for name in dir(G) if not name.startswith("__")}
+    attrs["build_adf"] = build_adf
+    proxy = types.SimpleNamespace(**attrs)
+
+    root = tmp_path / "synthetic.root"
+    root.write_bytes(b"root")
+    manifest = tmp_path / "c4_red_manifest.json"
+    pdf = tmp_path / "c4_red.pdf"
+    results, doc, rc = H.run_preclean_c4_full_gate(
+        str(root), manifest_path=str(manifest), pdf_path=str(pdf), gallery_module=proxy)
+
+    assert calls["n"] == 2
+    assert rc == 1
+    result = results[0]
+    assert result.status == H.FAIL
+    diag = result.observed["pair_diagnostics"]
+    assert diag["independent_count_mismatch_bins"]
+    assert result.observed["ownership_ladder"]["first_disagreement_layer"] == "L0_REFERENCE_MEMBERSHIP"
+    assert manifest.is_file() and manifest.stat().st_size > 0
+    assert pdf.is_file() and pdf.stat().st_size > 0
+    assert result.payload_paths["C4/slow_pdf"] == str(pdf.resolve())
+    assert doc["reconciliation"]["gating"][0]["status"] == H.FAIL
+
+
+def test_preclean_c4_full_gate_runs_two_modes_and_writes_primary_pdf(tmp_path):
+    proxy = _preclean_c4_proxy_gallery()
+    root = tmp_path / "synthetic.root"
+    root.write_bytes(b"root")
+    manifest = tmp_path / "c4_manifest.json"
+    pdf = tmp_path / "c4.pdf"
+    results, doc, rc = H.run_preclean_c4_full_gate(
+        str(root), manifest_path=str(manifest), pdf_path=str(pdf), gallery_module=proxy)
+    assert rc == 0
+    assert len(results) == 1
+    result = results[0]
+    assert result.status == H.PASS, result.detail
+    assert result.executed_comparisons == 12
+    assert result.observed["mode_parity"]["mode_y_mean_exact"] is True
+    assert result.observed["ownership_ladder"]["first_disagreement_layer"] == "NONE"
+    assert manifest.is_file() and manifest.stat().st_size > 0
+    assert pdf.is_file() and pdf.stat().st_size > 0
+    assert doc["provenance"]["preclean_c4"]["sample_mode"] == "FULL"
+    assert doc["provenance"]["preclean_c4"]["slow_primary_oracle_pages"] == 1
+
+
+def test_preclean_c4_cli_mode_is_explicit_and_requires_normal_evidence_paths():
+    parser = H.build_stage_a_cli_parser()
+    args = parser.parse_args([
+        "synthetic.root", "--preclean-c4",
+        "--manifest", "c4.json", "--pdf", "c4.pdf", "--strict",
+    ])
+    assert args.preclean_c4 is True
+    assert args.sample is None
+    assert args.full is False
+    assert args.lazy is False
+    assert args.manifest == "c4.json"
+    assert args.pdf == "c4.pdf"
+    H._require_cli_evidence_paths(args)
