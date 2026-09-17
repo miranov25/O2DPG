@@ -189,6 +189,74 @@ def _group_weights(
     )
 
 
+def _hist_bin_values_and_errors(x_data, bins, used_range, hist_weights,
+                                norm, density):
+    """
+    PHASE_13_84_DF: the single owner of per-bin histogram values and errors.
+
+    This is the arithmetic that draw_hist() used inline for hist_errors=True,
+    moved here unchanged so that the same numbers can be (a) drawn as error
+    bars and (b) handed to the histogram normalization dispatcher in
+    drawer.py. No new formula is introduced.
+
+    Parameters
+    ----------
+    x_data : array
+        The already-cleaned values to histogram.
+    bins, used_range : as passed to np.histogram.
+    hist_weights : array or None
+        The per-row weights actually used for drawing (already scaled for
+        norm="probability" by the caller, exactly as before).
+    norm : str or None
+        "probability", "density", or None.
+    density : bool
+        The density flag derived by draw_hist().
+
+    Returns
+    -------
+    edges, heights, errs, counts_for_mask, sum_w, sum_w2
+        heights/errs are the drawn per-bin value and its error bar;
+        counts_for_mask is the per-bin content used to skip empty bins;
+        sum_w and sum_w2 are the unscaled sufficient accumulators
+        (for unweighted data both equal the raw counts).
+    """
+    if hist_weights is not None:
+        _w = np.asarray(hist_weights)
+        sum_w, _edges = np.histogram(x_data, bins=bins, range=used_range,
+                                     weights=_w)
+        sum_w2, _ = np.histogram(x_data, bins=bins, range=used_range,
+                                 weights=_w**2)
+        total_w = float(_w.sum()) if len(_w) > 0 else 1.0
+        if norm == "probability":
+            heights = sum_w / total_w
+            errs = np.sqrt(sum_w2) / total_w
+        elif norm == "density" or density:
+            bws = np.diff(_edges)
+            heights = sum_w / (total_w * bws)
+            errs = np.sqrt(sum_w2) / (total_w * bws)
+        else:
+            heights = sum_w.astype(float)
+            errs = np.sqrt(sum_w2)
+        counts_for_mask = sum_w
+    else:
+        counts, _edges = np.histogram(x_data, bins=bins, range=used_range)
+        n_total = len(x_data)
+        if norm == "probability":
+            heights = counts / n_total
+            errs = np.sqrt(counts) / n_total
+        elif norm == "density" or density:
+            bws = np.diff(_edges)
+            heights = counts / (n_total * bws)
+            errs = np.sqrt(counts) / (n_total * bws)
+        else:
+            heights = counts.astype(float)
+            errs = np.sqrt(counts)
+        counts_for_mask = counts
+        sum_w = counts.astype(float)
+        sum_w2 = counts.astype(float)
+    return _edges, heights, errs, counts_for_mask, sum_w, sum_w2
+
+
 def draw_hist(
     df: pd.DataFrame,
     x: Union[str, pd.Series, np.ndarray],
@@ -499,6 +567,12 @@ def draw_hist(
     _suppress_legend = kwargs.pop('_suppress_legend', False)
     _suppress_title = kwargs.pop('_suppress_title', False)
     _suppress_layout = kwargs.pop('_suppress_layout', False)
+    # PHASE_13_84_DF: private flag set by the histogram normalization
+    # dispatcher in drawer.py. When true, the per-bin values and errors that
+    # this function already computes for hist_errors are also returned in
+    # stats_dict["hist_data"] (see _hist_bin_values_and_errors). It changes
+    # nothing that is drawn.
+    _return_bin_data = kwargs.pop('_return_bin_data', False)
     # Phase 13.42.DF FIX1 (B1/Sonet51): _facet_mode is set by the facet
     # dispatcher in drawer.py per-cell calls. Plumbed to render_fit_textbox so
     # it picks fit.text_fontsize_facet (default 7) instead of
@@ -628,49 +702,36 @@ def draw_hist(
         # CP1-7: use edges from np.histogram() return (bins= may be int).
         # CP1-6: weighted Poisson via Σw² when weights= column is set.
         # CP1-8: per-bin density formula (vectorized np.diff(edges)).
-        if hist_errors:
-            if _hist_weights is not None:
-                _w = np.asarray(_hist_weights)
-                sum_w, _edges = np.histogram(x_data, bins=bins, range=_used_range,
-                                             weights=_w)
-                sum_w2, _ = np.histogram(x_data, bins=bins, range=_used_range,
-                                         weights=_w**2)
-                total_w = float(_w.sum()) if len(_w) > 0 else 1.0
-                if norm == "probability":
-                    heights = sum_w / total_w
-                    errs = np.sqrt(sum_w2) / total_w
-                elif norm == "density" or density:
-                    bws = np.diff(_edges)
-                    heights = sum_w / (total_w * bws)
-                    errs = np.sqrt(sum_w2) / (total_w * bws)
-                else:
-                    heights = sum_w.astype(float)
-                    errs = np.sqrt(sum_w2)
-                counts_for_mask = sum_w
-            else:
-                counts, _edges = np.histogram(x_data, bins=bins, range=_used_range)
-                n_total = len(x_data)
-                if norm == "probability":
-                    heights = counts / n_total
-                    errs = np.sqrt(counts) / n_total
-                elif norm == "density" or density:
-                    bws = np.diff(_edges)
-                    heights = counts / (n_total * bws)
-                    errs = np.sqrt(counts) / (n_total * bws)
-                else:
-                    heights = counts.astype(float)
-                    errs = np.sqrt(counts)
-                counts_for_mask = counts
+        if hist_errors or _return_bin_data:
+            # PHASE_13_84_DF: the arithmetic below moved verbatim into
+            # _hist_bin_values_and_errors so that the normalization dispatcher
+            # reads the same numbers this function draws — one owner, two
+            # readers. Results are identical to the previous inline block.
+            (_edges, heights, errs, counts_for_mask,
+             _sum_w, _sum_w2) = _hist_bin_values_and_errors(
+                x_data, bins, _used_range, _hist_weights, norm, density,
+            )
             bin_centers = 0.5 * (_edges[:-1] + _edges[1:])
-            mask = counts_for_mask > 0
-            # Phase 13.37.DF: error bar color matches bars (color is the local
-            # variable; for single-hist ungrouped path, it's either the user's
-            # explicit color or matplotlib's default — both fine).
-            ax.errorbar(bin_centers[mask], heights[mask], yerr=errs[mask],
-                        fmt='none', color=color,
-                        elinewidth=get_style_value("hist.error_elinewidth", 1.0),
-                        capsize=get_style_value("hist.error_capsize", 2),
-                        zorder=3)
+            if _return_bin_data:
+                stats_dict["hist_data"] = pd.DataFrame({
+                    "x_low":    _edges[:-1],
+                    "x_high":   _edges[1:],
+                    "x_center": bin_centers,
+                    "value":    heights,        # exactly what is drawn
+                    "error":    errs,           # exactly the drawn error bar
+                    "sum_w":    _sum_w,         # sufficient accumulators
+                    "sum_w2":   _sum_w2,        # (mergeable state, PHASE_13_82)
+                })
+            if hist_errors:
+                mask = counts_for_mask > 0
+                # Phase 13.37.DF: error bar color matches bars (color is the local
+                # variable; for single-hist ungrouped path, it's either the user's
+                # explicit color or matplotlib's default — both fine).
+                ax.errorbar(bin_centers[mask], heights[mask], yerr=errs[mask],
+                            fmt='none', color=color,
+                            elinewidth=get_style_value("hist.error_elinewidth", 1.0),
+                            capsize=get_style_value("hist.error_capsize", 2),
+                            zorder=3)
 
     # ========================================================================
     # Phase 13.42.DF: Inline fits — apply AFTER ax.hist. curves_list uses dict

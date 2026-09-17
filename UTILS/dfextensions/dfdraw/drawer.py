@@ -2598,6 +2598,288 @@ class DFDraw:
     # M1 scope: exactly 2 curves (validated at entry in profile()); no group_by
     # or facet_by composition (M2). Supports overlay+diff and diff_only layouts.
 
+    def _build_normalize_axes(self, normalize_layout: str, figsize):
+        """
+        PHASE_13_84_DF: one owner of the normalize figure layout.
+
+        Builds the figure for a normalize plot: an upper panel for the curves
+        and a lower panel for the derived quantity (``overlay+diff``), or only
+        the lower panel (``diff_only``). Extracted verbatim from
+        ``_dispatch_normalize_render`` so that the profile and the histogram
+        normalization dispatchers share it.
+
+        Returns ``(fig, ax_top, ax_diff)``; ``ax_top`` is ``None`` for
+        ``diff_only``.
+        """
+        from matplotlib.gridspec import GridSpec
+        from .style import get_style_value
+        if normalize_layout == "overlay+diff":
+            fig = plt.figure(figsize=figsize)
+            gs = GridSpec(
+                2, 1,
+                height_ratios=get_style_value("normalize.panel.height_ratio", [3, 1]),
+                hspace=get_style_value("normalize.panel.hspace", 0.05),
+            )
+            ax_top = fig.add_subplot(gs[0])
+            ax_diff = fig.add_subplot(gs[1], sharex=ax_top)
+            # Hide x-tick-labels on the top panel — they belong to ax_diff
+            # (which inherits the formatter via sharex; sidesteps BUG-004).
+            plt.setp(ax_top.get_xticklabels(), visible=False)
+        else:  # 'diff_only' (validated at entry)
+            fig, ax_diff = plt.subplots(figsize=figsize)
+            ax_top = None
+        return fig, ax_top, ax_diff
+
+    # PHASE_13_84_DF: 1D histogram ratio normalization.
+    #
+    # Plain-language contract (ratified for this phase): a histogram request
+    # with exactly two resolved branches (from weights_vector, selection_vector
+    # or a two-element bracket expression) and normalize="ratio" draws the two
+    # histograms in the upper panel and a lower panel with branch0 / branch1,
+    # using the SAME arithmetic, undefined-bin convention and panel rendering
+    # as the profile normalize path. Nothing is re-implemented: the histogram
+    # owner supplies the per-bin values/errors it already computes
+    # (plots.histogram._hist_bin_values_and_errors), the profile owner supplies
+    # the transform (plots.profile._compute_normalize_transform) and the panel
+    # (plots.profile._render_normalize_panel), and the layout comes from
+    # _build_normalize_axes. Everything outside that domain refuses loudly and
+    # names PHASE_13_82 as the phase that generalizes it.
+
+    _HIST_NORMALIZE_MODES = ("ratio",)
+
+    def _dispatch_hist_normalize_render(
+        self,
+        y_list,
+        *,
+        normalize,
+        normalize_layout,
+        selection,
+        sample,
+        selection_vector,
+        weights_vector,
+        selection_labels,
+        weights_labels,
+        vector_compose,
+        weights,
+        bins,
+        range,
+        norm,
+        hist_norm,
+        hist_errors,
+        nan_policy,
+        title,
+        xlabel,
+        ylabel,
+        auto_title,
+        save,
+        color,
+        linestyle_cycle,
+        passthrough,
+    ):
+        from .plots.histogram import draw_hist
+        from .plots.profile import (
+            _compute_normalize_transform, _render_normalize_panel,
+        )
+        from .style import get_style_value
+
+        # --- 1. Supported domain (loud refusal outside it) -------------------
+        if not isinstance(normalize, str) or normalize not in self._HIST_NORMALIZE_MODES:
+            raise NotImplementedError(
+                f"hist normalize={normalize!r} is not supported in PHASE_13_84; "
+                f"the supported histogram normalization modes are "
+                f"{list(self._HIST_NORMALIZE_MODES)}. Other modes and callables "
+                f"are generalized in PHASE_13_82."
+            )
+        if normalize_layout not in ("overlay+diff", "diff_only"):
+            raise ValueError(
+                f"normalize_layout must be 'overlay+diff' or 'diff_only', "
+                f"got {normalize_layout!r}"
+            )
+        n_y = len(y_list)
+        indices = self._compute_vector_iteration_indices(
+            n_y, selection_vector, weights_vector, vector_compose
+        )
+        if len(indices) != 2:
+            raise ValueError(
+                f"hist normalize={normalize!r} requires exactly 2 resolved "
+                f"histogram branches (signal, reference); got {len(indices)}. "
+                f"Use two weights_vector entries, two selection_vector entries "
+                f"or a two-element [a,b] expression with vector_compose='outer'."
+            )
+
+        # --- 2. Common frame ---------------------------------------------------
+        df_full = self._apply_selection(self.df, selection)
+        df_full = self._apply_sampling(df_full, sample)
+
+        # --- 3. Layout (shared with profile) -------------------------------------
+        figsize = passthrough.pop('figsize', None) or get_style_value("figure.figsize", (8, 6))
+        fig, ax_top, ax_diff = self._build_normalize_axes(normalize_layout, figsize)
+        self._reset_color_cycle()
+
+        # --- 4. Draw each branch with the histogram owner ------------------------
+        # Each branch gets its own colour so the two upper histograms can be
+        # told apart (the vector path gets this from the channel machinery;
+        # here we call the histogram owner directly). Mirrors the grouped
+        # path's BUG-014 rule: for histtype="step" the outline is the edge,
+        # so the branch colour is also used as edgecolor unless the user
+        # passed one explicitly. A user-supplied color= applies to both.
+        _cycle_colors = plt.rcParams['axes.prop_cycle'].by_key().get(
+            'color', ['C0', 'C1'])
+        _user_edgecolor = passthrough.get('edgecolor')
+        _histtype = passthrough.get('histtype') or get_style_value("hist.histtype", "bar")
+        per_branch_stats = []
+        branch_data = []
+        for branch_idx, (y_idx, sel_idx, w_idx) in enumerate(indices):
+            branch_color = (color if color is not None
+                            else _cycle_colors[branch_idx % len(_cycle_colors)])
+            branch_kwargs = dict(passthrough)
+            if _histtype == "step" and _user_edgecolor is None:
+                branch_kwargs['edgecolor'] = branch_color
+            x_expr = y_list[y_idx]
+            branch_sel = None
+            if sel_idx is not None and selection_vector is not None:
+                branch_sel = selection_vector[sel_idx]
+            branch_weights = weights
+            if w_idx is not None and weights_vector is not None:
+                branch_weights = weights_vector[w_idx]
+            branch_df = df_full
+            if branch_sel is not None:
+                branch_df = self._apply_selection(branch_df, branch_sel)
+            role = "signal" if branch_idx == 0 else "reference"
+            # Label: user label if given, else the branch expression, else role.
+            branch_label = None
+            if sel_idx is not None and selection_labels is not None:
+                branch_label = selection_labels[sel_idx]
+            elif w_idx is not None and weights_labels is not None:
+                branch_label = weights_labels[w_idx]
+            if branch_label is None:
+                if branch_sel is not None:
+                    branch_label = branch_sel
+                elif w_idx is not None and weights_vector is not None:
+                    branch_label = f"w={weights_vector[w_idx]}"
+                else:
+                    branch_label = f"{x_expr} ({role})"
+            target_ax = ax_top
+            _local_fig = None
+            if target_ax is None:  # diff_only: histogram drawn off-screen
+                _local_fig, target_ax = plt.subplots()
+            _, _, sd = draw_hist(
+                branch_df, x_expr,
+                ax=target_ax,
+                bins=bins, range=range, norm=norm,
+                weights=branch_weights,
+                hist_errors=hist_errors,
+                hist_norm=hist_norm,
+                nan_policy=nan_policy,
+                label=branch_label,
+                color=branch_color,
+                linestyle_cycle=linestyle_cycle,
+                title=None, xlabel=None, ylabel=None,
+                _suppress_legend=True,
+                _suppress_title=True,
+                _suppress_layout=True,
+                _return_bin_data=True,
+                **branch_kwargs
+            )
+            if _local_fig is not None:
+                plt.close(_local_fig)
+            hd = sd.get('hist_data')
+            if hd is None:
+                raise RuntimeError(
+                    "_dispatch_hist_normalize_render: hist_data missing despite "
+                    "_return_bin_data=True — implementation bug in draw_hist?"
+                )
+            branch_data.append(hd)
+            # Map the histogram's (value, error) onto the profile transform's
+            # (central, sigma, counts): with counts=1 the transform's per-bin
+            # variance sigma**2/counts equals error**2, so the ratio and its
+            # propagated error are exactly the profile convention:
+            #   r = v0/v1,  err(r) = |r| * sqrt(e0^2/v0^2 + e1^2/v1^2)
+            per_branch_stats.append({
+                'bin_centers': hd['x_center'].to_numpy(),
+                'central':     hd['value'].to_numpy(),
+                'sigma':       hd['error'].to_numpy(),
+                'counts':      np.ones(len(hd), dtype=float),
+            })
+
+        # Both branches must be on identical bins (same bins/range → always
+        # true for the histogram owner; asserted so the ratio can never be
+        # taken between misaligned edges).
+        e0 = branch_data[0][['x_low', 'x_high']].to_numpy()
+        e1 = branch_data[1][['x_low', 'x_high']].to_numpy()
+        if e0.shape != e1.shape or not np.allclose(e0, e1):
+            raise RuntimeError(
+                "_dispatch_hist_normalize_render: the two histogram branches "
+                "were binned on different edges; ratio is undefined."
+            )
+
+        # --- 5. Transform and lower panel (profile owners) -----------------------
+        values, errors, mask_undef = _compute_normalize_transform(
+            per_branch_stats[0], per_branch_stats[1],
+            mode=normalize, central='mean',
+            stats_list=per_branch_stats,
+        )
+        _render_normalize_panel(
+            ax_diff,
+            bin_centers=per_branch_stats[0]['bin_centers'],
+            values=values, errors=errors,
+            mode=normalize,
+            label=None,
+        )
+        ax_diff.set_ylabel({'ratio': 'signal / reference'}.get(normalize, 'normalize'))
+        if xlabel is not None:
+            ax_diff.set_xlabel(xlabel)
+        elif isinstance(y_list[0], str):
+            ax_diff.set_xlabel(y_list[0])
+        if ax_top is not None:
+            ax_top.set_ylabel(ylabel if ylabel is not None else 'Count')
+            if ax_top.get_legend_handles_labels()[1]:
+                ax_top.legend(loc='best', fontsize=get_style_value('legend.fontsize', 10))
+        _title_ax = ax_top if ax_top is not None else ax_diff
+        if title is not None:
+            _title_ax.set_title(title)
+        elif auto_title:
+            # Same auto-title as a plain histogram of the same variable and
+            # selection (the histogram owner's own helpers), so a normalized
+            # histogram is titled exactly like an unnormalized one.
+            from .plots._auto_title import (
+                build_auto_title, apply_auto_title, parse_auto_title_parts,
+                resolve_auto_title,
+            )
+            _at = resolve_auto_title(auto_title)
+            if _at:
+                parts = parse_auto_title_parts(_at)
+                td = build_auto_title(str(y_list[0]), y=None, group_by=None,
+                                      selection=selection, parts=parts)
+                apply_auto_title(_title_ax, td)
+
+        # --- 6. Payload: same schema as the profile normalize path ----------------
+        stats_dict: Dict[str, Any] = {
+            'normalize_mode': normalize,
+            'normalize_layout': normalize_layout,
+            'n_masked_bins': int(mask_undef.sum()),
+            'n_total_bins': int(len(values)),
+            'ax_diff': ax_diff,
+            'normalize_data': pd.DataFrame({
+                'x_center':     per_branch_stats[0]['bin_centers'],
+                'value':        values,
+                'error':        errors if errors is not None else np.full_like(values, np.nan),
+                'mask_undefined': mask_undef.astype(bool),
+                'signal_central':    per_branch_stats[0]['central'],
+                'signal_sigma':      per_branch_stats[0]['sigma'],
+                'signal_count':      per_branch_stats[0]['counts'],
+                'reference_central': per_branch_stats[1]['central'],
+                'reference_sigma':   per_branch_stats[1]['sigma'],
+                'reference_count':   per_branch_stats[1]['counts'],
+            }),
+            # Histogram-specific additions (edges and sufficient accumulators
+            # per branch) — the same per-bin table the histogram owner drew.
+            'hist_branch_data': branch_data,
+        }
+        if save:
+            fig.savefig(save)
+        return fig, (ax_top if ax_top is not None else ax_diff), stats_dict
+
     def _dispatch_normalize_render(
         self,
         y_list,
@@ -2683,21 +2965,10 @@ class DFDraw:
 
         # --- 4. Build figure with gridspec layout -------------------------------
         figsize = passthrough.pop('figsize', None) or get_style_value("figure.figsize", (8, 6))
-        if normalize_layout == "overlay+diff":
-            fig = plt.figure(figsize=figsize)
-            gs = GridSpec(
-                2, 1,
-                height_ratios=get_style_value("normalize.panel.height_ratio", [3, 1]),
-                hspace=get_style_value("normalize.panel.hspace", 0.05),
-            )
-            ax_top = fig.add_subplot(gs[0])
-            ax_diff = fig.add_subplot(gs[1], sharex=ax_top)
-            # Hide x-tick-labels on the top panel — they belong to ax_diff
-            # (which inherits the formatter via sharex; sidesteps BUG-004).
-            plt.setp(ax_top.get_xticklabels(), visible=False)
-        else:  # 'diff_only' (validated at entry)
-            fig, ax_diff = plt.subplots(figsize=figsize)
-            ax_top = None
+        # PHASE_13_84_DF: the layout block moved verbatim into
+        # _build_normalize_axes so the histogram normalization dispatcher
+        # shares one layout owner. Behaviour here is unchanged.
+        fig, ax_top, ax_diff = self._build_normalize_axes(normalize_layout, figsize)
 
         # --- 5. Loop the 2 curves: render top panel + capture per-bin stats ----
         # Reset color cycle so signal and reference get curve-cycle colors 0/1.
@@ -5329,6 +5600,9 @@ class DFDraw:
                 weights_categorical=weights_categorical,
                 vector_compose=vector_compose,
                 delta_facet=delta_facet,
+                # PHASE_13_84: normalize is a named draw() parameter and must
+                # be forwarded explicitly to the hist owner.
+                normalize=normalize, normalize_layout=normalize_layout,
                 nan_policy=nan_policy,
                 # NOTE: time_format, cumulative are NOT in draw() signature;
                 # they reach hist() via **kwargs naturally. central also via **kwargs.
@@ -5532,6 +5806,11 @@ class DFDraw:
         # (per-group linestyle mode). Both forwarded explicitly to draw_hist().
         hist_errors: bool = False,
         linestyle_cycle: bool = False,
+        # PHASE_13_84: bounded 1D histogram differential normalization.
+        # The whole request is owned here before vector iteration; normalize is
+        # deliberately NOT added to _HIST_FORWARDED_NAMES.
+        normalize: Optional[Union[str, "callable"]] = None,
+        normalize_layout: str = "overlay+diff",
         # Phase 13.42.DF: Inline fit specification
         fit: Optional[Union[str, Dict, Callable, List]] = None,
         # Phase 13.42.DF FIX2 (ADV-3, Sonnet55 P2-2 carry-forward):
@@ -5622,6 +5901,67 @@ class DFDraw:
             selection_vector=selection_vector, weights_vector=weights_vector,
             selection_labels=selection_labels, weights_labels=weights_labels,
         )
+
+        # PHASE_13_84_DF: a histogram normalization request is owned as a whole
+        # before vector iteration (mirrors profile()). Compositions outside the
+        # ratified two-branch 1D domain refuse loudly and name PHASE_13_82.
+        if normalize is not None:
+            if facet_by is not None or facet:
+                raise NotImplementedError(
+                    "hist normalize= with facet_by is not supported in "
+                    "PHASE_13_84 (generalized in PHASE_13_82)."
+                )
+            if group_by is not None:
+                raise NotImplementedError(
+                    "hist normalize= with group_by is not supported in "
+                    "PHASE_13_84 (generalized in PHASE_13_82)."
+                )
+            if cumulative:
+                raise NotImplementedError(
+                    "hist normalize= with cumulative= is not supported in "
+                    "PHASE_13_84."
+                )
+            if fit is not None or summary_fit is not None:
+                raise NotImplementedError(
+                    "hist normalize= with fit=/summary_fit= is not supported in "
+                    "PHASE_13_84 (generalized in PHASE_13_82)."
+                )
+            if same or ax is not None:
+                raise NotImplementedError(
+                    "hist normalize= builds its own two-panel figure; same=True "
+                    "and ax= are not supported in PHASE_13_84."
+                )
+            _y_norm, _ = self._parse_expr(expr)
+            _y_norm_list = _y_norm if isinstance(_y_norm, list) else [_y_norm]
+            _norm_passthrough = dict(kwargs)
+            _norm_passthrough.pop('stacked', None)
+            return self._dispatch_hist_normalize_render(
+                _y_norm_list,
+                normalize=normalize,
+                normalize_layout=normalize_layout,
+                selection=selection,
+                sample=sample,
+                selection_vector=selection_vector,
+                weights_vector=weights_vector,
+                selection_labels=selection_labels,
+                weights_labels=weights_labels,
+                vector_compose=vector_compose,
+                weights=weights,
+                bins=bins,
+                range=range,
+                norm=norm,
+                hist_norm=hist_norm,
+                hist_errors=hist_errors,
+                nan_policy=nan_policy,
+                title=title,
+                xlabel=xlabel,
+                ylabel=ylabel,
+                auto_title=auto_title,
+                save=save,
+                color=color,
+                linestyle_cycle=linestyle_cycle,
+                passthrough=_norm_passthrough,
+            )
 
         # Parse expression (take first part only for 1D)
         y_expr, x_expr = self._parse_expr(expr)
