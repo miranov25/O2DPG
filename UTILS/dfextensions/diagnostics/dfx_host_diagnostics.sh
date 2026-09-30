@@ -4,12 +4,12 @@
 # PHASE_13_74_ADF D1 · v2.0 · dfextensions-scoped (ADF, GB, dfdraw consumers)
 #
 # Emits a DIAGNOSTIC BUNDLE (directory): manifest.kv, snapshot.kv,
-# samples.csv (sampling mode), report.txt. Flat key=value + CSV only —
+# samples.tsv (sampling mode), report.txt. Flat key=value + TSV by default —
 # JSON conversion is schema.py's job (checklist C-13). Read-only against
 # the host: writes ONLY inside its own bundle directory.
 #
 # USAGE:
-#   dfx_host_diagnostics.sh [-o DIR] [-p PID [-A]] [-d DATA_PATH] [-r]
+#   dfx_host_diagnostics.sh [-o DIR] [-p PID [-A]] [-d DATA_PATH] [-r] [-T]
 #                           [-s INTERVAL_S -n NSAMPLES]
 #     -o DIR        parent directory for the bundle (default: .)
 #     -p PID        per-process deep-dive; non-owned PID requires -A (C-1)
@@ -17,6 +17,7 @@
 #     -d DATA_PATH  record filesystem/mount type of a named data path
 #     -r            raw mode: NO redaction (local use only; recorded in manifest)
 #     -s/-n         sampling: NSAMPLES samples, INTERVAL_S seconds apart
+#     -T            force TSV sampled tables (TSV is the default)
 #
 # EXIT CONTRACT (v2 §2, R-4): 0 = bundle produced (PASS/WARN/UNHEALTHY inside);
 #   1 = invocation/internal error; 2 = verdict UNKNOWN (REQUIRED evidence
@@ -38,13 +39,13 @@ SELF_UID="$(id -u 2>/dev/null || echo 0)"
 tok_uid(){ printf '%s' "${TOK_SALT}uid:$1" | sha256sum | cut -c1-8; }
 TOK_SALT="${RANDOM}${RANDOM}$$$(date +%N 2>/dev/null)"   # per-bundle token salt (P0-F)
 
-usage(){ echo "usage: $0 [-o DIR] [-p PID [-A]] [-d DATA_PATH] [-r] [-s INTERVAL_S -n NSAMPLES]" >&2; exit 1; }
+usage(){ echo "usage: $0 [-o DIR] [-p PID [-A]] [-d DATA_PATH] [-r] [-T] [-s INTERVAL_S -n NSAMPLES]" >&2; exit 1; }
 
 # ---- argument parsing: flags tracked INSIDE getopts (C-6: never re-parse $*);
 # ---- leading-colon silent mode separates missing-value from unknown-flag (C-7)
-PID=""; INTERVAL=0; NSAMPLES=0; RUN_ID=""; JOB_CGROUP=""; TARGET_PID_FILE=""; OUTDIR="."; DATAPATH=""; RAW=0; ACK=0
+PID=""; INTERVAL=0; NSAMPLES=0; RUN_ID=""; JOB_CGROUP=""; TARGET_PID_FILE=""; OUTDIR="."; DATAPATH=""; RAW=0; ACK=0; TABLE_FORMAT="${DFX_TABLE_FORMAT:-tsv}"
 S_GIVEN=0; N_GIVEN=0
-while getopts ":p:s:n:o:d:rAR:G:F:" opt; do case $opt in
+while getopts ":p:s:n:o:d:rTAR:G:F:" opt; do case $opt in
   R) RUN_ID=$OPTARG;; G) JOB_CGROUP=$OPTARG;; F) TARGET_PID_FILE=$OPTARG;;
   p) PID=$OPTARG;;
   s) INTERVAL=$OPTARG; S_GIVEN=1;;
@@ -52,6 +53,7 @@ while getopts ":p:s:n:o:d:rAR:G:F:" opt; do case $opt in
   o) OUTDIR=$OPTARG;;
   d) DATAPATH=$OPTARG;;
   r) RAW=1;;
+  T) TABLE_FORMAT=tsv;;
   A) ACK=1;;
   :)  echo "option -$OPTARG requires a value" >&2; usage;;
   \?) echo "unknown option -$OPTARG" >&2; usage;;
@@ -59,11 +61,17 @@ esac; done
 shift $((OPTIND-1))
 [ $# -gt 0 ] && { echo "unexpected arguments: $*" >&2; usage; }
 case "$PID" in *[!0-9]*) echo "invalid PID '$PID'" >&2; usage;; esac
-case "$INTERVAL$NSAMPLES" in *[!0-9]*) echo "interval/samples must be integers" >&2; usage;; esac
+case "$NSAMPLES" in *[!0-9]*) echo "samples must be an integer" >&2; usage;; esac
 [ "$S_GIVEN" != "$N_GIVEN" ] && { echo "-s and -n must be given together" >&2; usage; }
-if [ "$S_GIVEN" = 1 ] && { [ "$INTERVAL" -le 0 ] || [ "$NSAMPLES" -le 0 ]; }; then
-  echo "interval and samples must be positive" >&2; usage; fi
+if [ "$S_GIVEN" = 1 ]; then
+  awk -v x="$INTERVAL" 'BEGIN{exit !(x ~ /^[0-9]+([.][0-9]+)?$/ && x > 0)}' \
+    || { echo "interval must be a positive number" >&2; usage; }
+  [ "$NSAMPLES" -gt 0 ] || { echo "samples must be positive" >&2; usage; }
+fi
 [ -d "$OUTDIR" ] || { echo "output dir '$OUTDIR' does not exist" >&2; exit 1; }
+case "$TABLE_FORMAT" in csv|tsv) ;; *) echo "invalid DFX_TABLE_FORMAT=$TABLE_FORMAT (use csv or tsv)" >&2; exit 1;; esac
+TABLE_EXT=csv; TABLE_SEP=","
+[ "$TABLE_FORMAT" = tsv ] && { TABLE_EXT=tsv; TABLE_SEP=$'\t'; }
 if [ -n "$PID" ]; then
   [ -d "$PROC/$PID" ] || { echo "no such process $PID" >&2; exit 1; }
   P_OWNER="$(stat -c %U "$PROC/$PID" 2>/dev/null || echo unknown)"
@@ -89,9 +97,9 @@ umask 077
 mkdir "$BUNDLE" 2>/dev/null || { echo "bundle dir '$BUNDLE' already exists — refusing" >&2; exit 1; }
 MAN="$BUNDLE/manifest.kv"; SNAP="$BUNDLE/snapshot.kv"; REP="$BUNDLE/report.txt"
 # v8 canonical bundle tables (proposal lines 720-724): host totals + per-entity
-CSV="$BUNDLE/host_samples.csv"
-DISKCSV="$BUNDLE/disk_samples.csv"
-NETCSV="$BUNDLE/network_samples.csv"
+CSV="$BUNDLE/host_samples.$TABLE_EXT"
+DISKCSV="$BUNDLE/disk_samples.$TABLE_EXT"
+NETCSV="$BUNDLE/network_samples.$TABLE_EXT"
 : > "$MAN"; : > "$SNAP"; : > "$REP"
 man(){ echo "$1=$2" >> "$MAN"; }
 kv(){ echo "$1=$2" >> "$SNAP"; }
@@ -304,9 +312,9 @@ collect_psi; collect_cgroup; collect_buddy; collect_ps; collect_deepdive; collec
 
 # =================== sampling mode ===================
 if [ "$S_GIVEN" = 1 ]; then
-  echo "ts,elapsed_s,compact_stall_total,compact_stall_per_s,compact_fail_total,compact_fail_per_s,thp_fault_alloc_total,thp_fault_alloc_per_s,thp_fault_fallback_total,thp_fault_fallback_per_s,thp_collapse_alloc_total,pgscan_direct_total,allocstall_total,allocstall_per_s,kcompactd_cpu_s_total,kcompactd_cpu_per_s,khugepaged_cpu_s_total,khugepaged_cpu_per_s,psi_mem_some_avg10,psi_mem_full_avg10,pswpin_total,pswpout_total,disk_read_sectors_total,sample_wall_s,overrun,loadavg1,cpu_busy_pct,mem_available_kb,ctxt_per_s,procs_running" > "$CSV"
-  echo "ts,device,reads_completed,sectors_read,writes_completed,sectors_written,io_in_progress,io_time_ms" > "$DISKCSV"
-  echo "ts,iface,rx_bytes,rx_packets,rx_errs,rx_drop,tx_bytes,tx_packets,tx_errs,tx_drop" > "$NETCSV"
+  H="ts,elapsed_s,compact_stall_total,compact_stall_per_s,compact_fail_total,compact_fail_per_s,thp_fault_alloc_total,thp_fault_alloc_per_s,thp_fault_fallback_total,thp_fault_fallback_per_s,thp_collapse_alloc_total,pgscan_direct_total,allocstall_total,allocstall_per_s,kcompactd_cpu_s_total,kcompactd_cpu_per_s,khugepaged_cpu_s_total,khugepaged_cpu_per_s,psi_mem_some_avg10,psi_mem_full_avg10,pswpin_total,pswpout_total,disk_read_sectors_total,sample_wall_s,overrun,loadavg1,cpu_busy_pct,mem_available_kb,ctxt_per_s,procs_running"; printf '%s\n' "${H//,/$TABLE_SEP}" > "$CSV"
+  H="ts,device,reads_completed,sectors_read,writes_completed,sectors_written,io_in_progress,io_time_ms"; printf '%s\n' "${H//,/$TABLE_SEP}" > "$DISKCSV"
+  H="ts,iface,rx_bytes,rx_packets,rx_errs,rx_drop,tx_bytes,tx_packets,tx_errs,tx_drop"; printf '%s\n' "${H//,/$TABLE_SEP}" > "$NETCSV"
   p_t=""; p_cs=""; p_cf=""; p_fa=""; p_fb=""; p_as=""; p_kc=""; p_kh=""
   p_cpu_idle=""; p_cpu_total=""; p_ctxt=""
   OVERRUNS=0
@@ -321,7 +329,7 @@ if [ "$S_GIVEN" = 1 ]; then
     SARGS="$SARGS --token-salt $TOK_SALT"   # P1-1: ONE bundle-wide token namespace
     # shellcheck disable=SC2086
     # -S: skip site-packages scan (collector is stdlib-only) - 10x faster start on slow FS
-    python3 -S "$(dirname "$0")/collector.py" $SARGS >> "$BUNDLE/sampler.log" 2>&1 &
+    DFX_TABLE_FORMAT="$TABLE_FORMAT" python3 -S "$(dirname "$0")/collector.py" $SARGS >> "$BUNDLE/sampler.log" 2>&1 &
     SAMPLER_PID=$!
     st process_sampler available
     man process_interval_s "$PROC_INTERVAL"; man nall "${NALL:-20}"; man nuser "${NUSER:-20}"
@@ -376,24 +384,24 @@ if [ "$S_GIVEN" = 1 ]; then
         ctxt_ps=$(awk -v c="$ctxt" -v pc="$p_ctxt" -v t="$t" -v pt="$p_t"           'BEGIN{dt=t-pt; if(dt<=0){print ""} else printf "%.1f",(c-pc)/dt}')
       fi
       if [ "$1" = "INVALID" ]; then
-        echo "$(date +%s),INVALID,${cs:-},,${cf:-},,${fa:-},,${fb:-},,${ca:-},${pd:-},${as:-},,${kc:-0},,${kh:-0},,${pm_s:-},${pm_f:-},${si:-},${so:-},${dr:-},,,${la1:-},,${mavail:-},,${runn:-}" >> "$CSV"
+        R="$(date +%s),INVALID,${cs:-},,${cf:-},,${fa:-},,${fb:-},,${ca:-},${pd:-},${as:-},,${kc:-0},,${kh:-0},,${pm_s:-},${pm_f:-},${si:-},${so:-},${dr:-},,,${la1:-},,${mavail:-},,${runn:-}"; printf '%s\n' "${R//,/$TABLE_SEP}" >> "$CSV"
       else
         dt_s=$1; r_cs=$2; r_cf=$3; r_fa=$4; r_fb=$5; r_as=$6; r_kc=$7; r_kh=$8
         SW1=$(date +%s.%N 2>/dev/null || date +%s)
         swall=$(awk -v a="$SW0" -v b="$SW1" 'BEGIN{printf "%.3f", b-a}')
         ovr=$(awk -v w="$swall" -v iv="$INTERVAL" 'BEGIN{print (w>iv)?"1":"0"}')
         [ "$ovr" = 1 ] && OVERRUNS=$((OVERRUNS+1))
-        echo "$(date +%s),$dt_s,${cs:-},$r_cs,${cf:-},$r_cf,${fa:-},$r_fa,${fb:-},$r_fb,${ca:-},${pd:-},${as:-},$r_as,${kc:-0},$r_kc,${kh:-0},$r_kh,${pm_s:-},${pm_f:-},${si:-},${so:-},${dr:-},$swall,$ovr,${la1:-},${cpu_pct:-},${mavail:-},${ctxt_ps:-},${runn:-}" >> "$CSV"
+        R="$(date +%s),$dt_s,${cs:-},$r_cs,${cf:-},$r_cf,${fa:-},$r_fa,${fb:-},$r_fb,${ca:-},${pd:-},${as:-},$r_as,${kc:-0},$r_kc,${kh:-0},$r_kh,${pm_s:-},${pm_f:-},${si:-},${so:-},${dr:-},$swall,$ovr,${la1:-},${cpu_pct:-},${mavail:-},${ctxt_ps:-},${runn:-}"; printf '%s\n' "${R//,/$TABLE_SEP}" >> "$CSV"
       fi
     else
-      echo "$(date +%s),,${cs:-},,${cf:-},,${fa:-},,${fb:-},,${ca:-},${pd:-},${as:-},,${kc:-0},,${kh:-0},,${pm_s:-},${pm_f:-},${si:-},${so:-},${dr:-},,,${la1:-},,${mavail:-},,${runn:-}" >> "$CSV"
+      R="$(date +%s),,${cs:-},,${cf:-},,${fa:-},,${fb:-},,${ca:-},${pd:-},${as:-},,${kc:-0},,${kh:-0},,${pm_s:-},${pm_f:-},${si:-},${so:-},${dr:-},,,${la1:-},,${mavail:-},,${runn:-}"; printf '%s\n' "${R//,/$TABLE_SEP}" >> "$CSV"
     fi
     p_t=$t; p_cs=$cs; p_cf=$cf; p_fa=$fa; p_fb=$fb; p_as=$as; p_kc=$kc; p_kh=$kh
     p_cpu_idle=$cpu_idle; p_cpu_total=$cpu_total; p_ctxt=$ctxt
     TSNOW=$(date +%s)
-    awk -v ts="$TSNOW" 'NF>=13 {print ts","$3","$4","$6","$8","$10","$12","$13}' \
+    awk -v ts="$TSNOW" -v sep="$TABLE_SEP" 'BEGIN{OFS=sep} NF>=13 {print ts,$3,$4,$6,$8,$10,$12,$13}' \
       "$PROC/diskstats" >> "$DISKCSV" 2>/dev/null || true
-    awk -v ts="$TSNOW" 'NR>2 {gsub(":"," ",$0); print ts","$1","$2","$3","$4","$5","$10","$11","$12","$13}' \
+    awk -v ts="$TSNOW" -v sep="$TABLE_SEP" 'BEGIN{OFS=sep} NR>2 {gsub(":"," ",$0); print ts,$1,$2,$3,$4,$5,$10,$11,$12,$13}' \
       "$PROC/net/dev" >> "$NETCSV" 2>/dev/null || true
     echo "[dfx $(date -u +%H:%M:%SZ)] sample $i/$NSAMPLES wall=${swall:-?}s overrun=${ovr:-0} bundle=$(basename "$BUNDLE")"
     if [ "$STOP_REQ" = 0 ] && [ "$i" -lt "$NSAMPLES" ]; then
@@ -468,7 +476,8 @@ say "report_diagnostics.py). Remediation is an admin decision — this tool only
 OV_CPU1=$(read_self_cpu); OV_T1=$(date +%s.%N 2>/dev/null || date +%s)
 man self_cpu_s "$(awk -v a="$OV_CPU0" -v b="$OV_CPU1" -v c="$CLK_TCK" 'BEGIN{printf "%.3f",(b-a)/c}')"
 man self_wall_s "$(awk -v a="$OV_T0" -v b="$OV_T1" 'BEGIN{printf "%.3f", b-a}')"
-man files "manifest.kv snapshot.kv report.txt$([ "$S_GIVEN" = 1 ] && echo ' host_samples.csv disk_samples.csv network_samples.csv')"
+man files "manifest.kv snapshot.kv report.txt$([ "$S_GIVEN" = 1 ] && echo " host_samples.$TABLE_EXT disk_samples.$TABLE_EXT network_samples.$TABLE_EXT")"
+man table_format "$TABLE_FORMAT"
 man json_conversion deferred_to_schema_py
 
 echo "bundle: $BUNDLE"

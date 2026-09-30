@@ -65,21 +65,21 @@ def make_bundle(tmp_path, host="hostA", verdict="PASS", rules="none",
                     "0.200,10.10,0.0100,1.01,0.0010,1.0,%s,1,2,5100,0.150,0,1.20,12.5,798000,850.0,3" % psi_full[1])
         rows.append("1020,10.00,2100,100.000,48,0.400,144,1.200,120,1.000,7,3,24,"
                     "0.200,10.20,0.0100,1.02,0.0010,2.0,%s,1,2,5200,0.150,0,1.30,15.0,797000,900.0,2" % psi_full[2])
-        (b / "host_samples.csv").write_text("\n".join(rows) + "\n")
+        (b / "host_samples.tsv").write_text("\n".join(r.replace(",", "\t") for r in rows) + "\n")
     if with_proc_tables:
         sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
         import collector as _col
-        (b / "process_samples.csv").write_text(_col.PROC_HEADER + "\n" + "\n".join([
+        (b / "process_samples.tsv").write_text(_col.PROC_HEADER.replace(",", "\t") + "\n" + "\n".join(r.replace(",", "\t") for r in [
             "1010,R,me,python3,50,111,1,R,80.0,512000,1000000,100,10.0,1,1,1,1,rank_cpu_all",
             "1010,R,u_beef01,[other],70,114,0,R,120.0,2048000,3000000,100,20.0,2,2,,,rank_cpu_all",
             "1020,R,me,python3,50,111,1,R,90.0,514000,1000000,100,11.0,1,1,1,1,rank_cpu_all",
             "1020,R,u_beef01,[other],70,114,0,R,110.0,2050000,3000000,100,21.0,2,2,,,rank_cpu_all"]) + "\n")
-        (b / "user_samples.csv").write_text(_col.USER_HEADER + "\n" + "\n".join([
+        (b / "user_samples.tsv").write_text(_col.USER_HEADER.replace(",", "\t") + "\n" + "\n".join(r.replace(",", "\t") for r in [
             "1010,R,me,1,3,1,0,0.9,10.0,1200000,2000000,1000,2000,complete",
             "1010,R,u_beef01,0,3,1,2,1.2,20.0,2500000,4000000,,,unavailable",
             "1020,R,me,1,3,1,0,1.0,11.0,1210000,2000000,1100,2100,complete",
             "1020,R,u_beef01,0,3,1,2,1.1,21.0,2510000,4000000,,,unavailable"]) + "\n")
-        (b / "workload_rollup.csv").write_text(_col.ROLL_HEADER + "\n" + "\n".join([
+        (b / "workload_rollup.tsv").write_text(_col.ROLL_HEADER.replace(",", "\t") + "\n" + "\n".join(r.replace(",", "\t") for r in [
             "1010,R,target_job,2,1,0,0.8,1024000,1000,2000,9,7,1,1,0,1",
             "1010,R,current_user_non_job,1,0,0,0.1,176000,,,9,7,1,1,0,1",
             "1010,R,other_visible_workloads,3,1,2,1.2,2500000,,,9,7,1,1,0,1",
@@ -217,13 +217,13 @@ def test_explain_flags_dead_anchors(tmp_path, capsys):
     """All-zero anchors -> UNTRUSTWORTHY: broken collector is now detectable."""
     import explain_bundle as eb
     b = make_bundle(tmp_path)
-    csv = (b / "host_samples.csv").read_text()
+    csv = (b / "host_samples.tsv").read_text()
     for a, z in (("1.10", "0"), ("1.20", "0"), ("1.30", "0"), ("12.5", "0"),
                  ("15.0", "0"), ("850.0", "0"), ("900.0", "0"),
                  ("798000", "0"), ("797000", "0"), ("800000", "0"),
-                 (",2\n", ",0\n"), (",3\n", ",0\n")):
+                 ("\t2\n", "\t0\n"), ("\t3\n", "\t0\n")):
         csv = csv.replace(a, z)
-    (b / "host_samples.csv").write_text(csv)
+    (b / "host_samples.tsv").write_text(csv)
     verdict = eb.explain(b)
     assert verdict == "UNTRUSTWORTHY"
     assert "DO NOT TRUST" in capsys.readouterr().out
@@ -231,19 +231,21 @@ def test_explain_flags_dead_anchors(tmp_path, capsys):
 def test_legacy_bundle_samples_csv_still_loads(tmp_path):
     """Pre-v8 bundles (legacy samples.csv) must still load and be flagged."""
     b = make_bundle(tmp_path)
-    (b / "host_samples.csv").rename(b / "samples.csv")
+    legacy = b / "samples.csv"
+    legacy.write_text((b / "host_samples.tsv").read_text().replace("\t", ","))
+    (b / "host_samples.tsv").unlink()
     lb = schema.load_bundle(b)
     assert lb.legacy_host_table is True
     assert schema.samples_frame(lb) is not None
 
 def test_canonical_disk_network_frames(tmp_path):
     b = make_bundle(tmp_path)
-    (b / "disk_samples.csv").write_text(
-        "ts,device,reads_completed,sectors_read,writes_completed,sectors_written,io_in_progress,io_time_ms\n"
-        "1010,sda,100,800,50,400,0,120\n1010,sdb,10,80,5,40,0,12\n")
-    (b / "network_samples.csv").write_text(
-        "ts,iface,rx_bytes,rx_packets,rx_errs,rx_drop,tx_bytes,tx_packets,tx_errs,tx_drop\n"
-        "1010,eth0,5000,50,1,2,7000,70,3,4\n")
+    (b / "disk_samples.tsv").write_text(
+        "ts\tdevice\treads_completed\tsectors_read\twrites_completed\tsectors_written\tio_in_progress\tio_time_ms\n"
+        "1010\tsda\t100\t800\t50\t400\t0\t120\n1010\tsdb\t10\t80\t5\t40\t0\t12\n")
+    (b / "network_samples.tsv").write_text(
+        "ts\tiface\trx_bytes\trx_packets\trx_errs\trx_drop\ttx_bytes\ttx_packets\ttx_errs\ttx_drop\n"
+        "1010\teth0\t5000\t50\t1\t2\t7000\t70\t3\t4\n")
     lb = schema.load_bundle(b)
     dd = schema.disk_frame(lb); nn = schema.network_frame(lb)
     assert list(dd["device"]) == ["sda", "sdb"] and dd["io_time_ms"].sum() == 132
@@ -490,3 +492,4 @@ def test_p1a_missing_column_is_no_data():
     w = pd.DataFrame({"t_rel": [0], "cpu_other_visible_workloads": [2.0]})
     st = classify_availability(w)
     assert st["target_job"] == "no_data" and st["other_visible_workloads"] == "active"
+

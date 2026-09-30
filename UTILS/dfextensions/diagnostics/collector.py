@@ -7,9 +7,9 @@ Long-running sampler started by dfx_host_diagnostics.sh in sampling mode
 command; this module owns schema-aware process/accounting logic).
 
 Writes into the bundle directory, long format, fixed headers:
-  process_samples.csv   one row per SELECTED process per timestamp
-  user_samples.csv      one row per visible user per timestamp (ALL processes)
-  workload_rollup.csv   mutually exclusive partition per timestamp
+  process_samples.tsv   one row per SELECTED process per timestamp
+  user_samples.tsv      one row per visible user per timestamp (ALL processes)
+  workload_rollup.tsv   mutually exclusive partition per timestamp
 
 Selection per sample = union of: top Nall by CPU, top Nall by RSS,
 top Nuser by CPU (current user), top Nuser by RSS (current user),
@@ -44,6 +44,9 @@ from pathlib import Path
 
 PROC = Path(os.environ.get("PROC_ROOT", "/proc"))
 CLK = float(os.environ.get("CLK_TCK_OVERRIDE") or os.sysconf("SC_CLK_TCK"))
+TABLE_TSV = os.environ.get("DFX_TABLE_FORMAT", "tsv").lower() == "tsv"
+TABLE_SEP = "\t" if TABLE_TSV else ","
+TABLE_EXT = "tsv" if TABLE_TSV else "csv"
 
 PROC_HEADER = ("ts,run_id,tenant,proc,pid,starttime,is_target_job,state,"
                "cpu_pct,rss_kb,virt_kb,shr_kb,cpu_time_s,"
@@ -270,9 +273,9 @@ def sample_once(prev, dt, args, red, own_uid, run_id, ts, boot_id, out):
         rb, wb = scan_stage2_io(row)
         row["io_read"], row["io_write"] = rb, wb
 
-    with open(out / "process_samples.csv", "a") as f:
+    with open(out / f"process_samples.{TABLE_EXT}", "a") as f:
         for row in sorted(sel.values(), key=lambda r: (-(r["cpu_pct"] or 0), r["pid"])):
-            f.write(",".join(str(x) for x in (
+            f.write(TABLE_SEP.join(str(x) for x in (
                 ts, run_id, red.uid_token(row["uid"]),
                 red.proc(row["owner"], row["comm"], row["pid"], row["starttime"]),
                 red.pid_field(row["pid"]), red.start_field(row["starttime"]),
@@ -302,11 +305,11 @@ def sample_once(prev, dt, args, red, own_uid, run_id, ts, boot_id, out):
         if k2 in sel and sel[k2]["io_read"] is not None:
             u["io_r"] += sel[k2]["io_read"]; u["io_w"] += sel[k2]["io_write"]
             u["io_known"] += 1
-    with open(out / "user_samples.csv", "a") as f:
+    with open(out / f"user_samples.{TABLE_EXT}", "a") as f:
         for uid, u in sorted(users.items()):
             io_state = ("complete" if u["io_known"] == u["n"] and u["n"] > 0
                         else ("partial" if u["io_known"] else "unavailable"))
-            f.write(",".join(str(x) for x in (
+            f.write(TABLE_SEP.join(str(x) for x in (
                 ts, run_id, red.uid_token(uid), int(uid == own_uid), u["n"], u["run"],
                 u["blk"], round(u["cores"], 3), round(u["ticks"] / CLK, 2), u["rss"],
                 u["virt"],
@@ -333,10 +336,10 @@ def sample_once(prev, dt, args, red, own_uid, run_id, ts, boot_id, out):
         if k2 in sel and sel[k2].get("io_read") is not None:
             d["io_r"] += sel[k2]["io_read"]; d["io_w"] += sel[k2]["io_write"]
     part["unknown_or_inaccessible"]["n"] = cov["permission_denied"] + cov["vanished"]
-    with open(out / "workload_rollup.csv", "a") as f:
+    with open(out / f"workload_rollup.{TABLE_EXT}", "a") as f:
         for s in SCOPES:
             d = part[s]
-            f.write(",".join(str(x) for x in (
+            f.write(TABLE_SEP.join(str(x) for x in (
                 ts, run_id, s, d["n"], d["run"], d["blk"], round(d["cores"], 3),
                 d["rss"], d["io_r"] or "", d["io_w"] or "",
                 cov["visible"], cov["readable"], cov["permission_denied"],
@@ -366,9 +369,10 @@ def main(argv=None):
     own_uid = int(os.environ.get("DFX_UID_OVERRIDE", os.getuid()))
     red = Redactor(uid_name(own_uid), raw=args.raw, salt=args.token_salt)
     boot_id = read_boot_id()
-    for name, hdr in (("process_samples.csv", PROC_HEADER),
-                      ("user_samples.csv", USER_HEADER),
-                      ("workload_rollup.csv", ROLL_HEADER)):
+    for name, hdr in ((f"process_samples.{TABLE_EXT}", PROC_HEADER),
+                      (f"user_samples.{TABLE_EXT}", USER_HEADER),
+                      (f"workload_rollup.{TABLE_EXT}", ROLL_HEADER)):
+        hdr = hdr.replace(",", TABLE_SEP)
         p = out / name
         if not p.exists():
             p.write_text(hdr + "\n")

@@ -241,17 +241,20 @@ def _draw_expr(adf, expr, title, ylab, fig_dir, fname):
 def _aux_tables(bundle):
     """process/user tables if the bundle has them (v8 D1.6); else (None, None)."""
     import pandas as pd
-    pp = bundle.path / "process_samples.csv"
-    up = bundle.path / "user_samples.csv"
-    wp = bundle.path / "workload_rollup.csv"
+    pp = bundle.path / "process_samples.tsv"
+    up = bundle.path / "user_samples.tsv"
+    wp = bundle.path / "workload_rollup.tsv"
+    if not pp.is_file(): pp = bundle.path / "process_samples.csv"
+    if not up.is_file(): up = bundle.path / "user_samples.csv"
+    if not wp.is_file(): wp = bundle.path / "workload_rollup.csv"
     pdf_ = udf_ = wdf_ = None
     try:
         if pp.is_file() and len(pp.read_text().splitlines()) > 1:
-            pdf_ = pd.read_csv(pp)
+            pdf_ = pd.read_csv(pp, sep="\t" if pp.suffix == ".tsv" else ",")
         if up.is_file() and len(up.read_text().splitlines()) > 1:
-            udf_ = pd.read_csv(up)
+            udf_ = pd.read_csv(up, sep="\t" if up.suffix == ".tsv" else ",")
         if wp.is_file() and len(wp.read_text().splitlines()) > 1:
-            wdf_ = pd.read_csv(wp)
+            wdf_ = pd.read_csv(wp, sep="\t" if wp.suffix == ".tsv" else ",")
     except Exception:
         pass
     return pdf_, udf_, wdf_
@@ -802,3 +805,4 @@ if __name__ == "__main__":
                          "cannot serve as CRR/official evidence)")
     a = ap.parse_args()
     print(generate(a.bundles, out_dir=a.out_dir, mode=a.mode, audit=not a.no_audit))
+

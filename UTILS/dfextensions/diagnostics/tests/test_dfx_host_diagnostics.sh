@@ -108,7 +108,9 @@ run -o "$O4" -n2 -s 1 >/dev/null 2>&1; check "T-D14 MIXED -n2 -s 1 accepted" "$?
 run extra-garbage >/dev/null 2>&1;  check "T-D14 positional rejected" "$?" 1
 run -Z >/dev/null 2>&1;             check "T-D14 unknown flag rejected" "$?" 1
 run -s >/dev/null 2>&1;             check "T-D14 missing value rejected" "$?" 1
-run -s abc -n 2 >/dev/null 2>&1;    check "T-D14 non-integer rejected" "$?" 1
+run -s abc -n 2 >/dev/null 2>&1;    check "T-D14 non-numeric interval rejected" "$?" 1
+O4F="$WORK/o4f"; mkdir "$O4F"
+run -o "$O4F" -s 0.5 -n 2 >/dev/null 2>&1; check "T-D14 fractional -s 0.5 accepted" "$?" 0
 run -p abc >/dev/null 2>&1;         check "T-D14 bad PID rejected" "$?" 1
 
 echo "== T-D3/T-D3b: sampling on CONTROLLED fixture -> exact rate oracle, empty stderr =="
@@ -120,7 +122,7 @@ O5="$WORK/o5"; mkdir "$O5"
   # took sample 1). Wait until sample 1 is WRITTEN, then swap atomically.
   CSVF=""
   for _i in $(seq 1 200); do
-    CSVF=$(ls "$O5"/host_diag_*/host_samples.csv 2>/dev/null | head -1)
+    CSVF=$(ls "$O5"/host_diag_*/host_samples.tsv 2>/dev/null | head -1)
     [ -n "$CSVF" ] && [ "$(wc -l < "$CSVF")" -ge 2 ] && break
     sleep 0.05
   done
@@ -132,12 +134,12 @@ check "T-D3b exit" "$rc" 0
 [ "$rc" != 0 ] && { echo "--- T-D3 collector stderr ---"; cat "$WORK/t3.err"; echo "-----------------------------"; }
 check "T-D3b stderr empty" "$(wc -c < "$WORK/t3.err")" 0
 B5=$(ls -d "$O5"/host_diag_* | head -1)
-hdr=$(head -1 "$B5/host_samples.csv" | awk -F, '{print NF}')
-r2=$(sed -n 3p "$B5/host_samples.csv")
-check "T-D3b column count rows==header" "$(echo "$r2" | awk -F, '{print NF}')" "$hdr"
-check "T-D3 exact dt oracle" "$(echo "$r2" | cut -d, -f2)" "10.00"
-check "T-D3 exact compact_stall rate oracle" "$(echo "$r2" | cut -d, -f4)" "100.000"
-check "T-D3 totals column keeps cumulative" "$(echo "$r2" | cut -d, -f3)" "1100"
+hdr=$(head -1 "$B5/host_samples.tsv" | awk -F '\t' '{print NF}')
+r2=$(sed -n 3p "$B5/host_samples.tsv")
+check "T-D3b column count rows==header" "$(echo "$r2" | awk -F '\t' '{print NF}')" "$hdr"
+check "T-D3 exact dt oracle" "$(echo "$r2" | cut -f2)" "10.00"
+check "T-D3 exact compact_stall rate oracle" "$(echo "$r2" | cut -f4)" "100.000"
+check "T-D3 totals column keeps cumulative" "$(echo "$r2" | cut -f3)" "1100"
 
 echo "== T-D2: no writes outside the bundle (pre/post directory diff) =="
 FIX4="$WORK/fix4"; mkfix "$FIX4"; O6="$WORK/o6"; mkdir "$O6"
@@ -157,11 +159,12 @@ echo "== collision guard: same-second bundles distinct (V2-6/R-8, structural) ==
 O7="$WORK/o7"; mkdir "$O7"; run -o "$O7" >/dev/null 2>&1 & run -o "$O7" >/dev/null 2>&1; wait
 check "collision: two bundles" "$(ls -d "$O7"/host_diag_* | wc -l)" 2
 
-echo "== T-D15: anchor channels present; loadavg captured in snapshot and CSV =="
+echo "== T-D15: anchor channels present; loadavg captured in snapshot and TSV =="
 grep -q '^anchor.loadavg1=1.25' "$B/snapshot.kv" && ok "T-D15 snapshot anchor" || bad "T-D15 snapshot anchor"
-hdrA=$(head -1 "$B5/host_samples.csv")
-case "$hdrA" in *loadavg1,cpu_busy_pct,mem_available_kb,ctxt_per_s,procs_running) ok "T-D15 CSV anchor columns";; *) bad "T-D15 CSV anchor columns";; esac
-la=$(sed -n 3p "$B5/host_samples.csv" | awk -F, '{print $(NF-4)}')
+hdrA=$(head -1 "$B5/host_samples.tsv")
+printf '%s\n' "$hdrA" | grep -q $'loadavg1\tcpu_busy_pct\tmem_available_kb\tctxt_per_s\tprocs_running$' \
+  && ok "T-D15 TSV anchor columns" || bad "T-D15 TSV anchor columns"
+la=$(sed -n 3p "$B5/host_samples.tsv" | awk -F '\t' '{print $(NF-4)}')
 check "T-D15 loadavg1 value in row" "$la" "1.25"
 
 echo "== T-D19: C-2 bundle naming - shareable has run_id not PID; raw has PID =="
@@ -173,13 +176,13 @@ OR="$WORK/or"; mkdir "$OR"; run -o "$OR" -r >/dev/null 2>&1
 BR=$(basename "$(ls -d "$OR"/host_diag_*)")
 echo "$BR" | grep -qE '_[0-9]+_[0-9a-f]{8}$' && ok "T-D19 raw name carries PID" || bad "T-D19 raw name carries PID ($BR)"
 
-echo "== T-D20: sampling mode starts process sampler -> three CSVs with rows =="
+echo "== T-D20: sampling mode starts process sampler -> three TSVs with rows =="
 OS="$WORK/os"; mkdir "$OS"
 DFX_PROCESS_SAMPLER=on PROC_INTERVAL_OVERRIDE=1 PROC_ROOT="$FIX/proc" SYS_ROOT="$FIX/sys" CGROUP_ROOT="$FIX/nocg" DFX_UID_OVERRIDE=$(id -u) \
   bash "$SCRIPT" -o "$OS" -s 1 -n 2 >/dev/null 2>&1
 BS=$(ls -d "$OS"/host_diag_* | head -1)
 TD20_FAIL=0
-for f in process_samples.csv user_samples.csv workload_rollup.csv; do
+for f in process_samples.tsv user_samples.tsv workload_rollup.tsv; do
   if [ -f "$BS/$f" ] && [ "$(wc -l < "$BS/$f")" -gt 1 ]; then ok "T-D20 $f has rows"; else bad "T-D20 $f has rows"; TD20_FAIL=1; fi
 done
 if [ "$TD20_FAIL" = 1 ]; then
@@ -195,12 +198,12 @@ grep -q '^run_id=' "$BS/manifest.kv" && ok "T-D20 manifest run_id" || bad "T-D20
 
 echo "== T-D22: v8 canonical per-entity tables (disk_samples/network_samples) =="
 BS22=$(ls -d "$OS"/host_diag_* | head -1)
-for f in disk_samples.csv network_samples.csv; do
+for f in disk_samples.tsv network_samples.tsv; do
   if [ -f "$BS22/$f" ] && [ "$(wc -l < "$BS22/$f")" -gt 1 ]; then ok "T-D22 $f has rows"; else bad "T-D22 $f has rows"; fi
 done
-grep -q "^ts,device,reads_completed" "$BS22/disk_samples.csv" && ok "T-D22 disk header canonical" || bad "T-D22 disk header canonical"
-awk -F, 'NR>1{print $2}' "$BS22/network_samples.csv" | sort -u | grep -q "eth0" && ok "T-D22 net per-interface rows (eth0)" || bad "T-D22 net per-interface rows (eth0)"
-TX=$(awk -F, '$2=="eth0"{print $7; exit}' "$BS22/network_samples.csv")
+grep -q $'^ts\tdevice\treads_completed' "$BS22/disk_samples.tsv" && ok "T-D22 disk header canonical" || bad "T-D22 disk header canonical"
+awk -F '\t' 'NR>1{print $2}' "$BS22/network_samples.tsv" | sort -u | grep -q "eth0" && ok "T-D22 net per-interface rows (eth0)" || bad "T-D22 net per-interface rows (eth0)"
+TX=$(awk -F '\t' '$2=="eth0"{print $7; exit}' "$BS22/network_samples.tsv")
 [ "$TX" = 7000 ] && ok "T-D22 eth0 tx_bytes oracle (=7000, P0-G)" || bad "T-D22 eth0 tx_bytes oracle (got '$TX', want 7000)"
 
 echo "== T-D23: bundle-wide identity hunt (P0-F: shareable = tokens only) =="
@@ -214,9 +217,9 @@ echo "== T-D24: ONE token namespace (P1-1) - manifest == snapshot own-row token 
 MTOK=$(grep "^user=" "$BS22/manifest.kv" | cut -d= -f2)
 STOK=$(grep -E "^ps.top=1 " "$BS22/snapshot.kv" | awk '{print $2}' | head -1)
 [ -n "$MTOK" ] && [ "$MTOK" = "$STOK" ] && ok "T-D24 manifest/snapshot token identical ($MTOK)" || bad "T-D24 token mismatch: manifest=$MTOK snapshot=$STOK"
-US24="$BS22/user_samples.csv"
+US24="$BS22/user_samples.tsv"
 if [ -f "$US24" ]; then
-  grep -q ",$MTOK," "$US24" && ok "T-D24 user_samples carries the same token" || bad "T-D24 user_samples token differs from manifest"
+  grep -q $'\t'"$MTOK"$'\t' "$US24" && ok "T-D24 user_samples carries the same token" || bad "T-D24 user_samples token differs from manifest"
 fi
 
 echo "== T-D25: real-bundle identity invariant (GPT24 blocker) =="
@@ -239,7 +242,7 @@ CPID=$!
 # poll until >=2 samples exist (P2-3: fixed sleep raced on slow hosts)
 for _i in $(seq 1 40); do
   BC0=$(ls -d "$OC"/host_diag_* 2>/dev/null | head -1)
-  NROWS=$(grep -c . "$BC0/host_samples.csv" 2>/dev/null || echo 0)
+  NROWS=$(grep -c . "$BC0/host_samples.tsv" 2>/dev/null || echo 0)
   [ -n "$BC0" ] && [ "${NROWS:-0}" -ge 3 ] && break
   sleep 0.25
 done
@@ -284,3 +287,4 @@ check "PSI-01 verdict UNHEALTHY" "$(grep '^verdict=' "$B9/manifest.kv" | cut -d=
 echo
 echo "==================== RESULT: PASS=$PASS FAIL=$FAIL ===================="
 [ "$FAIL" = 0 ]
+

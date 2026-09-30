@@ -68,10 +68,10 @@ def env(tmp_path, monkeypatch):
                            target_pid_file=str(pidfile), job_cgroup=None,
                            raw=False, out=tmp_path / "bundle")
     (tmp_path / "bundle").mkdir()
-    for name, hdr in (("process_samples.csv", collector.PROC_HEADER),
-                      ("user_samples.csv", collector.USER_HEADER),
-                      ("workload_rollup.csv", collector.ROLL_HEADER)):
-        (tmp_path / "bundle" / name).write_text(hdr + "\n")
+    for name, hdr in (("process_samples.tsv", collector.PROC_HEADER),
+                      ("user_samples.tsv", collector.USER_HEADER),
+                      ("workload_rollup.tsv", collector.ROLL_HEADER)):
+        (tmp_path / "bundle" / name).write_text(hdr.replace(",", "\t") + "\n")
     # mechanics tests use RAW mode (they key on pid); the privacy CONTRACT
     # (shareable = tokens only, v8 938-940) is tested separately in test_p3
     red = collector.Redactor(collector.uid_name(1000), raw=True, salt="fixedsalt")
@@ -88,14 +88,14 @@ def run_two_samples(e):
 
 def rows(e, name):
     lines = (e.out / name).read_text().splitlines()
-    hdr = lines[0].split(",")
-    return [dict(zip(hdr, l.split(","))) for l in lines[1:]]
+    hdr = lines[0].split("\t")
+    return [dict(zip(hdr, l.split("\t"))) for l in lines[1:]]
 
 
 # ------------------------------- tests --------------------------------------
 def test_p1_union_ranks_empty_semantics(env):
     run_two_samples(env)
-    r2 = [r for r in rows(env, "process_samples.csv") if r["ts"] == "1010"]
+    r2 = [r for r in rows(env, "process_samples.tsv") if r["ts"] == "1010"]
     by_pid = {r["pid"]: r for r in r2}
     # CPU deltas over 10s @CLK=100: p50=+10000t=10.0cores?? -> ticks/CLK/dt*100 = 10000/100/10*100 = 1000%? 
     # values: p50 +10000 ticks -> 100.0% ... assert relative ordering instead of absolutes:
@@ -113,7 +113,7 @@ def test_p1_union_ranks_empty_semantics(env):
 def test_p2_warmup_no_cpu_ranks_target_still_present(env):
     c = env.collector
     c.sample_once(None, 10.0, env.args, env.red, 1000, "RUNX", 1000, "b", env.out)
-    r1 = rows(env, "process_samples.csv")
+    r1 = rows(env, "process_samples.tsv")
     assert all(r["cpu_pct"] == "" for r in r1)                    # warm-up: no CPU
     assert all(r["rank_cpu_all"] == "" for r in r1)               # no CPU ranks
     tj = [r for r in r1 if r["is_target_job"] == "1"]
@@ -124,16 +124,16 @@ def test_p3_shareable_is_tokens_only_v8_contract(env):
     No usernames (own included), no process names, no pid, no starttime."""
     share = env.collector.Redactor(env.collector.uid_name(1000), raw=False, salt="s2")
     env.collector.sample_once(None, 10.0, env.args, share, 1000, "R", 1000, "b", env.out)
-    txt = (env.out / "process_samples.csv").read_text()
+    txt = (env.out / "process_samples.tsv").read_text()
     for leak in ("secretjob", "python3", "worker", "vim", "uid1000", "uid2000"):
         assert leak not in txt, f"shareable leaks {leak}"
-    pr = rows(env, "process_samples.csv")
+    pr = rows(env, "process_samples.tsv")
     assert pr and all(r["pid"] == "" and r["starttime"] == "" for r in pr)
     assert all(r["tenant"].startswith("u_") for r in pr)
     assert all(r["proc"].startswith("p_") for r in pr)
     tj = [r for r in pr if r["is_target_job"] == "1"]
     assert len(tj) == 2                       # analytical meaning survives via flags
-    utxt = (env.out / "user_samples.csv").read_text()
+    utxt = (env.out / "user_samples.tsv").read_text()
     assert "uid1000" not in utxt and "uid2000" not in utxt
     raw = env.collector.Redactor(env.collector.uid_name(1000), raw=True)
     assert raw.proc("x", "secretjob", 1, 2) == "secretjob" and raw.pid_field(70) == 70
@@ -143,14 +143,14 @@ def test_p5_dstate_cap_target_priority(env, monkeypatch):
     make_proc(env.proc, 52, "jobstuck", "D", 10, 100, 1000, ppid=50, starttime=117)
     env.args.max_d_state_rows = 2
     env.collector.sample_once(None, 10.0, env.args, env.red, 1000, "R", 1000, "b", env.out)
-    r1 = rows(env, "process_samples.csv")
+    r1 = rows(env, "process_samples.tsv")
     dsel = [r for r in r1 if "d_state" in r["selected_reason"]]
     assert len(dsel) == 2
     assert any(r["pid"] == "52" for r in dsel)                    # target-D prioritized
 
 def test_u1_user_aggregation_all_processes_oracle(env):
     run_two_samples(env)
-    u2 = [r for r in rows(env, "user_samples.csv") if r["ts"] == "1010"]
+    u2 = [r for r in rows(env, "user_samples.tsv") if r["ts"] == "1010"]
     own = next(r for r in u2 if r["is_current_user"] == "1")
     # ALL own processes (50,51,60) counted - including 60 which is never top-N selected
     assert own["process_count"] == "3"
@@ -163,7 +163,7 @@ def test_u1_user_aggregation_all_processes_oracle(env):
 
 def test_w1_rollup_partition_mutually_exclusive(env):
     run_two_samples(env)
-    w2 = [r for r in rows(env, "workload_rollup.csv") if r["ts"] == "1010"]
+    w2 = [r for r in rows(env, "workload_rollup.tsv") if r["ts"] == "1010"]
     assert [r["scope"] for r in w2] == list(env.collector.SCOPES)
     counted = sum(int(r["process_count"]) for r in w2 if r["scope"] != "unknown_or_inaccessible")
     readable = int(w2[0]["readable_process_count"])
@@ -179,5 +179,6 @@ def test_identity_pid_starttime(env):
     prev = c.sample_once(None, 10.0, env.args, env.red, 1000, "R", 1000, "b", env.out)
     make_proc(env.proc, 60, "vim", "S", 999999, 50, 1000, starttime=999)  # pid 60 REUSED
     cur = c.sample_once(prev, 10.0, env.args, env.red, 1000, "R", 1010, "b", env.out)
-    r2 = [r for r in rows(env, "process_samples.csv") if r["ts"] == "1010" and r["pid"] == "60"]
+    r2 = [r for r in rows(env, "process_samples.tsv") if r["ts"] == "1010" and r["pid"] == "60"]
     assert all(r["cpu_pct"] == "" for r in r2)                    # new identity: warm-up again
+

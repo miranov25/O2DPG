@@ -34,7 +34,7 @@ def test_v2_seeded_corruption_detected_and_localized(tmp_path):
     """Corrupt ONE rate value post-collection -> conservation FAILS and the
     first-inconsistency pointer names the stage and the channel."""
     b = make_bundle(tmp_path)
-    csv = (b / "host_samples.csv")
+    csv = (b / "host_samples.tsv")
     csv.write_text(csv.read_text().replace("100.000", "150.000", 1))
     a = audit.Audit()
     a.check_conservation(schema.samples_frame(schema.load_bundle(b)))
@@ -148,3 +148,4 @@ def test_v11_in_progress_bundle_skips_rule_checks():
     audit.check_rule_evidence(a, b, schema)
     rec = {r["check_id"]: r for r in a.checks}
     assert rec["I-RULE-any"]["status"] == "SKIP"
+

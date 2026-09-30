@@ -90,7 +90,11 @@ $DIAGNOSTICS_CODE/
 $DIAGNOSTICS_CODE/docs/
     current canonical project documentation only
 
-$DIAGNOSTICS_CODE/files_diagnostics/
+$DIAGNOSTICS_CODE/test_logs/
+    raw canonical test logs and generated review evidence
+    NEVER COMMIT
+
+$DIAGNOSTICS_CODE/files_diag/
     temporary reviewer-distribution / packaging workspace
     NEVER COMMIT
 
@@ -102,9 +106,19 @@ $DIAGNOSTICS_DATA/
     host_diag_* bundles, rendered reports, large runtime evidence
 ```
 
-`files_diagnostics/` must be ignored by Git and must never be staged.
+`test_logs/` and `files_diag/` must be ignored by Git and must never be staged.
 
 Generated monitoring data must not be written into the source tree by default.
+
+Canonical `run_tests.sh` output uses:
+
+```text
+$DIAGNOSTICS_CODE/test_logs/
+    bash/pytest logs, evidence bundles and rendered test reports
+
+$DIAGNOSTICS_CODE/files_diag/
+    reviewer_<timestamp>.zip / diagnostics_reviewer_<timestamp>.zip
+```
 
 ---
 

@@ -32,7 +32,7 @@ export DFEXT_CODE="${DFEXT_CODE:-$O2DPG/UTILS/dfextensions}"
 export DIAGNOSTICS_CODE="${DIAGNOSTICS_CODE:-$DFEXT_CODE/diagnostics}"
 export DIAGNOSTICS_DOCS="${DIAGNOSTICS_DOCS:-$NOTES/JIRA/O2-6532/docs/diagnostics}"
 export DIAGNOSTICS_DATA="${DIAGNOSTICS_DATA:-$NOTESData/JIRA/O2-6532/diagnostics}"
-export DIAGNOSTICS_FILES="${DIAGNOSTICS_FILES:-$DIAGNOSTICS_CODE/files_diagnostics}"
+export DIAGNOSTICS_FILES="${DIAGNOSTICS_FILES:-$DIAGNOSTICS_CODE/files_diag}"
 export DIAGNOSTICS_INSTALL_BY_MD5="${DIAGNOSTICS_INSTALL_BY_MD5:-$DFEXT_CODE/scripts/install_by_md5.sh}"
 
 # Make the dfextensions package importable from any working directory.
@@ -62,3 +62,4 @@ if [ ! -f "$DIAGNOSTICS_INSTALL_BY_MD5" ]; then
     echo "diagnostics env: missing shared installer: $DIAGNOSTICS_INSTALL_BY_MD5" >&2
     return 1
 fi
+

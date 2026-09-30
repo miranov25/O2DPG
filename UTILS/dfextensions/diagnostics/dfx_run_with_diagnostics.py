@@ -94,7 +94,7 @@ def main(argv=None):
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--out", required=True, help="data directory (bundle lands here)")
     ap.add_argument("--label", default="run")
-    ap.add_argument("--interval", type=int, default=10)
+    ap.add_argument("--interval", type=float, default=10)
     ap.add_argument("--max-samples", type=int, default=720,
                     help="upper bound; the watch is TERMed cleanly when the job ends")
     ap.add_argument("--pre", type=float, default=30.0, help="baseline window [s]")
@@ -242,3 +242,4 @@ def main(argv=None):
 
 if __name__ == "__main__":
     sys.exit(main())
+

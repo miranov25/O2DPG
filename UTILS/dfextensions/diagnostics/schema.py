@@ -120,15 +120,21 @@ class Bundle:
         self.path = Path(path)
         self.manifest = parse_kv(self.path / "manifest.kv")
         self.snapshot = parse_kv(self.path / "snapshot.kv")
-        sp = self.path / "host_samples.csv"          # v8 canonical name
+        sp = self.path / "host_samples.tsv"
         self.legacy_host_table = False
+        if not sp.is_file():
+            sp = self.path / "host_samples.csv"       # PHASE_13_74 bundles
         if not sp.is_file():
             sp = self.path / "samples.csv"            # pre-v8 legacy bundles
             self.legacy_host_table = sp.is_file()
         self.samples_path = sp if sp.is_file() else None
-        dp = self.path / "disk_samples.csv"
+        dp = self.path / "disk_samples.tsv"
+        if not dp.is_file():
+            dp = self.path / "disk_samples.csv"
         self.disk_path = dp if dp.is_file() else None
-        np_ = self.path / "network_samples.csv"
+        np_ = self.path / "network_samples.tsv"
+        if not np_.is_file():
+            np_ = self.path / "network_samples.csv"
         self.network_path = np_ if np_.is_file() else None
 
     @property
@@ -212,9 +218,10 @@ def samples_frame(bundle):
     Adds t_rel (s since first sample) and host columns."""
     import pandas as pd
     if bundle.samples_path is None:
-        raise ValueError(f"{bundle.path}: bundle has no host_samples.csv "
+        raise ValueError(f"{bundle.path}: bundle has no host_samples.tsv/csv "
                          "(snapshot-only run; pre-v8 bundles use samples.csv)")
-    df = pd.read_csv(bundle.samples_path, dtype=str)
+    df = pd.read_csv(bundle.samples_path, sep="\t" if bundle.samples_path.suffix == ".tsv" else ",",
+                     dtype=str)
     df["row_valid"] = df["elapsed_s"] != "INVALID"
     for c in df.columns:
         if c == "row_valid":
@@ -270,11 +277,11 @@ def config_diff(bundles):
 
 
 def disk_frame(bundle):
-    """disk_samples.csv (v8 per-device table) -> DataFrame, or None."""
+    """disk_samples.tsv/csv (per-device table) -> DataFrame, or None."""
     import pandas as pd
     if getattr(bundle, "disk_path", None) is None:
         return None
-    df = pd.read_csv(bundle.disk_path)
+    df = pd.read_csv(bundle.disk_path, sep="\t" if bundle.disk_path.suffix == ".tsv" else ",")
     for c in df.columns:
         if c != "device":
             df[c] = pd.to_numeric(df[c], errors="coerce")
@@ -282,12 +289,13 @@ def disk_frame(bundle):
 
 
 def network_frame(bundle):
-    """network_samples.csv (v8 per-interface table) -> DataFrame, or None."""
+    """network_samples.tsv/csv (per-interface table) -> DataFrame, or None."""
     import pandas as pd
     if getattr(bundle, "network_path", None) is None:
         return None
-    df = pd.read_csv(bundle.network_path)
+    df = pd.read_csv(bundle.network_path, sep="\t" if bundle.network_path.suffix == ".tsv" else ",")
     for c in df.columns:
         if c != "iface":
             df[c] = pd.to_numeric(df[c], errors="coerce")
     return df
+
