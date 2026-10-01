@@ -8,6 +8,7 @@ command; this module owns schema-aware process/accounting logic).
 
 Writes into the bundle directory, long format, fixed headers:
   process_samples.tsv   one row per SELECTED process per timestamp
+  process_catalog.tsv   one row per observed selected/target process instance
   user_samples.tsv      one row per visible user per timestamp (ALL processes)
   workload_rollup.tsv   mutually exclusive partition per timestamp
 
@@ -25,8 +26,8 @@ Normative semantics implemented here:
   * per-user totals aggregate ALL visible processes, not only top-N;
   * unreadable fields are counted per-sample coverage states, never
     silent zeros; per-user IO complete only if every process readable;
-  * redaction (shareable default): other users/processes appear as stable
-    bundle-local tokens (u_xxxx / [other]); --raw keeps real names locally;
+  * PHASE_13_75 full-fidelity default: real users/processes/PID identity is
+    preserved in canonical evidence; --raw remains a compatibility flag;
   * CPU normalization: 100% = one logical CPU (v8 section 4.4).
 
 Fixture injection: PROC_ROOT, CLK_TCK_OVERRIDE, DFX_UID_OVERRIDE,
@@ -51,6 +52,9 @@ TABLE_EXT = "tsv" if TABLE_TSV else "csv"
 PROC_HEADER = ("ts,run_id,tenant,proc,pid,starttime,is_target_job,state,"
                "cpu_pct,rss_kb,virt_kb,shr_kb,cpu_time_s,"
                "rank_cpu_all,rank_mem_all,rank_cpu_user,rank_mem_user,selected_reason")
+CATALOG_HEADER = ("run_id,process_id,host_boot_id,user_name,uid,pid,starttime,ppid,"
+                  "parent_process_id,command,exe,exe_state,cmdline,cmdline_state,"
+                  "first_seen_ts,master_pid,master_process_id,is_master,is_target_job")
 USER_HEADER = ("ts,run_id,tenant,is_current_user,process_count,running_count,"
                "blocked_count,cpu_cores,cpu_time_s,rss_kb,virt_kb,"
                "io_read_bytes,io_write_bytes,io_coverage_state")
@@ -60,6 +64,48 @@ ROLL_HEADER = ("ts,run_id,scope,process_count,running_count,blocked_count,"
                "vanished_during_scan_count,new_process_count,accounting_lower_bound")
 SCOPES = ("target_job", "current_user_non_job", "other_visible_workloads",
           "kernel_or_system", "unknown_or_inaccessible")
+
+
+def process_id(boot_id, pid, starttime):
+    """Stable process-instance key; PID reuse is separated by kernel starttime."""
+    raw = f"{boot_id}\0{pid}\0{starttime}".encode("utf-8", "surrogateescape")
+    return "pr_" + hashlib.sha256(raw).hexdigest()[:24]
+
+
+def _tsv_field(value):
+    r"""PHASE_13_75 TSV field: unquoted \N=NULL; quoted "\N" is text."""
+    if value is None:
+        return r"\N"
+    text = str(value)
+    must_quote = text == r"\N" or any(c in text for c in ("\t", "\n", "\r", '"'))
+    if must_quote:
+        return '"' + text.replace('"', '""') + '"'
+    return text
+
+
+def _write_tsv_row(path, values):
+    """Append one row using the existing canonical PHASE_13_75 TSV field writer."""
+    with open(path, "a", encoding="utf-8", newline="") as f:
+        f.write("\t".join(_tsv_field(v) for v in values) + "\n")
+
+
+def _write_table_row(path, values):
+    """Append one canonical table row while preserving explicit CSV compatibility."""
+    if TABLE_TSV:
+        _write_tsv_row(path, values)
+        return
+    with open(path, "a", encoding="utf-8", newline="") as f:
+        f.write(",".join(str(v) for v in values) + "\n")
+
+
+def _rewrite_process_catalog(path, records):
+    """Atomically rewrite the one-row-per-process-instance descriptive catalog."""
+    tmp = path.with_name(path.name + ".tmp")
+    with open(tmp, "w", encoding="utf-8", newline="") as f:
+        f.write(CATALOG_HEADER.replace(",", "\t") + "\n")
+        for rec in sorted(records.values(), key=lambda r: (r["first_seen_ts"], r["pid"], r["starttime"])):
+            f.write("\t".join(_tsv_field(v) for v in rec["values"]) + "\n")
+    os.replace(tmp, path)
 
 
 def read_boot_id():
@@ -159,8 +205,9 @@ def scan_stage1(target_pids):
                 counters["permission_denied"] += 1
                 continue
             counters["readable"] += 1
+            ppid = int(f[1])
             procs[(pid, starttime)] = dict(
-                pid=pid, starttime=starttime, comm=comm, state=state,
+                pid=pid, starttime=starttime, ppid=ppid, comm=comm, state=state,
                 cpu_ticks=utime + stime, rss_kb=rss_kb, virt_kb=vsize_kb,
                 shr_kb=shr_kb, uid=owner_uid,
                 is_target=(pid in target_pids))
@@ -181,7 +228,82 @@ def scan_stage2_io(entry):
         return None, None
 
 
-def target_pid_set(target_pid_file, job_cgroup):
+def read_master_pid(target_pid_file):
+    """Return the explicitly supplied job-root PID, or None while not registered."""
+    if not target_pid_file:
+        return None
+    try:
+        return int(Path(target_pid_file).read_text().strip())
+    except (OSError, ValueError):
+        return None
+
+
+def read_pid_starttime(pid):
+    """Return Linux /proc starttime for *pid*, or None if the instance vanished."""
+    if pid is None:
+        return None
+    try:
+        stat = (PROC / str(pid) / "stat").read_text()
+        fields = stat[stat.rindex(")") + 2:].split()
+        return int(fields[19])
+    except (OSError, ValueError, IndexError):
+        return None
+
+
+def resolve_master_pid(target_pid_file, master_state):
+    """Pin the explicit master to one (pid,starttime) process instance.
+
+    A pidfile contains only a numeric PID.  Once that PID has been observed,
+    do not silently rebind the job root if Linux later reuses the number for a
+    different process.  A deliberate change to a different pidfile PID starts
+    a new pin.
+    """
+    requested = read_master_pid(target_pid_file)
+    if requested is None:
+        return None
+
+    if master_state.get("pid") != requested:
+        master_state.clear()
+        master_state["pid"] = requested
+
+    current_starttime = read_pid_starttime(requested)
+    if current_starttime is None:
+        return None
+
+    pinned = master_state.get("starttime")
+    if pinned is None:
+        master_state["starttime"] = current_starttime
+        return requested
+    if current_starttime != pinned:
+        return None
+    return requested
+
+
+def _read_process_text(pid):
+    """Read descriptive /proc fields once for a catalog row, with evidence state."""
+    p = PROC / str(pid)
+    try:
+        exe = os.readlink(p / "exe")
+        exe_state = "available"
+    except PermissionError:
+        exe, exe_state = None, "permission_denied"
+    except OSError:
+        exe, exe_state = None, "unavailable"
+    try:
+        raw = (p / "cmdline").read_bytes()
+        parts = [x for x in raw.split(b"\0") if x]
+        cmdline = " ".join(x.decode("utf-8", "replace") for x in parts)
+        cmdline_state = "available" if parts else "unavailable"
+        if not parts:
+            cmdline = None
+    except PermissionError:
+        cmdline, cmdline_state = None, "permission_denied"
+    except OSError:
+        cmdline, cmdline_state = None, "unavailable"
+    return exe, exe_state, cmdline, cmdline_state
+
+
+def target_pid_set(target_pid_file, job_cgroup, root=None):
     """Target-job discovery: cgroup procs where given, else PID tree from file."""
     pids = set()
     if job_cgroup:
@@ -191,12 +313,8 @@ def target_pid_set(target_pid_file, job_cgroup):
             return pids
         except OSError:
             pass  # fall through to tree - DEGRADED handled by caller manifest
-    root = None
-    if target_pid_file:
-        try:
-            root = int(Path(target_pid_file).read_text().strip())
-        except (OSError, ValueError):
-            return pids
+    if root is None:
+        root = read_master_pid(target_pid_file)
     if root is None:
         return pids
     children = {}
@@ -224,8 +342,17 @@ def rank_map(entries, key, n):
     return {(e["pid"], e["starttime"]): i + 1 for i, e in enumerate(order[:n])}
 
 
-def sample_once(prev, dt, args, red, own_uid, run_id, ts, boot_id, out):
-    procs, cov = scan_stage1(target_pid_set(args.target_pid_file, args.job_cgroup))
+def sample_once(prev, dt, args, red, own_uid, run_id, ts, boot_id, out,
+                catalog_seen=None, master_state=None):
+    if catalog_seen is None:
+        catalog_seen = set()  # compatibility for direct/unit callers; main() passes persistent set
+    if master_state is None:
+        master_state = {}
+    master_pid = resolve_master_pid(args.target_pid_file, master_state)
+    # The root has already been resolved to a pinned process instance.  Never
+    # let target_pid_set reread a same-number reused PID from the pidfile.
+    target_pids = target_pid_set(None, args.job_cgroup, root=master_pid)
+    procs, cov = scan_stage1(target_pids)
     new_count = sum(1 for k in procs if prev is not None and k not in prev)
     warm = prev is None
     # per-process CPU over the interval (v8 4.4: 100% = one logical CPU)
@@ -273,19 +400,67 @@ def sample_once(prev, dt, args, red, own_uid, run_id, ts, boot_id, out):
         rb, wb = scan_stage2_io(row)
         row["io_read"], row["io_write"] = rb, wb
 
-    with open(out / f"process_samples.{TABLE_EXT}", "a") as f:
-        for row in sorted(sel.values(), key=lambda r: (-(r["cpu_pct"] or 0), r["pid"])):
-            f.write(TABLE_SEP.join(str(x) for x in (
-                ts, run_id, red.uid_token(row["uid"]),
-                red.proc(row["owner"], row["comm"], row["pid"], row["starttime"]),
-                red.pid_field(row["pid"]), red.start_field(row["starttime"]),
-                int(row["is_target"]), row["state"],
-                "" if row["cpu_pct"] is None else row["cpu_pct"],
-                row["rss_kb"], row["virt_kb"], row["shr_kb"],
-                round(row["cpu_ticks"] / CLK, 2),
-                row["rank_cpu_all"], row["rank_mem_all"],
-                row["rank_cpu_user"], row["rank_mem_user"],
-                "|".join(sorted(row["reasons"])))) + "\n")
+    # Descriptive identity/hierarchy is one row per process instance.  In the
+    # normal long-running sampler catalog_seen is a dict so an exec() within
+    # the same (pid,starttime) refreshes COMMAND/EXE/CMDLINE without creating
+    # a duplicate process_id.  Direct legacy/unit callers may still pass a set.
+    pid_map = {e["pid"]: e for e in entries}
+    master_entry = pid_map.get(master_pid) if master_pid is not None else None
+    master_process_id = (process_id(boot_id, master_entry["pid"], master_entry["starttime"])
+                         if master_entry else None)
+    catalog_ready = (not args.target_pid_file) or (master_pid is not None)
+    catalog_records = catalog_seen if isinstance(catalog_seen, dict) else None
+    catalog_dirty = False
+    for row in (sorted(sel.values(), key=lambda r: (r["pid"], r["starttime"]))
+                if catalog_ready else []):
+        proc_id = process_id(boot_id, row["pid"], row["starttime"])
+        existing = catalog_records.get(proc_id) if catalog_records is not None else None
+        if catalog_records is None and proc_id in catalog_seen:
+            continue
+        parent = pid_map.get(row["ppid"])
+        parent_id = (process_id(boot_id, parent["pid"], parent["starttime"])
+                     if parent else None)
+        # Mutable descriptive metadata can change across exec() even when the
+        # Linux comm string stays unchanged. Re-read it on every selected
+        # observation; rewrite the one catalog row only when current metadata
+        # changes. process_id and first_seen_ts remain immutable.
+        exe, exe_state, cmdline, cmdline_state = _read_process_text(row["pid"])
+        row_master_pid = master_pid if row["is_target"] else None
+        row_master_process_id = master_process_id if row["is_target"] else None
+        first_seen_ts = existing["first_seen_ts"] if existing is not None else ts
+        values = (
+            run_id, proc_id, boot_id, uid_name(row["uid"]), row["uid"],
+            row["pid"], row["starttime"], row["ppid"], parent_id, row["comm"],
+            exe, exe_state, cmdline, cmdline_state, first_seen_ts, row_master_pid,
+            row_master_process_id, int(row["is_target"] and row["pid"] == master_pid),
+            int(row["is_target"]))
+        if catalog_records is not None:
+            if existing is not None and existing["values"] == values:
+                continue
+            catalog_records[proc_id] = {
+                "values": values,
+                "first_seen_ts": first_seen_ts, "pid": row["pid"],
+                "starttime": row["starttime"],
+            }
+            catalog_dirty = True
+        else:
+            _write_tsv_row(out / "process_catalog.tsv", values)
+            catalog_seen.add(proc_id)
+    if catalog_dirty:
+        _rewrite_process_catalog(out / "process_catalog.tsv", catalog_records)
+
+    for row in sorted(sel.values(), key=lambda r: (-(r["cpu_pct"] or 0), r["pid"])):
+        _write_table_row(out / f"process_samples.{TABLE_EXT}", (
+            ts, run_id, red.uid_token(row["uid"]),
+            red.proc(row["owner"], row["comm"], row["pid"], row["starttime"]),
+            red.pid_field(row["pid"]), red.start_field(row["starttime"]),
+            int(row["is_target"]), row["state"],
+            "" if row["cpu_pct"] is None else row["cpu_pct"],
+            row["rss_kb"], row["virt_kb"], row["shr_kb"],
+            round(row["cpu_ticks"] / CLK, 2),
+            row["rank_cpu_all"], row["rank_mem_all"],
+            row["rank_cpu_user"], row["rank_mem_user"],
+            "|".join(sorted(row["reasons"]))))
 
     # ---- per-user totals over ALL visible processes (v8 0.4) ----
     users = {}
@@ -305,16 +480,15 @@ def sample_once(prev, dt, args, red, own_uid, run_id, ts, boot_id, out):
         if k2 in sel and sel[k2]["io_read"] is not None:
             u["io_r"] += sel[k2]["io_read"]; u["io_w"] += sel[k2]["io_write"]
             u["io_known"] += 1
-    with open(out / f"user_samples.{TABLE_EXT}", "a") as f:
-        for uid, u in sorted(users.items()):
-            io_state = ("complete" if u["io_known"] == u["n"] and u["n"] > 0
-                        else ("partial" if u["io_known"] else "unavailable"))
-            f.write(TABLE_SEP.join(str(x) for x in (
-                ts, run_id, red.uid_token(uid), int(uid == own_uid), u["n"], u["run"],
-                u["blk"], round(u["cores"], 3), round(u["ticks"] / CLK, 2), u["rss"],
-                u["virt"],
-                u["io_r"] if u["io_known"] else "", u["io_w"] if u["io_known"] else "",
-                io_state)) + "\n")
+    for uid, u in sorted(users.items()):
+        io_state = ("complete" if u["io_known"] == u["n"] and u["n"] > 0
+                    else ("partial" if u["io_known"] else "unavailable"))
+        _write_table_row(out / f"user_samples.{TABLE_EXT}", (
+            ts, run_id, red.uid_token(uid), int(uid == own_uid), u["n"], u["run"],
+            u["blk"], round(u["cores"], 3), round(u["ticks"] / CLK, 2), u["rss"],
+            u["virt"],
+            u["io_r"] if u["io_known"] else "", u["io_w"] if u["io_known"] else "",
+            io_state))
 
     # ---- mutually exclusive workload partition (v8 4.1) ----
     part = {s: dict(n=0, run=0, blk=0, cores=0.0, rss=0, io_r=0, io_w=0) for s in SCOPES}
@@ -336,14 +510,13 @@ def sample_once(prev, dt, args, red, own_uid, run_id, ts, boot_id, out):
         if k2 in sel and sel[k2].get("io_read") is not None:
             d["io_r"] += sel[k2]["io_read"]; d["io_w"] += sel[k2]["io_write"]
     part["unknown_or_inaccessible"]["n"] = cov["permission_denied"] + cov["vanished"]
-    with open(out / f"workload_rollup.{TABLE_EXT}", "a") as f:
-        for s in SCOPES:
-            d = part[s]
-            f.write(TABLE_SEP.join(str(x) for x in (
-                ts, run_id, s, d["n"], d["run"], d["blk"], round(d["cores"], 3),
-                d["rss"], d["io_r"] or "", d["io_w"] or "",
-                cov["visible"], cov["readable"], cov["permission_denied"],
-                cov["vanished"], new_count, 1)) + "\n")
+    for scope_name in SCOPES:
+        d = part[scope_name]
+        _write_table_row(out / f"workload_rollup.{TABLE_EXT}", (
+            ts, run_id, scope_name, d["n"], d["run"], d["blk"], round(d["cores"], 3),
+            d["rss"], d["io_r"] or "", d["io_w"] or "",
+            cov["visible"], cov["readable"], cov["permission_denied"],
+            cov["vanished"], new_count, 1))
     return procs
 
 
@@ -358,7 +531,8 @@ def main(argv=None):
     ap.add_argument("--max-d-state-rows", type=int, default=20)
     ap.add_argument("--target-pid-file", default=None)
     ap.add_argument("--job-cgroup", default=None)
-    ap.add_argument("--raw", action="store_true")
+    ap.add_argument("--raw", action="store_true", default=True,
+                    help="full-fidelity identities (PHASE_13_75 default; compatibility flag)")
     ap.add_argument("--token-salt", default=None,
                     help="per-bundle token salt from the bash collector (P1-1: "
                          "one namespace so the same user has one token bundle-wide)")
@@ -376,18 +550,24 @@ def main(argv=None):
         p = out / name
         if not p.exists():
             p.write_text(hdr + "\n")
+    catalog = out / "process_catalog.tsv"
+    if not catalog.exists():
+        catalog.write_text(CATALOG_HEADER.replace(",", "\t") + "\n")
 
     stop = {"flag": False}
     signal.signal(signal.SIGTERM, lambda *a: stop.update(flag=True))
     prev, last_t = None, None
+    catalog_seen = {}
+    master_state = {}
     i = 0
     # loop guarantees AT LEAST ONE scan even if SIGTERM arrived during startup
     # (slow venv import can exceed a short host run - 2026-07-17 alma2 race)
     while True:
         t0 = time.monotonic()
-        ts = int(time.time())
+        ts = time.time()
         dt = (t0 - last_t) if last_t is not None else args.interval
-        prev = sample_once(prev, dt, args, red, own_uid, args.run_id, ts, boot_id, out)
+        prev = sample_once(prev, dt, args, red, own_uid, args.run_id, ts, boot_id, out,
+                           catalog_seen, master_state)
         last_t = t0
         i += 1
         if i == 1:

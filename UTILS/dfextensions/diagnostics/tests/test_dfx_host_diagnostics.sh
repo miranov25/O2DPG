@@ -2,7 +2,9 @@
 # test_dfx_host_diagnostics.sh — PHASE_13_74_ADF D1 test suite (fixture-first, C-8)
 # Every test hermetic where possible via PROC_ROOT/SYS_ROOT/CLK_TCK_OVERRIDE fixtures.
 set -u
-SCRIPT="$(cd "$(dirname "$0")/.." && pwd)/dfx_host_diagnostics.sh"
+ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+SCRIPT="$ROOT/dfx_host_diagnostics.sh"
+RUN_TESTS="$ROOT/run_tests.sh"
 WORK=$(mktemp -d); trap 'rm -rf "$WORK"' EXIT
 PASS=0; FAIL=0
 ok(){ PASS=$((PASS+1)); echo "PASS  $1"; }
@@ -82,11 +84,11 @@ check "T-D5 thp_fault_fallback" "$(grep '^vmstat.thp_fault_fallback=' "$B/snapsh
 check "T-D5 fallback_charge own key" "$(grep '^vmstat.thp_fault_fallback_charge=' "$B/snapshot.kv" | cut -d= -f2)" 999
 check "T-D5 allocstall_sum" "$(grep '^vmstat.allocstall_sum=' "$B/snapshot.kv" | cut -d= -f2)" 20
 
-echo "== C-1: default ps redaction — other user hashed, comm masked; own visible =="
-grep -q 'secretjob' "$B/snapshot.kv" && bad "C-1 other-user comm leaked" || ok "C-1 other-user comm masked"
-grep -Eq "^ps.top=2 65534 " "$B/snapshot.kv" && bad "C-1 foreign raw uid leaked" || ok "C-1 foreign uid tokenized"
-grep -Eq "^ps.top=1 u_[0-9a-f]+ .*python3" "$B/snapshot.kv" && ok "C-1 own row visible (comm preserved, user tokenized per P0-F)" || bad "C-1 own row visible (comm preserved, user tokenized per P0-F)"
-grep -Eq "^ps.top=1 $MEUID " "$B/snapshot.kv" && bad "C-1 raw uid absent from tokenized ps table" || ok "C-1 raw uid absent from tokenized ps table"
+echo "== C-1: PHASE_13_75 default ps full fidelity — real uid + command visible =="
+grep -q 'secretjob' "$B/snapshot.kv" && ok "C-1 other-user command preserved" || bad "C-1 other-user command missing"
+grep -Eq "^ps.top=2 65534 " "$B/snapshot.kv" && ok "C-1 foreign uid preserved" || bad "C-1 foreign uid missing"
+grep -Eq "^ps.top=1 $MEUID .*python3" "$B/snapshot.kv" && ok "C-1 own uid/command preserved" || bad "C-1 own uid/command missing"
+grep -q '^redaction=raw' "$B/manifest.kv" && ok "C-1 manifest declares full fidelity" || bad "C-1 manifest redaction is not raw"
 
 echo "== T-D6: REQUIRED evidence missing -> UNKNOWN, exit 2, manifest records reason =="
 FIX2="$WORK/fix2"; mkfix "$FIX2"; rm "$FIX2/proc/vmstat"
@@ -111,6 +113,10 @@ run -s >/dev/null 2>&1;             check "T-D14 missing value rejected" "$?" 1
 run -s abc -n 2 >/dev/null 2>&1;    check "T-D14 non-numeric interval rejected" "$?" 1
 O4F="$WORK/o4f"; mkdir "$O4F"
 run -o "$O4F" -s 0.5 -n 2 >/dev/null 2>&1; check "T-D14 fractional -s 0.5 accepted" "$?" 0
+B4F=$(ls -d "$O4F"/host_diag_* | head -1)
+NTS=$(tail -n +2 "$B4F/host_samples.tsv" | cut -f1 | wc -l | tr -d ' ')
+NUNIQ=$(tail -n +2 "$B4F/host_samples.tsv" | cut -f1 | sort -u | wc -l | tr -d ' ')
+check "T-D14 fractional cadence timestamps unique" "$NUNIQ" "$NTS"
 run -p abc >/dev/null 2>&1;         check "T-D14 bad PID rejected" "$?" 1
 
 echo "== T-D3/T-D3b: sampling on CONTROLLED fixture -> exact rate oracle, empty stderr =="
@@ -167,22 +173,21 @@ printf '%s\n' "$hdrA" | grep -q $'loadavg1\tcpu_busy_pct\tmem_available_kb\tctxt
 la=$(sed -n 3p "$B5/host_samples.tsv" | awk -F '\t' '{print $(NF-4)}')
 check "T-D15 loadavg1 value in row" "$la" "1.25"
 
-echo "== T-D19: C-2 bundle naming - shareable has run_id not PID; raw has PID =="
+echo "== T-D19: PHASE_13_75 full-fidelity bundle naming carries PID + run_id =="
 ON="$WORK/on"; mkdir "$ON"; run -o "$ON" >/dev/null 2>&1
 BN=$(basename "$(ls -d "$ON"/host_diag_*)")
-case "$BN" in *_$$_*|*_$$) bad "T-D19 shareable name leaks PID ($BN)";; *) ok "T-D19 shareable name has no PID";; esac
-echo "$BN" | grep -qE '_[0-9a-f]{8}$' && ok "T-D19 run_id suffix present" || bad "T-D19 run_id suffix present ($BN)"
+echo "$BN" | grep -qE '_[0-9]+_[0-9a-f]{8}$' && ok "T-D19 default full-fidelity name carries PID + run_id" || bad "T-D19 default full-fidelity naming ($BN)"
 OR="$WORK/or"; mkdir "$OR"; run -o "$OR" -r >/dev/null 2>&1
 BR=$(basename "$(ls -d "$OR"/host_diag_*)")
-echo "$BR" | grep -qE '_[0-9]+_[0-9a-f]{8}$' && ok "T-D19 raw name carries PID" || bad "T-D19 raw name carries PID ($BR)"
+echo "$BR" | grep -qE '_[0-9]+_[0-9a-f]{8}$' && ok "T-D19 -r compatibility name carries PID + run_id" || bad "T-D19 -r compatibility naming ($BR)"
 
-echo "== T-D20: sampling mode starts process sampler -> three TSVs with rows =="
+echo "== T-D20: sampling mode starts process sampler -> canonical TSVs with rows =="
 OS="$WORK/os"; mkdir "$OS"
 DFX_PROCESS_SAMPLER=on PROC_INTERVAL_OVERRIDE=1 PROC_ROOT="$FIX/proc" SYS_ROOT="$FIX/sys" CGROUP_ROOT="$FIX/nocg" DFX_UID_OVERRIDE=$(id -u) \
   bash "$SCRIPT" -o "$OS" -s 1 -n 2 >/dev/null 2>&1
 BS=$(ls -d "$OS"/host_diag_* | head -1)
 TD20_FAIL=0
-for f in process_samples.tsv user_samples.tsv workload_rollup.tsv; do
+for f in process_samples.tsv process_catalog.tsv user_samples.tsv workload_rollup.tsv; do
   if [ -f "$BS/$f" ] && [ "$(wc -l < "$BS/$f")" -gt 1 ]; then ok "T-D20 $f has rows"; else bad "T-D20 $f has rows"; TD20_FAIL=1; fi
 done
 if [ "$TD20_FAIL" = 1 ]; then
@@ -206,31 +211,26 @@ awk -F '\t' 'NR>1{print $2}' "$BS22/network_samples.tsv" | sort -u | grep -q "et
 TX=$(awk -F '\t' '$2=="eth0"{print $7; exit}' "$BS22/network_samples.tsv")
 [ "$TX" = 7000 ] && ok "T-D22 eth0 tx_bytes oracle (=7000, P0-G)" || bad "T-D22 eth0 tx_bytes oracle (got '$TX', want 7000)"
 
-echo "== T-D23: bundle-wide identity hunt (P0-F: shareable = tokens only) =="
+echo "== T-D23: PHASE_13_75 bundle-wide full-fidelity identity contract =="
 ME23=$(id -un)
-LEAK=$(grep -rlw "$ME23" "$BS22" 2>/dev/null | wc -l | tr -d ' ')
-[ "$LEAK" = 0 ] && ok "T-D23 no real username anywhere in shareable bundle" || bad "T-D23 username found in $LEAK file(s): $(grep -rlw "$ME23" "$BS22" | head -2 | tr '\n' ' ')"
-grep -q "^user=u_" "$BS22/manifest.kv" && ok "T-D23 manifest user tokenized" || bad "T-D23 manifest user tokenized"
-grep "^invocation=" "$BS22/manifest.kv" | grep -q "/" && bad "T-D23 invocation path-free" || ok "T-D23 invocation path-free"
-grep -q "^redaction=shareable-tokens" "$BS22/manifest.kv" && ok "T-D23 redaction declared" || bad "T-D23 redaction declared"
-echo "== T-D24: ONE token namespace (P1-1) - manifest == snapshot own-row token =="
-MTOK=$(grep "^user=" "$BS22/manifest.kv" | cut -d= -f2)
-STOK=$(grep -E "^ps.top=1 " "$BS22/snapshot.kv" | awk '{print $2}' | head -1)
-[ -n "$MTOK" ] && [ "$MTOK" = "$STOK" ] && ok "T-D24 manifest/snapshot token identical ($MTOK)" || bad "T-D24 token mismatch: manifest=$MTOK snapshot=$STOK"
-US24="$BS22/user_samples.tsv"
-if [ -f "$US24" ]; then
-  grep -q $'\t'"$MTOK"$'\t' "$US24" && ok "T-D24 user_samples carries the same token" || bad "T-D24 user_samples token differs from manifest"
-fi
+grep -q "^user=$ME23$" "$BS22/manifest.kv" && ok "T-D23 manifest carries real username" || bad "T-D23 manifest real username missing"
+grep -q "^redaction=raw$" "$BS22/manifest.kv" && ok "T-D23 manifest declares raw/full fidelity" || bad "T-D23 manifest redaction is not raw"
+grep -qw "$ME23" "$BS22/user_samples.tsv" && ok "T-D23 user_samples carries real username" || bad "T-D23 user_samples real username missing"
+grep -qw "$ME23" "$BS22/process_catalog.tsv" && ok "T-D23 process_catalog carries real username" || bad "T-D23 process_catalog real username missing"
 
-echo "== T-D25: real-bundle identity invariant (GPT24 blocker) =="
-STOK25=$(grep -E "^ps.top=1 " "$BS22/snapshot.kv" | awk '{print $2}' | head -1)
-[ "$MTOK" = "$STOK25" ] && ok "T-D25 own-PID snapshot token == manifest token ($MTOK)" \
-  || bad "T-D25 REAL-BUNDLE DIVERGENCE: manifest=$MTOK snapshot-own-row=$STOK25"
-grep -E "^ps.top=1 " "$BS22/snapshot.kv" | grep -q "python3" \
-  && ok "T-D25 own comm still visible (uid-canonical, C-1 preserved)" \
-  || bad "T-D25 own comm lost"
-grep -E "^ps.top=2 " "$BS22/snapshot.kv" | grep -q "\[other\]" \
-  && ok "T-D25 foreign-uid row anonymized" || bad "T-D25 foreign row not anonymized"
+echo "== T-D24: full-fidelity identity consistency across manifest/user/process tables =="
+MUSER=$(grep "^user=" "$BS22/manifest.kv" | cut -d= -f2)
+UUSER=$(awk -F '\t' '$4==1{print $3; exit}' "$BS22/user_samples.tsv" 2>/dev/null)
+[ -n "$MUSER" ] && [ "$MUSER" = "$UUSER" ] && ok "T-D24 manifest == current-user table ($MUSER)" || bad "T-D24 manifest/user mismatch: manifest=$MUSER user_samples=$UUSER"
+grep -q $'\t'"$MUSER"$'\t' "$BS22/process_catalog.tsv" && ok "T-D24 process_catalog uses same username" || bad "T-D24 process_catalog username differs"
+
+echo "== T-D25: real-bundle snapshot identity remains unredacted =="
+grep -E "^ps.top=1 $MEUID " "$BS22/snapshot.kv" | grep -q "python3" \
+  && ok "T-D25 own uid/command visible" || bad "T-D25 own uid/command missing"
+grep -E "^ps.top=2 65534 " "$BS22/snapshot.kv" | grep -q "secretjob" \
+  && ok "T-D25 foreign uid/command visible" || bad "T-D25 foreign uid/command missing"
+grep -q $'\tpytest\t' "$BS22/process_catalog.tsv" \
+  && ok "T-D25 process_catalog command visible" || bad "T-D25 process_catalog command missing"
 
 OVS=$(grep "^self_cpu_s=" "$BS22/manifest.kv" | cut -d= -f2)
 awk -v v="$OVS" 'BEGIN{exit (v>=0)?0:1}' && ok "T-D23 self_cpu_s non-negative (P0-H)" || bad "T-D23 self_cpu_s negative: $OVS"
@@ -285,6 +285,25 @@ B9=$(ls -d "$O9"/host_diag_* | head -1)
 check "PSI-01 verdict UNHEALTHY" "$(grep '^verdict=' "$B9/manifest.kv" | cut -d= -f2)" "UNHEALTHY"
 
 echo
+echo "== T-D26: canonical validation gate rejects non-S7 FAIL/ERROR =="
+BADVAL="$WORK/validation_bad.csv"
+cat > "$BADVAL" <<'EOF'
+check_id,stage,status,detail,discrepancy
+"I-COV-S7_job_host_analysis","S7_job_host_analysis","PASS","ok",""
+"I-INJECT-other","S2_parse_derive","FAIL","synthetic non-S7 failure","1"
+EOF
+DFX_VALIDATE_ONLY_CSV="$BADVAL" bash "$RUN_TESTS" > "$WORK/t26_bad.out" 2>&1
+check "T-D26 non-S7 FAIL makes gate nonzero" "$?" 1
+
+GOODVAL="$WORK/validation_good.csv"
+cat > "$GOODVAL" <<'EOF'
+check_id,stage,status,detail,discrepancy
+"I-COV-S7_job_host_analysis","S7_job_host_analysis","PASS","ok",""
+"I-HIER-note-rss","S3_join","SKIP","documented skip",""
+EOF
+DFX_VALIDATE_ONLY_CSV="$GOODVAL" bash "$RUN_TESTS" > "$WORK/t26_good.out" 2>&1
+check "T-D26 PASS/SKIP validation remains green" "$?" 0
+
 echo "==================== RESULT: PASS=$PASS FAIL=$FAIL ===================="
 [ "$FAIL" = 0 ]
 

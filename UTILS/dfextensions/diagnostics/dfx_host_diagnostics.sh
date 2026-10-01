@@ -15,7 +15,7 @@
 #     -p PID        per-process deep-dive; non-owned PID requires -A (C-1)
 #     -A            acknowledge deep-dive on a process you do not own
 #     -d DATA_PATH  record filesystem/mount type of a named data path
-#     -r            raw mode: NO redaction (local use only; recorded in manifest)
+#     -r            full-fidelity mode (default; retained for compatibility)
 #     -s/-n         sampling: NSAMPLES samples, INTERVAL_S seconds apart
 #     -T            force TSV sampled tables (TSV is the default)
 #
@@ -43,7 +43,7 @@ usage(){ echo "usage: $0 [-o DIR] [-p PID [-A]] [-d DATA_PATH] [-r] [-T] [-s INT
 
 # ---- argument parsing: flags tracked INSIDE getopts (C-6: never re-parse $*);
 # ---- leading-colon silent mode separates missing-value from unknown-flag (C-7)
-PID=""; INTERVAL=0; NSAMPLES=0; RUN_ID=""; JOB_CGROUP=""; TARGET_PID_FILE=""; OUTDIR="."; DATAPATH=""; RAW=0; ACK=0; TABLE_FORMAT="${DFX_TABLE_FORMAT:-tsv}"
+PID=""; INTERVAL=0; NSAMPLES=0; RUN_ID=""; JOB_CGROUP=""; TARGET_PID_FILE=""; OUTDIR="."; DATAPATH=""; RAW=1; ACK=0; TABLE_FORMAT="${DFX_TABLE_FORMAT:-tsv}"
 S_GIVEN=0; N_GIVEN=0
 while getopts ":p:s:n:o:d:rTAR:G:F:" opt; do case $opt in
   R) RUN_ID=$OPTARG;; G) JOB_CGROUP=$OPTARG;; F) TARGET_PID_FILE=$OPTARG;;
@@ -194,7 +194,7 @@ collect_vmstat(){
 
 kthread_cpu(){ # BARE NUMERIC: name pid cpu_seconds (C-1 fix lineage); fixture-safe via PROC_ROOT
   for p in "$PROC"/[0-9]*; do
-    read -r n < "$p/comm" 2>/dev/null || continue
+    read -r n 2>/dev/null < "$p/comm" || continue
     case "$n" in kcompactd*|khugepaged*)
       awk -v n="$n" -v pid="${p##*/}" -v clk="$CLK_TCK" \
         '{printf "%s %s %.2f\n", n, pid, ($14+$15)/clk}' "$p/stat" 2>/dev/null;; esac
@@ -384,28 +384,31 @@ if [ "$S_GIVEN" = 1 ]; then
         ctxt_ps=$(awk -v c="$ctxt" -v pc="$p_ctxt" -v t="$t" -v pt="$p_t"           'BEGIN{dt=t-pt; if(dt<=0){print ""} else printf "%.1f",(c-pc)/dt}')
       fi
       if [ "$1" = "INVALID" ]; then
-        R="$(date +%s),INVALID,${cs:-},,${cf:-},,${fa:-},,${fb:-},,${ca:-},${pd:-},${as:-},,${kc:-0},,${kh:-0},,${pm_s:-},${pm_f:-},${si:-},${so:-},${dr:-},,,${la1:-},,${mavail:-},,${runn:-}"; printf '%s\n' "${R//,/$TABLE_SEP}" >> "$CSV"
+        R="$(date +%s.%N),INVALID,${cs:-},,${cf:-},,${fa:-},,${fb:-},,${ca:-},${pd:-},${as:-},,${kc:-0},,${kh:-0},,${pm_s:-},${pm_f:-},${si:-},${so:-},${dr:-},,,${la1:-},,${mavail:-},,${runn:-}"; printf '%s\n' "${R//,/$TABLE_SEP}" >> "$CSV"
       else
         dt_s=$1; r_cs=$2; r_cf=$3; r_fa=$4; r_fb=$5; r_as=$6; r_kc=$7; r_kh=$8
         SW1=$(date +%s.%N 2>/dev/null || date +%s)
         swall=$(awk -v a="$SW0" -v b="$SW1" 'BEGIN{printf "%.3f", b-a}')
         ovr=$(awk -v w="$swall" -v iv="$INTERVAL" 'BEGIN{print (w>iv)?"1":"0"}')
         [ "$ovr" = 1 ] && OVERRUNS=$((OVERRUNS+1))
-        R="$(date +%s),$dt_s,${cs:-},$r_cs,${cf:-},$r_cf,${fa:-},$r_fa,${fb:-},$r_fb,${ca:-},${pd:-},${as:-},$r_as,${kc:-0},$r_kc,${kh:-0},$r_kh,${pm_s:-},${pm_f:-},${si:-},${so:-},${dr:-},$swall,$ovr,${la1:-},${cpu_pct:-},${mavail:-},${ctxt_ps:-},${runn:-}"; printf '%s\n' "${R//,/$TABLE_SEP}" >> "$CSV"
+        R="$(date +%s.%N),$dt_s,${cs:-},$r_cs,${cf:-},$r_cf,${fa:-},$r_fa,${fb:-},$r_fb,${ca:-},${pd:-},${as:-},$r_as,${kc:-0},$r_kc,${kh:-0},$r_kh,${pm_s:-},${pm_f:-},${si:-},${so:-},${dr:-},$swall,$ovr,${la1:-},${cpu_pct:-},${mavail:-},${ctxt_ps:-},${runn:-}"; printf '%s\n' "${R//,/$TABLE_SEP}" >> "$CSV"
       fi
     else
-      R="$(date +%s),,${cs:-},,${cf:-},,${fa:-},,${fb:-},,${ca:-},${pd:-},${as:-},,${kc:-0},,${kh:-0},,${pm_s:-},${pm_f:-},${si:-},${so:-},${dr:-},,,${la1:-},,${mavail:-},,${runn:-}"; printf '%s\n' "${R//,/$TABLE_SEP}" >> "$CSV"
+      R="$(date +%s.%N),,${cs:-},,${cf:-},,${fa:-},,${fb:-},,${ca:-},${pd:-},${as:-},,${kc:-0},,${kh:-0},,${pm_s:-},${pm_f:-},${si:-},${so:-},${dr:-},,,${la1:-},,${mavail:-},,${runn:-}"; printf '%s\n' "${R//,/$TABLE_SEP}" >> "$CSV"
     fi
     p_t=$t; p_cs=$cs; p_cf=$cf; p_fa=$fa; p_fb=$fb; p_as=$as; p_kc=$kc; p_kh=$kh
     p_cpu_idle=$cpu_idle; p_cpu_total=$cpu_total; p_ctxt=$ctxt
-    TSNOW=$(date +%s)
+    TSNOW=$(date +%s.%N)
     awk -v ts="$TSNOW" -v sep="$TABLE_SEP" 'BEGIN{OFS=sep} NF>=13 {print ts,$3,$4,$6,$8,$10,$12,$13}' \
       "$PROC/diskstats" >> "$DISKCSV" 2>/dev/null || true
     awk -v ts="$TSNOW" -v sep="$TABLE_SEP" 'BEGIN{OFS=sep} NR>2 {gsub(":"," ",$0); print ts,$1,$2,$3,$4,$5,$10,$11,$12,$13}' \
       "$PROC/net/dev" >> "$NETCSV" 2>/dev/null || true
     echo "[dfx $(date -u +%H:%M:%SZ)] sample $i/$NSAMPLES wall=${swall:-?}s overrun=${ovr:-0} bundle=$(basename "$BUNDLE")"
     if [ "$STOP_REQ" = 0 ] && [ "$i" -lt "$NSAMPLES" ]; then
-      sleep "$INTERVAL" & SLPID=$!; wait "$SLPID" 2>/dev/null   # interruptible sleep
+      SNOW=$(date +%s.%N 2>/dev/null || date +%s)
+      SLEFT=$(awk -v a="$SW0" -v b="$SNOW" -v iv="$INTERVAL" \
+        'BEGIN{x=iv-(b-a); if(x<0)x=0; printf "%.3f",x}')
+      sleep "$SLEFT" & SLPID=$!; wait "$SLPID" 2>/dev/null   # start-to-start cadence
     fi
     i=$((i+1))
   done
