@@ -479,6 +479,28 @@ cannot drift apart. The coder must not self-approve.
 A confirmation review verifies the identified blockers and regression safety. It should not reopen accepted
 architecture without new evidence.
 
+### 13.1 Correction-review predecessor and handoff rule
+
+Before preparing or sending any correction / confirmation CRR, the coder/AI must:
+
+1. locate and read the **latest authoritative consolidated review summary** for that exact review unit;
+2. determine precedence from the document's review target, date, synthesis role and explicit `Supersedes` chain — **do not
+   guess from a filename or silently substitute an older summary**;
+3. treat every unresolved P0/P1 in that summary as the mandatory blocker ledger and include an explicit closure/disposition
+   for every item in the new CRR;
+4. verify that the current reviewer packet was generated **after** the final candidate bytes and contains the complete
+   phase diff / equivalent patch required by §10;
+5. place the authoritative prior review summary in `$DIAGNOSTICS_FILES` together with the normative proposal, current CRR,
+   current canonical reviewer ZIP, and any required external/site evidence;
+6. verify fingerprints and print the **exact files-to-send list** before the handoff;
+7. when providing any new or revised CRR/review document, provide in the same response the download filename, canonical
+   destination, exact install/copy command, and `check_ref` verification command required by §4; every executable handoff
+   step must use the `### STEP<N> — ...` heading convention from §2.
+
+The coder/AI owns this discovery and reconciliation. The Architect should not have to remember or identify which earlier
+review-summary version is authoritative. If multiple candidates remain genuinely ambiguous after inspecting their contents,
+do not guess: expose the ambiguity before sending the review.
+
 ---
 
 ## 14. Reviewer obligations
