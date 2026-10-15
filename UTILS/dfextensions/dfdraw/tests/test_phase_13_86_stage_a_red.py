@@ -889,15 +889,12 @@ class TestStageAStructuralBoundaryInventory:
         assert kwargs["weights_vector"] == ["w0", "w1"]
         assert kwargs["vector_compose"] == "outer"
 
-    @pytest.mark.xfail(strict=True, reason=(
-        "PHASE_13_86 Stage B — draw() door facet_by='vector' delegation"
-    ))
     def test_A10c_draw_profile_facet_vector_preserves_intact_expression_for_typed_owner(self):
-        """RED-R3 / Stage-B seed: facet_by='vector' must reach profile intact.
+        """Stage B-a lock: facet_by='vector' must reach profile intact.
 
         This deliberately reaches the production-special bracket path rather
-        than the four scalar A10 guards.  It is expected RED on the current
-        baseline and becomes the Stage-Ba draw-door delegation lock.
+        than the four scalar A10 guards.  Stage B-a makes this a permanent
+        GREEN delegation invariant; ordinary facet composition remains B-b.
         """
         df = _stage_a_df()
         drawer = DFDraw(df)

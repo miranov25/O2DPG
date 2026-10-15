@@ -5408,15 +5408,17 @@ class DFDraw:
                 # x_expr is a list with None entries for 1D vectors
                 type = "hist" if x_expr[0] is None else "scatter"
 
-            # PHASE_13_83 BUG-05: a bracket-vector profile request with an
-            # active normalize= transform must be owned by profile(), which
-            # already implements normalization.  The generic draw()-level
-            # vector dispatcher renders the curves independently and therefore
-            # loses the requested transform.  Delegate the whole request to
-            # the typed profile surface rather than duplicating normalize logic
-            # here.  The no-normalize vector path below is intentionally
-            # unchanged.
-            if type == "profile" and normalize is not None:
+            # PHASE_13_83 BUG-05 / PHASE_13_86 Stage B-a: bracket-vector
+            # profile requests whose semantics are owned by profile() must reach
+            # that typed owner intact.  The generic draw()-level _draw_vector()
+            # path scalarizes the expression first, which loses normalize= and
+            # makes facet_by="vector" impossible because the facet coordinator
+            # requires the complete list-valued y expression.  Delegate only
+            # these owner-sensitive cases here; ordinary-facet vector
+            # composition remains Stage B-b and is deliberately not widened.
+            if type == "profile" and (
+                normalize is not None or facet_by == "vector"
+            ):
                 return self.profile(
                     expr, selection=selection, bins=bins, stats=stats,
                     title=title, ax=ax, sample=sample, save=save,
