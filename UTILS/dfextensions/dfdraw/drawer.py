@@ -1443,7 +1443,10 @@ class DFDraw:
 
     # Private kwargs that _draw_vector injects into iter_kwargs to suppress
     # per-iteration legend/title/tight_layout in the underlying plot modules.
-    _VECTOR_SUPPRESS_KWARGS = ('_suppress_legend', '_suppress_title', '_suppress_layout')
+    _VECTOR_SUPPRESS_KWARGS = (
+        '_suppress_legend', '_suppress_title', '_suppress_layout',
+        '_suppress_color_cycle',
+    )
 
     # =========================================================================
     # Phase 13.57.DF AF-2' (K-1/K-3): C-7 typo guard, factored out of draw()
@@ -4056,6 +4059,16 @@ class DFDraw:
 
         # ---- Determine groups (subplot keys) -------------------------------
         if facet_by == 'group_by':
+            # PHASE_13_86 Stage A v1.1 / B-2: legacy ``facet=True`` is
+            # normalized by the typed methods to facet_by='group_by'.
+            # facet_by_bins/facet_by_quantiles are outer facet-layout controls,
+            # not matplotlib/per-cell kwargs.  The legacy route previously let
+            # them leak into the cell renderer where matplotlib raised
+            # ``unexpected keyword argument 'facet_by_bins'``.  Consume them
+            # here before dispatching any cell; explicit column faceting keeps
+            # its dedicated handling below.
+            plot_kwargs.pop('facet_by_bins', None)
+            plot_kwargs.pop('facet_by_quantiles', None)
             if group_by is None:
                 raise ValueError(
                     "facet_by='group_by' requires group_by= parameter to be set"
@@ -5273,6 +5286,18 @@ class DFDraw:
                 type = "profile2d"
 
         if type == "profile2d":
+            # PHASE_13_86 Stage A / RED-R5: draw() exposes color/marker as
+            # named params, but the profile2d heatmap owner has no line/marker
+            # semantics for them.  Do not silently discard explicit user intent.
+            for _unsupported_name, _unsupported_value in (
+                ('color', color), ('marker', marker),
+            ):
+                if _unsupported_value is not None:
+                    raise ValueError(
+                        f"type='profile2d' does not support {_unsupported_name}=; "
+                        "the 2D profile is a heatmap. Use cmap=/vmin=/vmax= "
+                        "for color-scale control."
+                    )
             colon_count = self._count_colons_outside_brackets(expr)
             if colon_count != 2:
                 raise ValueError(
@@ -5296,6 +5321,12 @@ class DFDraw:
             # color), size, marker, norm, figsize (already materialized
             # into ax above).
             _kwargs_no_type = {k: v for k, v in kwargs.items() if k != 'type'}
+            # PHASE_13_86 Stage A / RED-R5: norm= is meaningful to the
+            # profile2d heatmap owner but is not an explicit profile() named
+            # parameter.  Thread it through **kwargs only when user-supplied;
+            # injecting norm=None would trip the profile typed-surface guard.
+            if norm is not None:
+                _kwargs_no_type.setdefault('norm', norm)
             _named_fwd = dict(
                 selection=selection, sample=sample, bins=bins, stats=stats,
                 title=title, ax=ax, save=save, same=same,
@@ -5604,6 +5635,10 @@ class DFDraw:
                 # be forwarded explicitly to the hist owner.
                 normalize=normalize, normalize_layout=normalize_layout,
                 nan_policy=nan_policy,
+                # PHASE_13_86 Stage A v1.1 / B-1: draw().color/marker are
+                # mapping slots at the public draw/ADF boundary, while typed
+                # hist().color/marker are literal matplotlib style slots.
+                # Do NOT forward them here until that API collision is resolved.
                 # NOTE: time_format, cumulative are NOT in draw() signature;
                 # they reach hist() via **kwargs naturally. central also via **kwargs.
                 **kwargs
@@ -5638,8 +5673,8 @@ class DFDraw:
         elif type == "hist2d":
             return self.hist2d(
                 expr, selection=selection, bins=bins, stats=stats,
-                title=title, ax=ax, sample=sample, save=save,
-                same=same,
+                norm=norm, title=title, ax=ax, sample=sample, save=save,
+                group_by=group_by, facet=facet, same=same,
                 # Phase 13.51 R-2 extension (audit S-3 + F-5): forward named params
                 summary_fit=summary_fit,
                 facet_by=facet_by, facet_by_bins=facet_by_bins,
@@ -5647,13 +5682,16 @@ class DFDraw:
                 share_x=share_x, share_y=share_y,
                 share_across_figures=share_across_figures,
                 nan_policy=nan_policy,
+                # PHASE_13_86 Stage A: direct hist2d() owns the fit refusal.
+                # Forward fit= so draw(type='hist2d') cannot silently drop it.
+                fit=fit,
                 **kwargs
             )
         elif type == "profile":
             return self.profile(
                 expr, selection=selection, bins=bins, stats=stats,
                 title=title, ax=ax, sample=sample, save=save,
-                group_by=group_by, same=same,
+                group_by=group_by, facet=facet, same=same,
                 fit=fit, fit_textbox_kwargs=fit_textbox_kwargs,
                 summary_fit=summary_fit,
                 # Phase 13.50 step 4: explicit forwarding (R-2 pattern)
@@ -5673,6 +5711,11 @@ class DFDraw:
                 vector_compose=vector_compose,
                 delta_facet=delta_facet,
                 nan_policy=nan_policy,
+                # PHASE_13_86 Stage A v1.1 / B-1: draw().color/marker are
+                # mapping slots at the public draw/ADF boundary, while typed
+                # profile().color/marker are literal style slots.  Preserve
+                # backward compatibility by leaving this semantic collision
+                # as an explicit known gap rather than forwarding blindly.
                 # NOTE: central reaches profile() via **kwargs (not in draw() signature)
                 **kwargs
             )
@@ -6144,6 +6187,12 @@ class DFDraw:
                 group_by_quantiles=group_by_quantiles,
                 hist_norm=hist_norm,
                 min_entries=min_entries,
+                # PHASE_13_86 Stage A: recursive named-parameter forwarding.
+                # These already work in the canonical single-panel hist owner
+                # and must reach every facet cell unchanged.
+                color=color, marker=marker,
+                hist_errors=hist_errors, linestyle_cycle=linestyle_cycle,
+                time_format=time_format,
                 # Phase 13.40.DF: cumulative must be explicit through faceted
                 # dispatch (recursive QRC v1.32 #6 — every forwarding layer
                 # must pass the named param explicitly). Locked by §9.CH.8.
@@ -6399,6 +6448,28 @@ class DFDraw:
             self._kwarg_typo_guard(kwargs, method='scatter')
 
 
+        # PHASE_13_86 Stage A: faceted scatter has no safe multi-branch
+        # selection/weights-vector owner.  The previous behavior silently
+        # collapsed the request to scalar semantics (and could draw excluded
+        # rows).  Bounded Stage-A policy is an explicit refusal; single-panel
+        # historical behavior remains unchanged and is documented in the CRR.
+        _has_effective_facet = (
+            facet_by is not None or (facet and group_by is not None)
+        )
+        if _has_effective_facet:
+            if selection_vector is not None and len(selection_vector) >= 2:
+                raise ValueError(
+                    "scatter facet composition with multi-branch "
+                    "selection_vector is unsupported in PHASE_13_86 Stage A; "
+                    "refusing rather than silently drawing scalar/wrong rows"
+                )
+            if weights_vector is not None and len(weights_vector) >= 2:
+                raise ValueError(
+                    "scatter facet composition with multi-branch "
+                    "weights_vector is unsupported in PHASE_13_86 Stage A; "
+                    "scatter has no per-panel statistical-weight owner"
+                )
+
         # Phase 13.27.DF Commit 2 (v1.2 §5.5, §9.WDS.1): weights_vector has no
         # effect on scatter (point-size weighting deferred to Phase E). Emit
         # one-time UserWarning at method entry — fires for both single-Y scalar
@@ -6553,6 +6624,9 @@ class DFDraw:
                 cmap=cmap, colorbar=colorbar, clabel=clabel, jitter=jitter,
                 selection=selection,
                 nan_policy=nan_policy,
+                # PHASE_13_86 Stage A: these named scatter parameters already
+                # have canonical single-panel owners; preserve them per facet.
+                xerr=xerr, yerr=yerr, time_format=time_format,
                 facet_by_bins=facet_by_bins,
                 facet_by_quantiles=facet_by_quantiles,
                 # Phase 13.41.DF v1.6 + FIX1: forward N-D axis-sharing controls
@@ -7637,6 +7711,10 @@ class DFDraw:
                 quantile_style=quantile_style,
                 # Phase 13.28.DF: nan_policy
                 nan_policy=nan_policy,
+                # PHASE_13_86 Stage A: preserve already-supported public
+                # profile styling/time semantics through every facet cell.
+                color=color, marker=marker, markersize=markersize,
+                linestyle_cycle=linestyle_cycle, time_format=time_format,
                 # Phase 13.32.DF Sub-fix 3 (AD-79): symmetric binning on facet axis
                 facet_by_bins=facet_by_bins,
                 facet_by_quantiles=facet_by_quantiles,
@@ -8228,6 +8306,9 @@ class DFDraw:
                 auto_title=auto_title, selection=selection,
                 stat_fields=stat_fields,
                 nan_policy=nan_policy,
+                # PHASE_13_86 Stage A: hist2d time formatting is already
+                # supported by the scalar owner; preserve it in facet cells.
+                time_format=time_format,
                 facet_by_bins=facet_by_bins,
                 facet_by_quantiles=facet_by_quantiles,
                 # Phase 13.41.DF v1.6 + FIX1: forward N-D axis-sharing controls

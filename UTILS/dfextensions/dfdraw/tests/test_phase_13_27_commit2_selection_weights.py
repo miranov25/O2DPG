@@ -211,16 +211,22 @@ class TestSelectionDelta_Scatter:
         assert fig is not None
 
     def test_SDS_2_scatter_selection_with_facet_by(self, df_selection):
-        """§9.SDS.2: scatter + selection_vector + facet_by column-mode → subplots."""
+        """PHASE_13_86 safety correction: faceted multi-branch scatter refuses.
+
+        The historical smoke test only asserted that a figure existed and did
+        not verify selection membership.  PHASE_13_86 proved that the request
+        silently collapsed to scalar semantics and could draw excluded rows.
+        Until scatter has a real per-panel vector owner, refusal is the bounded
+        safe contract.
+        """
         d = DFDraw(df_selection)
-        fig, axes, stats = d.scatter(
-            "y:x",
-            selection_vector=["sector == 0", "sector == 1"],
-            vector_compose="outer",
-            facet_by="quartile_val",
-        )
-        # quartile_val has 4 unique values → 4 subplots
-        assert fig is not None
+        with pytest.raises(ValueError, match=r"scatter.*facet.*selection_vector.*unsupported"):
+            d.scatter(
+                "y:x",
+                selection_vector=["sector == 0", "sector == 1"],
+                vector_compose="outer",
+                facet_by="quartile_val",
+            )
 
 
 # =============================================================================
@@ -964,4 +970,3 @@ class TestPhase_13_27_Commit2_FIX1:
         # Unweighted count: heights sum to total rows in range
         expected_n = ((df_selection['x'] >= 0) & (df_selection['x'] <= 10)).sum()
         assert heights.sum() == expected_n
-

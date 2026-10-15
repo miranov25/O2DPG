@@ -297,6 +297,21 @@ def draw_scatter(
 
         # Branch A: error bars present → ax.errorbar() dispatch
         if xerr_arr is not None or yerr_arr is not None:
+            # PHASE_13_86 Stage A: matplotlib.errorbar has no canonical
+            # ScalarMappable path for dfdraw's per-point color mapping.  The
+            # previous implementation silently discarded numeric/categorical
+            # mappings (and any requested colorbar).  Until one owner supports
+            # that composition, refuse loudly rather than return a wrong plot.
+            _mapped_color = isinstance(c, np.ndarray) or is_categorical
+            if _mapped_color:
+                _facet_context = " in facet mode" if _facet_mode else ""
+                raise ValueError(
+                    "scatter" + _facet_context +
+                    ": color mapping/expression with xerr/yerr error bars is "
+                    "unsupported; refusing instead of silently dropping the "
+                    "color mapping/colorbar (BUG_dfdraw_20261010_"
+                    "scatter_errorbar_drops_color)"
+                )
             # fmt determines point marker; default to first marker if per-point
             fmt = resolved_marker if marker_is_scalar else (
                 resolved_marker[0] if len(resolved_marker) > 0 else 'o'

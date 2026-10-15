@@ -362,15 +362,19 @@ class TestScatterErrorBars:
         facet_axes = [a for a in fig.axes if a.has_data()]
         assert len(facet_axes) == 3, \
             f"Expected 3 facets, got {len(facet_axes)}"
-        # Each facet has at least one renderable artist (errorbar or scatter)
+        # PHASE_13_86: property-specific oracle.  The previous assertion
+        # accepted an ordinary scatter PathCollection and therefore stayed
+        # green even when facet dispatch silently dropped yerr=.
         for i, a in enumerate(facet_axes):
-            eb_count = sum(
-                1 for c in a.containers
+            errorbars = [
+                c for c in a.containers
                 if isinstance(c, matplotlib.container.ErrorbarContainer)
+            ]
+            assert len(errorbars) == 1, (
+                f"Facet {i} requested yerr but rendered "
+                f"{len(errorbars)} ErrorbarContainer(s)"
             )
-            n_artists = eb_count + len(a.collections)
-            assert n_artists >= 1, \
-                f"Facet {i} has no artists rendered"
+            assert errorbars[0].has_yerr, f"Facet {i} ErrorbarContainer has no yerr"
         plt.close(fig)
 
 
