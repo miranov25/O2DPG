@@ -17,11 +17,12 @@
 # USAGE
 #   source scripts/install_by_md5.sh          # once per shell
 #   install_by_md5 <src> <dst> <expected_md5>
-#   install_newest_by_md5 <glob> <dst> <expected_md5>
+#   install_newest_by_md5 <glob> <dst> <expected_md5> [--delete-matching]
 #   check_ref <file> <expected_md5> [expected_sha256]
 #
 #   install_by_md5 "$Downloads/foo_rev3c.py" tests/foo.py 3a57e2e4...
 #   install_newest_by_md5 'foo_rev3c*.py' tests/foo.py 3a57e2e4...
+#   install_newest_by_md5 'foo_rev3c*.py' tests/foo.py 3a57e2e4... --delete-matching
 #   check_ref run_tests.sh <md5> <sha256>
 #
 # BEHAVIOUR
@@ -32,10 +33,13 @@
 #   * re-verifies <dst> after copying and refuses to report success otherwise
 #
 #   install_newest_by_md5:
-#   * searches $Downloads for the newest file matching <glob>
-#   * installs that exact file through install_by_md5
-#   * reports how many matching copies were present
-#   * removes all matching Downloads copies only after a successful install
+#   * searches ALL $Downloads files matching <glob>
+#   * computes each candidate's MD5 and keeps only exact <expected_md5> matches
+#   * installs the NEWEST exact-MD5 match through install_by_md5
+#   * reports total glob matches and exact-MD5 matches
+#   * KEEPS Downloads files by default
+#   * with --delete-matching, removes only glob candidates whose MD5 equals
+#     <expected_md5>, and only AFTER a successful install
 #
 #   check_ref:
 #   * compares an existing file against a recorded MD5 and optional SHA256
@@ -187,11 +191,36 @@ USAGE
 }
 
 install_newest_by_md5() {
-    local pattern="$1" dst="$2" want="$3"
+    local pattern dst want delete_matching=0
+    local src="" candidate actual
+    local n=0 n_match=0 n_deleted=0
 
-    if [ "$#" -ne 3 ]; then
-        echo "usage: install_newest_by_md5 <glob> <dst> <expected_md5>" >&2
+    if [ "$#" -lt 3 ] || [ "$#" -gt 4 ]; then
+        cat >&2 <<'USAGE'
+usage: install_newest_by_md5 <glob> <dst> <expected_md5> [--delete-matching]
+
+  <glob>              shell glob relative to $Downloads
+  <dst>               destination path
+  <expected_md5>      reviewed MD5 to select among all glob matches
+  --delete-matching   optional; after successful install, delete only
+                      Downloads candidates whose MD5 equals <expected_md5>
+
+Default: keep every file in $Downloads.
+USAGE
         return 2
+    fi
+
+    pattern="$1"
+    dst="$2"
+    want="$3"
+
+    if [ "$#" -eq 4 ]; then
+        if [ "$4" != "--delete-matching" ]; then
+            echo "install_newest_by_md5: unknown option: $4" >&2
+            echo "usage: install_newest_by_md5 <glob> <dst> <expected_md5> [--delete-matching]" >&2
+            return 2
+        fi
+        delete_matching=1
     fi
 
     if [ -z "${Downloads:-}" ]; then
@@ -199,24 +228,74 @@ install_newest_by_md5() {
         return 2
     fi
 
-    local src
-    src=$(ls -t $Downloads/$pattern 2>/dev/null | head -1)
+    # Scan every filename matching the glob.  Selection is by reviewed MD5
+    # first, then by modification time among the exact-byte matches.
+    while IFS= read -r candidate; do
+        [ -n "$candidate" ] || continue
+        [ -f "$candidate" ] || continue
 
-    if [ -z "$src" ]; then
+        n=$((n + 1))
+        actual="$(_ibm5_md5 "$candidate")" || {
+            echo "install_newest_by_md5: cannot compute MD5: $candidate" >&2
+            continue
+        }
+
+        if [ "$actual" = "$want" ]; then
+            n_match=$((n_match + 1))
+            if [ -z "$src" ] || [ "$candidate" -nt "$src" ]; then
+                src="$candidate"
+            fi
+        fi
+    done < <(compgen -G "$Downloads/$pattern")
+
+    if [ "$n" -eq 0 ]; then
         echo "install_newest_by_md5: nothing matches $Downloads/$pattern" >&2
         return 1
     fi
 
-    local n
-    n=$(ls -t $Downloads/$pattern 2>/dev/null | wc -l | tr -d ' ')
+    if [ "$n_match" -eq 0 ]; then
+        echo "install_newest_by_md5: $n file(s) match the glob, but none has the expected MD5" >&2
+        echo "  pattern  : $Downloads/$pattern" >&2
+        echo "  expected : $want" >&2
+        echo "  candidates:" >&2
 
-    echo "  using $src  ($n copy/copies present)"
+        while IFS= read -r candidate; do
+            [ -n "$candidate" ] || continue
+            [ -f "$candidate" ] || continue
+            actual="$(_ibm5_md5 "$candidate" 2>/dev/null || printf '<MD5-ERROR>')"
+            printf '    %s  %s\n' "$actual" "$candidate" >&2
+        done < <(compgen -G "$Downloads/$pattern")
+
+        echo "  Nothing was installed or deleted." >&2
+        return 1
+    fi
+
+    echo "  using $src"
+    echo "  glob matches: $n; exact-MD5 matches: $n_match; downloads: $([ "$delete_matching" -eq 1 ] && printf 'delete exact-MD5 matches after success' || printf 'keep')"
 
     install_by_md5 "$src" "$dst" "$want" || return 1
 
-    # A successful checksum-controlled installation makes all same-pattern
-    # Downloads copies stale/redundant. Remove them only AFTER success.
-    rm -f $Downloads/$pattern
+    if [ "$delete_matching" -eq 1 ]; then
+        while IFS= read -r candidate; do
+            [ -n "$candidate" ] || continue
+            [ -f "$candidate" ] || continue
+
+            actual="$(_ibm5_md5 "$candidate")" || {
+                echo "install_newest_by_md5: warning: cannot compute MD5 for cleanup candidate: $candidate" >&2
+                continue
+            }
+
+            if [ "$actual" = "$want" ]; then
+                rm -f -- "$candidate" || {
+                    echo "install_newest_by_md5: warning: could not delete $candidate" >&2
+                    continue
+                }
+                n_deleted=$((n_deleted + 1))
+            fi
+        done < <(compgen -G "$Downloads/$pattern")
+
+        echo "install_newest_by_md5: deleted $n_deleted exact-MD5 matching download(s); non-matching glob files were kept"
+    fi
 
     return 0
 }
