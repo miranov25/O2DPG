@@ -4498,11 +4498,17 @@ class DFDraw:
             # vector-aware delegation path.
             _cell_profile_range = forwarded.get('x_range', None)
             _cell_hist_range = forwarded.get('range', None)
+            _cell_expression_vector = (
+                plot_kind == 'profile'
+                and isinstance(subplot_y, list)
+                and len(subplot_y) >= 2
+            )
             _cell_vector_active = (
                 plot_kind in ('profile', 'hist')
                 and (
-                    (_cell_selection_vector is not None
-                     and len(_cell_selection_vector) >= 2)
+                    _cell_expression_vector
+                    or (_cell_selection_vector is not None
+                        and len(_cell_selection_vector) >= 2)
                     or (_cell_weights_vector is not None
                         and len(_cell_weights_vector) >= 2)
                 )
@@ -4582,9 +4588,14 @@ class DFDraw:
                         _cell_draw._pending_channel_assignment = (
                             _facet_resolved_channels
                         )
+                        _cell_y_expr = (
+                            "[" + ",".join(str(_y) for _y in subplot_y) + "]"
+                            if isinstance(subplot_y, list)
+                            else str(subplot_y)
+                        )
                         _cell_expr = (
-                            f"{subplot_y}:{x_expr}"
-                            if x_expr is not None else str(subplot_y)
+                            f"{_cell_y_expr}:{x_expr}"
+                            if x_expr is not None else _cell_y_expr
                         )
                         _, _, stats = _cell_draw.profile(
                             _cell_expr,
@@ -5416,8 +5427,14 @@ class DFDraw:
             # requires the complete list-valued y expression.  Delegate only
             # these owner-sensitive cases here; ordinary-facet vector
             # composition remains Stage B-b and is deliberately not widened.
+            _profile_ordinary_vector_facet = (
+                isinstance(facet_by, str)
+                and facet_by not in ("vector", "group_by", "quantiles")
+            )
             if type == "profile" and (
-                normalize is not None or facet_by == "vector"
+                normalize is not None
+                or facet_by == "vector"
+                or _profile_ordinary_vector_facet
             ):
                 return self.profile(
                     expr, selection=selection, bins=bins, stats=stats,
@@ -5442,6 +5459,31 @@ class DFDraw:
                     nan_policy=nan_policy,
                     color=color, marker=marker,
                     **kwargs
+                )
+
+            # PHASE_13_86 Stage B-b / B6: expression-vector × facet support is
+            # implemented only for profile in this bounded stage.  Hist/scatter
+            # currently have no owner that can compose expression components
+            # inside each facet cell, so refuse explicitly rather than entering
+            # generic _draw_vector() and failing later via same=True/axes-array
+            # accidents.
+            if facet_by is not None and type in ("hist", "scatter"):
+                raise NotImplementedError(
+                    f"expression-vector × facet_by is not supported for "
+                    f"type={type!r} in PHASE_13_86 Stage B; profile is the "
+                    f"supported vector-facet owner"
+                )
+            if isinstance(facet_by, list) and type == "profile":
+                raise NotImplementedError(
+                    "expression-vector × list/N-D facet_by is not supported "
+                    "in PHASE_13_86 Stage B; use one ordinary facet_by column "
+                    "or facet_by='vector'"
+                )
+            if facet_by in ("group_by", "quantiles") and type == "profile":
+                raise NotImplementedError(
+                    f"expression-vector × facet_by={facet_by!r} is not "
+                    "supported in PHASE_13_86 Stage B; use an ordinary facet "
+                    "column or facet_by='vector'"
                 )
 
             # PHASE_13_83 BUG-01: draw() intercepts bracket-vector requests
@@ -6053,6 +6095,16 @@ class DFDraw:
         # vector_compose='inner' on n_y=1 + n_s>=2, the iteration helper
         # raises an actionable "3-axis inner requires equal lengths" error.
         _y_is_vector = isinstance(y_expr, list)
+        # PHASE_13_86 Stage B / B6: histogram expression-vector × facet has
+        # no per-cell expression-vector owner in this bounded phase.  Refuse
+        # loudly instead of letting generic vector overlay recurse into a
+        # facet grid and fail with an unrelated axes/same=True error.
+        if _y_is_vector and facet_by is not None:
+            raise NotImplementedError(
+                "hist expression-vector × facet_by is not supported in "
+                "PHASE_13_86 Stage B; profile is the supported vector-facet "
+                "owner"
+            )
         # Phase 13.27.DF Commit 2 FIX1 (§7a): single-Y vector dispatch is
         # gated on facet_by being absent or channel-mode 'vector' (which
         # requires _y_is_vector). When column-mode facet_by is set on
@@ -6511,6 +6563,15 @@ class DFDraw:
         # Phase 13.27.DF Commit 2 FIX1 (§7a): single-Y + selection_vector
         # also engages vector mode.
         _y_is_vector = isinstance(y_expr, list)
+        # PHASE_13_86 Stage B / B6: scatter expression-vector × facet has no
+        # canonical per-cell expression-vector owner.  Refuse explicitly; do
+        # not let generic vector overlay recurse into facet axes.
+        if _y_is_vector and facet_by is not None:
+            raise NotImplementedError(
+                "scatter expression-vector × facet_by is not supported in "
+                "PHASE_13_86 Stage B; profile is the supported vector-facet "
+                "owner"
+            )
         # Phase 13.27.DF Commit 2 FIX1 (§7a): see note in hist()/profile().
         _column_mode_facet = (facet_by is not None and facet_by != 'vector')
         _need_vector_dispatch = (
@@ -7372,6 +7433,29 @@ class DFDraw:
         # is a Phase 13.33 concern (spec v1.2 §4.2.4: facet partitions
         # first, vector composes within each subplot).
         _column_mode_facet = (facet_by is not None and facet_by != 'vector')
+        # PHASE_13_86 Stage B-b: an ordinary column facet owns partitioning
+        # before expression-vector composition.  Keep the list-valued y
+        # expression intact and let the existing facet dispatcher invoke the
+        # existing profile vector owner inside each filtered cell.
+        _ordinary_expression_vector_facet = (
+            _y_is_vector
+            and isinstance(facet_by, str)
+            and facet_by not in ('vector', 'group_by', 'quantiles')
+            and normalize is None
+        )
+        if _y_is_vector and isinstance(facet_by, list):
+            raise NotImplementedError(
+                "profile expression-vector × list/N-D facet_by is not "
+                "supported in PHASE_13_86 Stage B; use one ordinary facet_by "
+                "column or facet_by='vector'"
+            )
+        if (_y_is_vector and facet_by in ('group_by', 'quantiles')
+                and normalize is None):
+            raise NotImplementedError(
+                f"profile expression-vector × facet_by={facet_by!r} is not "
+                "supported in PHASE_13_86 Stage B; use an ordinary facet "
+                "column or facet_by='vector'"
+            )
         # Phase 13.33.DF M2: normalize= always engages vector dispatch
         # (regardless of facet_by). The normalize routing fork below then
         # picks the appropriate dispatcher (faceted / grouped / single).
@@ -7379,7 +7463,7 @@ class DFDraw:
         # otherwise route to the regular faceted path which knows nothing
         # about normalize.
         _need_vector_dispatch = (
-            _y_is_vector
+            (_y_is_vector and not _ordinary_expression_vector_facet)
             or (normalize is not None)
             or (
                 not _column_mode_facet
@@ -7660,18 +7744,39 @@ class DFDraw:
             facet_by, facet_by_bins, facet_by_quantiles, df
         )
         
-        # Evaluate expressions if needed
-        if y_expr not in df.columns:
+        # Evaluate expressions if needed.  Stage B-b permits a list-valued
+        # y expression to reach this ordinary-facet path.  Vector x is not a
+        # supported facet dimension: the bracket grammar used here broadcasts
+        # one x expression across all y components, so all parsed x entries
+        # must be identical before lowering to the scalar facet coordinate.
+        if isinstance(y_expr, list):
+            for _y_component in y_expr:
+                if _y_component not in df.columns:
+                    df = df.assign(**{
+                        _y_component: self._eval_column(_y_component, df=df)
+                    })
+        elif y_expr not in df.columns:
             df = df.assign(**{y_expr: self._eval_column(y_expr)})
+
+        if isinstance(x_expr, list):
+            _x_unique = list(dict.fromkeys(x_expr))
+            if len(_x_unique) != 1:
+                raise NotImplementedError(
+                    "profile expression-vector × ordinary facet requires one "
+                    "shared x expression in PHASE_13_86 Stage B"
+                )
+            x_expr = _x_unique[0]
         if x_expr not in df.columns:
             df = df.assign(**{x_expr: self._eval_column(x_expr)})
         
-        # Apply duck-typed label lookup if not explicitly set
+        # Apply duck-typed label lookup if not explicitly set.  For vector y,
+        # the inner vector owner constructs the semantic y label after branch
+        # composition; do not ask the scalar label resolver to hash a list.
         if xlabel is None:
             duck_label = self._get_label(x_expr)
             if duck_label is not None:
                 xlabel = duck_label
-        if ylabel is None:
+        if ylabel is None and isinstance(y_expr, str):
             duck_label = self._get_label(y_expr)
             if duck_label is not None:
                 ylabel = duck_label
