@@ -1039,23 +1039,38 @@ class DFDraw:
         p0, p1 = positions
         return expr[:p0], expr[p0+1:p1], expr[p1+1:]
     
-    def _eval_column(self, expr: str) -> pd.Series:
+    def _eval_column(
+        self,
+        expr: str,
+        df: Optional[pd.DataFrame] = None,
+    ) -> pd.Series:
         """
-        Evaluate column expression.
-        
+        Evaluate a column expression against the active DataFrame.
+
+        Parameters
+        ----------
+        expr : str
+            Direct column name or computed pandas expression.
+        df : pandas.DataFrame, optional
+            Evaluation frame. Defaults to ``self.df``. Facet/vector
+            coordinators pass their already selected/sampled frame here so
+            computed expressions preserve the exact row/index domain owned by
+            that coordinator.
+
         Supports:
         - Direct column names: "x"
         - Computed expressions: "x + y", "x * 2"
         """
         expr = expr.strip()
-        
+        eval_df = self.df if df is None else df
+
         # Direct column access
-        if expr in self.df.columns:
-            return self.df[expr]
-        
+        if expr in eval_df.columns:
+            return eval_df[expr]
+
         # Computed expression via df.eval()
         try:
-            return self.df.eval(expr)
+            return eval_df.eval(expr)
         except Exception as e:
             raise ValueError(
                 f"Cannot evaluate expression '{expr}': {e}"
@@ -6654,7 +6669,7 @@ class DFDraw:
             df = df.assign(**{y_expr: self._eval_column(y_expr)})
         if x_expr not in df.columns:
             df = df.assign(**{x_expr: self._eval_column(x_expr)})
-        
+
         # Apply duck-typed label lookup if not explicitly set
         if xlabel is None:
             duck_label = self._get_label(x_expr)
@@ -7501,8 +7516,30 @@ class DFDraw:
                 # the scalar branch below) so each subplot sees clean data.
                 df_for_facet = self._apply_selection(self.df, selection)
                 df_for_facet = self._apply_sampling(df_for_facet, sample)
-                # Use scalar x for facet (vector x is not supported for profile)
+
+                # PHASE_13_86 Stage B-c: bracket-vector components are full
+                # dfdraw expressions, not necessarily physical column names.
+                # Materialize them on the already selected/sampled frame
+                # before the vector-facet coordinator hands one component to
+                # the low-level profile renderer.
+                for _y_component in y_expr:
+                    if _y_component not in df_for_facet.columns:
+                        df_for_facet = df_for_facet.assign(**{
+                            _y_component: self._eval_column(
+                                _y_component, df=df_for_facet
+                            )
+                        })
+
+                # The bracket grammar broadcasts one shared x expression
+                # across all y components. Materialize a computed x expression
+                # on the same active frame before entering the facet renderer.
                 x_for_facet = x_expr[0] if isinstance(x_expr, list) else x_expr
+                if x_for_facet not in df_for_facet.columns:
+                    df_for_facet = df_for_facet.assign(**{
+                        x_for_facet: self._eval_column(
+                            x_for_facet, df=df_for_facet
+                        )
+                    })
                 _fig_sf, _axes_sf, _stats_sf = self._dispatch_faceted_render(
                     df=df_for_facet, x_expr=x_for_facet, y_expr=y_expr,
                     facet_by='vector', plot_kind='profile',
@@ -7767,7 +7804,9 @@ class DFDraw:
                 )
             x_expr = _x_unique[0]
         if x_expr not in df.columns:
-            df = df.assign(**{x_expr: self._eval_column(x_expr)})
+            df = df.assign(**{
+                x_expr: self._eval_column(x_expr, df=df)
+            })
         
         # Apply duck-typed label lookup if not explicitly set.  For vector y,
         # the inner vector owner constructs the semantic y label after branch
