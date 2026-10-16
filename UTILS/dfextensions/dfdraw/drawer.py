@@ -3132,7 +3132,8 @@ class DFDraw:
         if _auto_title_val and not title:
             try:
                 from .plots._auto_title import (
-                    parse_auto_title_parts, build_auto_title, resolve_auto_title
+                    parse_auto_title_parts, build_auto_title, resolve_auto_title,
+                    fit_auto_title_to_figure
                 )
                 _at = resolve_auto_title(_auto_title_val)
                 if _at:
@@ -3148,11 +3149,15 @@ class DFDraw:
                         weights=None,
                         parts=parts,
                     )
+                    _title_fontsize = get_style_value("axes.titlesize", 14)
+                    td = fit_auto_title_to_figure(
+                        fig, td, sub_fontsize=_title_fontsize
+                    )
                     _main = td.get('main', '')
                     _sub = td.get('sub')
                     fig.suptitle(
                         f"{_main}\n{_sub}" if _sub else _main,
-                        fontsize=get_style_value("axes.titlesize", 14),
+                        fontsize=_title_fontsize,
                     )
                     plt.subplots_adjust(top=_suptitle_top_for_title(_get_suptitle(fig) or None))
             except Exception:
@@ -3476,7 +3481,8 @@ class DFDraw:
         if _auto_title_val and not title:
             try:
                 from .plots._auto_title import (
-                    parse_auto_title_parts, build_auto_title, resolve_auto_title
+                    parse_auto_title_parts, build_auto_title, resolve_auto_title,
+                    fit_auto_title_to_figure
                 )
                 _at = resolve_auto_title(_auto_title_val)
                 if _at:
@@ -3492,11 +3498,15 @@ class DFDraw:
                         weights=None,
                         parts=parts,
                     )
+                    _title_fontsize = get_style_value("axes.titlesize", 14)
+                    td = fit_auto_title_to_figure(
+                        fig, td, sub_fontsize=_title_fontsize
+                    )
                     _main = td.get('main', '')
                     _sub = td.get('sub')
                     fig.suptitle(
                         f"{_main}\n{_sub}" if _sub else _main,
-                        fontsize=get_style_value("axes.titlesize", 14),
+                        fontsize=_title_fontsize,
                     )
                     plt.subplots_adjust(top=_suptitle_top_for_title(_get_suptitle(fig) or None))
             except Exception:
@@ -3783,7 +3793,8 @@ class DFDraw:
         if _auto_title_val and title is None:
             try:
                 from .plots._auto_title import (
-                    parse_auto_title_parts, build_auto_title, resolve_auto_title
+                    parse_auto_title_parts, build_auto_title, resolve_auto_title,
+                    fit_auto_title_to_figure
                 )
                 _at = resolve_auto_title(_auto_title_val)
                 if _at:
@@ -3799,11 +3810,15 @@ class DFDraw:
                         weights=None,
                         parts=parts,
                     )
+                    _title_fontsize = get_style_value("axes.titlesize", 14)
+                    td = fit_auto_title_to_figure(
+                        fig, td, sub_fontsize=_title_fontsize
+                    )
                     _main = td.get('main', '')
                     _sub = td.get('sub')
                     fig.suptitle(
                         f"{_main}\n{_sub}" if _sub else _main,
-                        fontsize=get_style_value("axes.titlesize", 14),
+                        fontsize=_title_fontsize,
                     )
                     plt.subplots_adjust(top=_suptitle_top_for_title(_get_suptitle(fig) or None))
             except Exception:
@@ -4729,7 +4744,8 @@ class DFDraw:
         if _auto_title_val and not title:
             try:
                 from .plots._auto_title import (
-                    parse_auto_title_parts, build_auto_title, resolve_auto_title
+                    parse_auto_title_parts, build_auto_title, resolve_auto_title,
+                    fit_auto_title_to_figure
                 )
                 _at = resolve_auto_title(_auto_title_val)
                 if _at:
@@ -4742,11 +4758,15 @@ class DFDraw:
                         weights=None,
                         parts=parts,
                     )
+                    _title_fontsize = get_style_value("axes.titlesize", 14)
+                    td = fit_auto_title_to_figure(
+                        fig, td, sub_fontsize=_title_fontsize
+                    )
                     _main = td.get('main', '')
                     _sub = td.get('sub')
                     fig.suptitle(
                         f"{_main}\n{_sub}" if _sub else _main,
-                        fontsize=get_style_value("axes.titlesize", 14),
+                        fontsize=_title_fontsize,
                     )
                     plt.subplots_adjust(top=_suptitle_top_for_title(_get_suptitle(fig) or None))
             except Exception:

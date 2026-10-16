@@ -9,7 +9,7 @@ Tests:
 - T5: auto_title on hexbin
 - T6: auto_title="expr" — partial parts
 - T7: auto_title="expr+group" — group label
-- T8: long selection truncated
+- T8: long selection preserved until render-time width fitting
 - T9: callable selection skipped in title
 - T10: style default auto_title=True
 - T11: weights shown in title
@@ -26,7 +26,7 @@ import matplotlib.pyplot as plt
 # Direct imports for unit testing helpers
 from dfdraw.plots._auto_title import (
     build_auto_title, apply_auto_title, parse_auto_title_parts,
-    resolve_auto_title, _AUTO_TITLE_MAX_SEL_LEN
+    resolve_auto_title
 )
 
 
@@ -161,14 +161,11 @@ class TestAutoTitleParts:
         assert len(texts) == 0
         plt.close(fig)
 
-    def test_long_selection_truncated(self):
-        """T8: selection string truncated at ~72 chars."""
+    def test_long_selection_preserved_until_render(self):
+        """T8: semantic builder preserves selection; rendering fits to width."""
         long_sel = "a>1&b<2&c>3&d<4&e>5&f<6&g>7&h<8&i>9&j<10&k>11&l<12&m>13&n<14&o>15&p<16&q>17&r<18"
-        assert len(long_sel) > _AUTO_TITLE_MAX_SEL_LEN  # verify test string is long enough
         td = build_auto_title("x", "y", selection=long_sel, parts={"expr", "sel"})
-        assert td["sub"] is not None
-        assert len(td["sub"]) <= _AUTO_TITLE_MAX_SEL_LEN
-        assert td["sub"].endswith("...")
+        assert td["sub"] == long_sel
 
     def test_callable_selection_skipped(self, dfdraw_obj):
         """T9: callable selection not shown in title."""
