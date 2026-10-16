@@ -4509,6 +4509,22 @@ class DFDraw:
             if plot_kind != 'scatter':
                 forwarded['auto_title'] = False
 
+            # PHASE_13_86 Stage B-d: facet_by='vector' lowers one expression
+            # component to each profile panel before the normal scalar label
+            # resolution block is reached. Resolve the shared x label and each
+            # component-specific y label here while the original AliasDataFrame
+            # metadata source is still available. Explicit xlabel=/ylabel= remain
+            # authoritative.
+            if plot_kind == 'profile' and facet_by == 'vector':
+                if forwarded.get('xlabel') is None:
+                    _facet_xlabel = self._get_label(str(x_expr))
+                    if _facet_xlabel is not None:
+                        forwarded['xlabel'] = _facet_xlabel
+                if forwarded.get('ylabel') is None:
+                    _facet_ylabel = self._get_label(str(subplot_y))
+                    if _facet_ylabel is not None:
+                        forwarded['ylabel'] = _facet_ylabel
+
             # BUG-A/BUG-B: vector controls are coordinator-level inputs for a
             # faceted profile. Pull them out of `forwarded` so they reach the
             # public profile()/_draw_vector owner rather than the low-level
