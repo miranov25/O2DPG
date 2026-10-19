@@ -2729,12 +2729,60 @@ class DFDraw:
         df_full = self._apply_selection(self.df, selection)
         df_full = self._apply_sampling(df_full, sample)
 
-        # --- 3. Layout (shared with profile) -------------------------------------
+        # --- 3. Resolve one shared histogram range before branch splitting -------
+        # PHASE_13_88 Bug A: ratio branches must share exactly one bin domain.
+        # Preserve an explicit numeric range unchanged.  Automatic/named ranges
+        # are resolved once from the union of all participating expressions on
+        # the common pre-branch frame, using the same canonical owner and style
+        # policy as an ordinary 1-D histogram.
+        shared_range = range
+        if range is None or isinstance(range, str):
+            from .plots._autorange import resolve_range_1d
+
+            pooled_values = []
+            participating_y_indices = []
+            for y_idx, _, _ in indices:
+                if y_idx not in participating_y_indices:
+                    participating_y_indices.append(y_idx)
+
+            for y_idx in participating_y_indices:
+                x_expr = y_list[y_idx]
+                if isinstance(x_expr, str) and x_expr in df_full.columns:
+                    values = df_full[x_expr]
+                else:
+                    values = self._eval_column(x_expr, df=df_full)
+                values = np.asarray(values)
+                if passthrough.get("time_format") is not None:
+                    from .plots._time_coords import to_date_coords
+                    values = to_date_coords(values)
+                else:
+                    values = values.astype(float, copy=False)
+                values = values[np.isfinite(values)]
+                if values.size:
+                    pooled_values.append(values)
+
+            if pooled_values:
+                pooled = np.concatenate(pooled_values)
+                shared_range, _ = resolve_range_1d(
+                    range,
+                    pooled,
+                    style_strategy=get_style_value("autorange.strategy", "hybrid"),
+                    style_k_robust=get_style_value("autorange.k_robust", 4.0),
+                    style_k_outlier=get_style_value("autorange.k_outlier", 1.5),
+                    style_percentile=get_style_value(
+                        "autorange.percentile", (1.0, 99.0)
+                    ),
+                )
+            else:
+                # Match draw_hist's established empty-input 1-D fallback.
+                shared_range = (0.0, 1.0)
+
+        # --- 4. Layout (shared with profile) -------------------------------------
         figsize = passthrough.pop('figsize', None) or get_style_value("figure.figsize", (8, 6))
         fig, ax_top, ax_diff = self._build_normalize_axes(normalize_layout, figsize)
         self._reset_color_cycle()
 
-        # --- 4. Draw each branch with the histogram owner ------------------------
+        # --- 5. Draw each branch with the histogram owner ------------------------
         # Each branch gets its own colour so the two upper histograms can be
         # told apart (the vector path gets this from the channel machinery;
         # here we call the histogram owner directly). Mirrors the grouped
@@ -2784,7 +2832,7 @@ class DFDraw:
             _, _, sd = draw_hist(
                 branch_df, x_expr,
                 ax=target_ax,
-                bins=bins, range=range, norm=norm,
+                bins=bins, range=shared_range, norm=norm,
                 weights=branch_weights,
                 hist_errors=hist_errors,
                 hist_norm=hist_norm,
@@ -2831,7 +2879,7 @@ class DFDraw:
                 "were binned on different edges; ratio is undefined."
             )
 
-        # --- 5. Transform and lower panel (profile owners) -----------------------
+        # --- 6. Transform and lower panel (profile owners) -----------------------
         values, errors, mask_undef = _compute_normalize_transform(
             per_branch_stats[0], per_branch_stats[1],
             mode=normalize, central='mean',
@@ -2871,7 +2919,7 @@ class DFDraw:
                                       selection=selection, parts=parts)
                 apply_auto_title(_title_ax, td)
 
-        # --- 6. Payload: same schema as the profile normalize path ----------------
+        # --- 7. Payload: same schema as the profile normalize path ----------------
         stats_dict: Dict[str, Any] = {
             'normalize_mode': normalize,
             'normalize_layout': normalize_layout,
