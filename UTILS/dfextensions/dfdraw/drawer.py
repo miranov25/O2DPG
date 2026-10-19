@@ -5482,6 +5482,32 @@ class DFDraw:
                 isinstance(facet_by, str)
                 and facet_by not in ("vector", "group_by", "quantiles")
             )
+            # PHASE_13_88_DF Bug C: histogram vector normalization is owned
+            # atomically by hist(), before generic vector scalarization.
+            if type == "hist" and normalize is not None:
+                return self.hist(
+                    expr, selection=selection, bins=bins, stats=stats,
+                    norm=norm, title=title, ax=ax, sample=sample, save=save,
+                    group_by=group_by, facet=facet, same=same,
+                    fit=fit, fit_textbox_kwargs=fit_textbox_kwargs,
+                    summary_fit=summary_fit,
+                    legend=legend, show_legend=show_legend,
+                    facet_by=facet_by, facet_by_bins=facet_by_bins,
+                    facet_by_quantiles=facet_by_quantiles,
+                    share_x=share_x, share_y=share_y,
+                    share_across_figures=share_across_figures,
+                    selection_vector=selection_vector,
+                    weights_vector=weights_vector,
+                    selection_labels=selection_labels,
+                    weights_labels=weights_labels,
+                    selection_categorical=selection_categorical,
+                    weights_categorical=weights_categorical,
+                    vector_compose=vector_compose,
+                    delta_facet=delta_facet,
+                    normalize=normalize, normalize_layout=normalize_layout,
+                    nan_policy=nan_policy,
+                    **kwargs
+                )
             if type == "profile" and (
                 normalize is not None
                 or facet_by == "vector"
