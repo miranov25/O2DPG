@@ -403,11 +403,11 @@ class TestSlotSurfaceSweep:
 # ---------------------------------------------------------------------------
 # SWEEP-2 — vector slots (selection_vector / weights_vector), both contexts.
 # Vector context (bracket expr '[y1,y2]:x'): slots engage per channel —
-# proven numerically. Scalar context: both slots are SILENTLY inert today
-# (no warning, no filtering) — pinned as characterization; under the AD-5
-# explicit-provenance precedent this is a Repair candidate (explicit
-# inapplicable input should error, not silently no-op); final classification
-# goes to the Gate-A ruling batch, matrix row SWEEP-2.c.
+# proven numerically. Scalar singleton selection_vector is lowered to the
+# corresponding scalar selection semantic and must agree numerically with
+# both scalar selection and independent pandas truth. This supersedes the
+# historical SWEEP-2.c characterization where the singleton vector was
+# silently inert.
 # ---------------------------------------------------------------------------
 
 def _vector_adf(n=200):
@@ -444,24 +444,33 @@ class TestSweep2VectorSlots:
         st = res["p"]["stats"]
         assert isinstance(st, list) and len(st) == 2
 
-    def test_sweep2_3_scalar_context_vector_slots_silently_inert_today(self):
-        """Characterization pin of CURRENT behavior (not endorsement):
-        selection_vector on a plain scalar draw neither filters nor warns.
-        Executed evidence: n stays at the unfiltered count. Matrix
-        SWEEP-2.c; Repair candidate per AD-5 explicit-provenance
-        precedent; awaiting Gate-A ruling batch."""
+    def test_sweep2_3_scalar_context_singleton_vector_matches_scalar_selection(self):
+        """Positive successor to the historical SWEEP-2.c inertness pin.
+
+        A singleton ``selection_vector`` on a scalar draw has zero vector
+        multiplicity cost but retains the semantic effect of its sole
+        selection.  Validate against both the scalar public form and an
+        independent pandas count so a future silent no-op cannot pass.
+        """
         adf, _ = _vector_adf()
+        expected_n = int((adf.df.y1 > 0).sum())
+
+        _f_scalar, _a_scalar, st_scalar = adf.draw(
+            "y1", type="hist", bins=8, selection="y1>0")
         with warnings.catch_warnings(record=True) as caught:
             warnings.simplefilter("always")
-            _f, _a, st = adf.draw("y1", type="hist", bins=8,
-                                  selection_vector=["y1>0"])
+            _f_vector, _a_vector, st_vector = adf.draw(
+                "y1", type="hist", bins=8,
+                selection_vector=["y1>0"])
         plt.close("all")
-        assert st["n"] == len(adf.df), (
-            "scalar-context selection_vector started filtering - "
-            "reclassify SWEEP-2.c before changing this pin")
+
+        assert st_scalar["n"] == expected_n
+        assert st_vector["n"] == expected_n
+        assert st_vector["n"] == st_scalar["n"]
         assert not [w for w in caught
                     if "selection_vector" in str(w.message)], (
-            "a warning appeared - update the SWEEP-2.c matrix row")
+            "singleton selection_vector should lower cleanly to scalar "
+            "selection semantics")
 
 
 # ---------------------------------------------------------------------------
