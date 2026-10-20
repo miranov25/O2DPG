@@ -976,17 +976,29 @@ class TestB31EffectiveSpecOnDraw:
         assert spec.slot("weights") == "w"
         assert list(spec.slot("selection_vector")) == ["a>1", "b>2"]
 
-    def test_b31_9_prescan_and_refusal_equivalence_old_vs_new_path(
+    def test_b31_9_prescan_and_supported_vector_subframe_equivalence_old_vs_new_path(
             self, monkeypatch):
-        """GPT27 item 3, answered by execution. (a) The subframe pre-scan
-        receives IDENTICAL text under old and new paths for scalar slots —
-        the widened vector-slot scan is deferred to B3.2, so B3.1 triggers
-        no loading the old path did not. (b) A subframe-qualified reference
-        inside a vector slot is refused by the EXISTING tracked guard
-        (BUG_20260701_ADF_subframe_ref_slot_symmetry) with the same
-        exception and message under BOTH paths, and that refusal fires
-        before any pre-scan materialization could occur."""
-        captured, refusals = {}, {}
+        """B3.3 successor to the historical refusal characterization.
+
+        Qualified subframe references inside selection_vector are now a
+        supported contract.  The legacy path is intentionally preserved
+        verbatim until B3.4 and therefore keeps its scalar-only qualified-
+        reference pre-scan, while the consolidated path must include vector
+        slots in that pre-scan.  Both paths must nevertheless produce the
+        same numerical result and converge to the same lazy/materialized
+        state.  The selected row count is checked independently against the
+        ROOT fixture bytes rather than against either ADF path.
+        """
+        import uproot
+
+        fixture = os.path.join(os.path.dirname(__file__),
+                               "lazy_struct_fixture_clean.root")
+        raw = uproot.open(fixture)["tree"]["dedxTPC/dEdxTotTPC"].array(
+            library="np")
+        expected_n = int(np.count_nonzero(np.asarray(raw) > 40.0))
+
+        scalar_calls, vector_calls = {}, {}
+        stats, final_state = {}, {}
         for tag, old in (("old", True), ("new", False)):
             if old:
                 monkeypatch.setenv("ADF_B3_OLD_DRAW_PATH", "1")
@@ -995,44 +1007,62 @@ class TestB31EffectiveSpecOnDraw:
             adf = self._fresh_lazy()
             calls = []
             orig = adf._lazy_ensure_subframe_refs
+
             def spy(text, _orig=orig, _calls=calls):
                 _calls.append(text)
                 return _orig(text)
+
             adf._lazy_ensure_subframe_refs = spy
+
+            # Scalar-slot behavior remains identical across old/new paths.
             _f, _a, _st = adf.draw("dedxTPC.dEdxMaxTPC:mult",
                                    type="profile", bins=5, lazy=True,
                                    selection="mult>0")
             plt.close("all")
-            # GPT26 round-3: the refused call must trigger NO further
-            # pre-scan and NO state change — every call is recorded (not
-            # just the last), and loaded branches / columns / materialized
-            # aliases are snapshotted around the refusal.
-            calls_before = list(calls)
-            loaded_before = set(adf._lazy_reader.loaded_branches)
-            cols_before = list(adf.df.columns)
-            mat_before = set(adf._get_materialized_aliases())
-            with pytest.raises(ValueError,
-                               match="not yet supported") as ei:
-                adf.draw("mult", type="hist", bins=5, lazy=True,
-                         selection_vector=["dedxTPC.dEdxTotTPC>0"])
+            scalar_calls[tag] = list(calls)
+
+            before = len(calls)
+            _f, _a, st = adf.draw(
+                "mult", type="hist", bins=5, lazy=True,
+                selection_vector=["dedxTPC.dEdxTotTPC>40"])
             plt.close("all")
-            # The refused call MAY run its scalar pre-scan first (both
-            # paths do, identically); it must NOT pre-scan the vector-slot
-            # reference and must not change any state.
-            extra = calls[len(calls_before):]
-            assert all("dedxTPC.dEdxTotTPC" not in t for t in extra), (
-                "the vector-slot subframe reference reached the pre-scan "
-                "before the refusal fired")
-            assert set(adf._lazy_reader.loaded_branches) == loaded_before
-            assert list(adf.df.columns) == cols_before
-            assert set(adf._get_materialized_aliases()) == mat_before
-            captured[tag] = list(calls)
-            refusals[tag] = str(ei.value)
-        assert captured["new"] == captured["old"], (
-            f"pre-scan call sequences diverge:\nold: {captured['old']}\n"
-            f"new: {captured['new']}")
-        assert refusals["new"] == refusals["old"], (
-            "vector-slot subframe refusal message diverges between paths")
+            vector_calls[tag] = list(calls[before:])
+
+            st0 = st[0] if isinstance(st, list) else st
+            assert st0["n"] == expected_n, (
+                "qualified selection_vector row count disagrees with the "
+                "independent ROOT fixture reference")
+
+            stats[tag] = st0
+            final_state[tag] = {
+                "loaded": set(adf._lazy_reader.loaded_branches),
+                "columns": list(adf.df.columns),
+                "materialized": set(adf._get_materialized_aliases()),
+            }
+            assert any("dEdxTotTPC" in str(b)
+                       for b in final_state[tag]["loaded"]), (
+                "qualified selection_vector dependency was not loaded")
+
+        # B3.3 intentionally changes the preparation mechanism: the legacy
+        # path remains scalar-only until B3.4, while the consolidated path
+        # includes vector slots in the graph-scoped pre-scan.
+        assert scalar_calls["new"] == scalar_calls["old"], (
+            f"scalar pre-scan call sequences diverge:\n"
+            f"old: {scalar_calls['old']}\nnew: {scalar_calls['new']}")
+        assert all("dedxTPC.dEdxTotTPC" not in str(t)
+                   for t in vector_calls["old"]), (
+            "legacy path unexpectedly changed its preserved scalar-only "
+            "qualified-reference pre-scan before B3.4")
+        assert any("dedxTPC.dEdxTotTPC" in str(t)
+                   for t in vector_calls["new"]), (
+            "consolidated path did not include the supported vector reference "
+            "in its graph-scoped qualified-reference pre-scan")
+
+        self._deep_numeric_equal(stats["old"], stats["new"],
+                                 "B31_9.stats")
+        assert final_state["new"] == final_state["old"], (
+            "supported qualified-vector call leaves different lazy/materialized "
+            "state under old and new draw paths")
 
 
     @staticmethod
