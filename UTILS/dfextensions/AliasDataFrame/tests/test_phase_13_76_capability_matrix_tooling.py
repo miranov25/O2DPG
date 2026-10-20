@@ -506,10 +506,29 @@ class TestPhase1379SlotGridRegistration:
         gen = _load_generator()
         feature = next(f for f in gen.FEATURES if f["id"] == "DRAW.slot_grid")
         summary = gen.feature_contract_summary(feature)
-        assert summary["declared_cells"] == 88
-        assert summary["cell_state_counts"] == {"KNOWN_GAP": 18, "PASSING": 70}
-        assert summary["interface_contract_counts"] == {"SUPPORTED": 88}
-        assert summary["seams"] == 4
+
+        # The Capability Matrix summary must follow the canonical slot-grid
+        # contract, not a historical 70 PASSING / 18 KNOWN_GAP snapshot.
+        # B3.3 repaired those 18 cells; hard-coding their old state made this
+        # tooling test red even though the machine contract correctly reports
+        # 88/88 PASSING.
+        contract_path = PROJECT_ROOT / "tests" / "phase_13_79_slot_grid_contract.json"
+        payload = json.loads(contract_path.read_text(encoding="utf-8"))
+        cells = payload["cells"]
+        seams = payload["seams"]
+
+        state_counts = {}
+        interface_counts = {}
+        for row in cells:
+            state = row["current_state"]
+            state_counts[state] = state_counts.get(state, 0) + 1
+            interface = row["interface_contract"]
+            interface_counts[interface] = interface_counts.get(interface, 0) + 1
+
+        assert summary["declared_cells"] == len(cells)
+        assert summary["cell_state_counts"] == state_counts
+        assert summary["interface_contract_counts"] == interface_counts
+        assert summary["seams"] == len(seams)
         assert len(summary["sha256"]) == 64
         assert feature["test_patterns"] == [
             "test_phase_13_79_slot_grid.py",
