@@ -2829,8 +2829,20 @@ class DFDraw:
             _local_fig = None
             if target_ax is None:  # diff_only: histogram drawn off-screen
                 _local_fig, target_ax = plt.subplots()
+            # PHASE_13_88_DF real-use follow-up: the histogram normalize
+            # owner must preserve the ordinary vector-expression contract.
+            # draw_hist's string path expects a materialized column, so resolve
+            # a computed branch expression on this exact active branch frame
+            # before delegating to the existing low-level histogram owner.
+            branch_x_expr = x_expr
+            if isinstance(branch_x_expr, str) and branch_x_expr not in branch_df.columns:
+                branch_df = branch_df.copy()
+                branch_df[branch_x_expr] = self._eval_column(
+                    branch_x_expr, df=branch_df
+                )
+
             _, _, sd = draw_hist(
-                branch_df, x_expr,
+                branch_df, branch_x_expr,
                 ax=target_ax,
                 bins=bins, range=shared_range, norm=norm,
                 weights=branch_weights,
@@ -2946,6 +2958,65 @@ class DFDraw:
             fig.savefig(save)
         return fig, (ax_top if ax_top is not None else ax_diff), stats_dict
 
+    def _resolve_profile_normalize_shared_range(self, df, x_list, x_range):
+        """Resolve one canonical x range for all normalized-profile curves.
+
+        PHASE_13_88_DF Bug B/F7: the normalize dispatchers must not derive
+        branch-local raw min/max ranges.  Automatic and named strategies use
+        the same ``resolve_range_1d`` owner and style defaults as ordinary
+        profiles, evaluated on the common pre-branch frame.  Explicit numeric
+        ranges are preserved exactly.
+        """
+        if x_range is not None and not isinstance(x_range, str):
+            return x_range
+
+        from .plots._autorange import resolve_range_1d
+        from .style import get_style_value
+
+        exprs = x_list if isinstance(x_list, (list, tuple)) else [x_list]
+        # Preserve order while avoiding duplicate evaluation of the shared x
+        # expression emitted by the bracket-vector grammar.
+        exprs = list(dict.fromkeys(exprs))
+        pooled_parts = []
+        for expr in exprs:
+            values = (df[expr] if expr in df.columns
+                      else self._eval_column(expr, df=df))
+            arr = pd.Series(values).to_numpy()
+            arr = arr[np.isfinite(arr)]
+            if arr.size:
+                pooled_parts.append(np.asarray(arr, dtype=float))
+
+        if not pooled_parts:
+            return (0.0, 1.0)
+
+        pooled = np.concatenate(pooled_parts)
+        resolved, _ = resolve_range_1d(
+            x_range, pooled,
+            style_strategy=get_style_value("autorange.strategy", "hybrid"),
+            style_k_robust=get_style_value("autorange.k_robust", 4.0),
+            style_k_outlier=get_style_value("autorange.k_outlier", 1.5),
+            style_percentile=get_style_value("autorange.percentile", (1.0, 99.0)),
+        )
+        return resolved
+
+    def _materialize_profile_normalize_expressions(self, curve_df, x_expr, y_expr):
+        """Materialize computed positional expressions on one active curve frame.
+
+        Reuses ``_eval_column`` and gives the existing low-level profile owner
+        real DataFrame columns without introducing a second expression parser.
+        The input frame is never mutated in place.
+        """
+        resolved_df = curve_df
+        x_name = x_expr.strip() if isinstance(x_expr, str) else x_expr
+        y_name = y_expr.strip() if isinstance(y_expr, str) else y_expr
+
+        for expr in (x_name, y_name):
+            if isinstance(expr, str) and expr not in resolved_df.columns:
+                values = self._eval_column(expr, df=resolved_df)
+                resolved_df = resolved_df.assign(**{expr: values})
+
+        return resolved_df, x_name, y_name
+
     def _dispatch_normalize_render(
         self,
         y_list,
@@ -3006,28 +3077,13 @@ class DFDraw:
         df_full = self._apply_selection(self.df, selection)
         df_full = self._apply_sampling(df_full, sample)
 
-        # --- 3. Determine common x_range so both curves share binning -----------
-        # If user supplied x_range, both curves use it (already exact). If not,
-        # we must derive it BEFORE the per-curve filtering so the two
-        # selection-filtered subsets share bin edges. Use the full (post-outer-
-        # selection) sample's x range — both per-curve subsets are subsets of it.
-        if x_range is None:
-            # Use the union across both per-curve subsets; equivalent to using
-            # the full df range since each subset's x ⊆ df_full's x.
-            x0 = y_list[0]  # placeholder — actual x is x_list[0]
-            try:
-                x_full = (df_full[x_list[0]]
-                          if x_list[0] in df_full.columns
-                          else self._eval_column(x_list[0], df=df_full))
-            except Exception:
-                # Fall through; draw_profile will compute its own per-curve
-                # range and bin centers may differ slightly. Logged in CRR §11.
-                x_full = None
-            if x_full is not None:
-                x_arr = pd.Series(x_full).to_numpy()
-                x_arr = x_arr[np.isfinite(x_arr)]
-                if x_arr.size > 0:
-                    x_range = (float(np.min(x_arr)), float(np.max(x_arr)))
+        # --- 3. Determine one canonical common x_range --------------------------
+        # PHASE_13_88_DF F7: ordinary profiles and normalized profiles must use
+        # the same autorange policy. Resolve before per-curve filtering so every
+        # signal/reference branch uses identical bin edges.
+        x_range = self._resolve_profile_normalize_shared_range(
+            df_full, x_list, x_range
+        )
 
         # --- 4. Build figure with gridspec layout -------------------------------
         figsize = passthrough.pop('figsize', None) or get_style_value("figure.figsize", (8, 6))
@@ -3059,6 +3115,12 @@ class DFDraw:
             curve_df = df_full
             if curve_sel is not None:
                 curve_df = self._apply_selection(curve_df, curve_sel)
+
+            # Materialize computed x/y expressions on this exact active frame
+            # before entering the low-level profile owner.
+            curve_df, x_expr, y_expr = self._materialize_profile_normalize_expressions(
+                curve_df, x_expr, y_expr
+            )
 
             # Per-curve label: AD-80 — signal first, reference second.
             role = "signal" if curve_idx == 0 else "reference"
@@ -3308,18 +3370,10 @@ class DFDraw:
         df_outer = self._apply_selection(self.df, selection)
         df_outer = self._apply_sampling(df_outer, sample)
 
-        # --- 3. Resolve x_range from full sample (shared across groups+curves)-
-        if x_range is None:
-            try:
-                x_full = (df_outer[x_list[0]]
-                          if x_list[0] in df_outer.columns
-                          else self._eval_column(x_list[0], df=df_outer))
-                x_arr = pd.Series(x_full).to_numpy()
-                x_arr = x_arr[np.isfinite(x_arr)]
-                if x_arr.size > 0:
-                    x_range = (float(np.min(x_arr)), float(np.max(x_arr)))
-            except Exception:
-                pass  # fall through; per-curve auto-detect
+        # --- 3. Resolve one canonical x_range across groups + curves -----------
+        x_range = self._resolve_profile_normalize_shared_range(
+            df_outer, x_list, x_range
+        )
 
         # --- 4. Determine groups (preserved order) -----------------------------
         if group_by not in df_outer.columns:
@@ -3384,6 +3438,10 @@ class DFDraw:
                 curve_df = df_group
                 if curve_sel is not None:
                     curve_df = self._apply_selection(curve_df, curve_sel)
+
+                curve_df, x_expr, y_expr = self._materialize_profile_normalize_expressions(
+                    curve_df, x_expr, y_expr
+                )
 
                 # Per-curve label: "{group_value} signal/ref"
                 role = "signal" if curve_idx == 0 else "ref"
@@ -3635,18 +3693,10 @@ class DFDraw:
         df_outer = self._apply_selection(self.df, selection)
         df_outer = self._apply_sampling(df_outer, sample)
 
-        # --- 3. Resolve x_range -----------------------------------------------
-        if x_range is None:
-            try:
-                x_full = (df_outer[x_list[0]]
-                          if x_list[0] in df_outer.columns
-                          else self._eval_column(x_list[0], df=df_outer))
-                x_arr = pd.Series(x_full).to_numpy()
-                x_arr = x_arr[np.isfinite(x_arr)]
-                if x_arr.size > 0:
-                    x_range = (float(np.min(x_arr)), float(np.max(x_arr)))
-            except Exception:
-                pass
+        # --- 3. Resolve one canonical x_range across facets + curves -----------
+        x_range = self._resolve_profile_normalize_shared_range(
+            df_outer, x_list, x_range
+        )
 
         # --- 4. Resolve facet bin edges + labels via the existing helper -----
         if facet_by not in df_outer.columns:
@@ -3730,6 +3780,10 @@ class DFDraw:
                 curve_df = df_facet
                 if curve_sel is not None:
                     curve_df = self._apply_selection(curve_df, curve_sel)
+
+                curve_df, x_expr, y_expr = self._materialize_profile_normalize_expressions(
+                    curve_df, x_expr, y_expr
+                )
 
                 role = "signal" if curve_idx == 0 else "reference"
                 curve_label = curve_sel if curve_sel is not None else f"{y_expr} ({role})"
