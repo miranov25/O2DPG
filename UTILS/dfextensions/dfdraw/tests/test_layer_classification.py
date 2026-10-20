@@ -716,4 +716,32 @@ TEST_LAYERS = {
     "test_phase_13_86_stage_bb.py::test_BB9_expression_vector_channel_identity_is_stable_across_facets": "visual_primitive",
     "test_phase_13_86_stage_ca.py::test_CA1_wide_figure_keeps_full_selection_but_narrow_figure_elides": "visual_primitive",
     "test_phase_13_86_stage_ca.py::test_CA3_faceted_wide_figure_keeps_full_selection_in_figure_title": "visual_primitive",
+    # ── PHASE_13_88_DF — normalization bug-fix proof layers ──
+    # Bug A: exact canonical shared-range/bin assertions.
+    "test_phase_13_88_bug_a_hist_autorange.py::test_A1_hist_selection_vector_uses_one_canonical_pooled_range[None]": "invariance",
+    "test_phase_13_88_bug_a_hist_autorange.py::test_A1_hist_selection_vector_uses_one_canonical_pooled_range[hybrid]": "invariance",
+    "test_phase_13_88_bug_a_hist_autorange.py::test_A1_hist_selection_vector_uses_one_canonical_pooled_range[robust_4mad]": "invariance",
+    "test_phase_13_88_bug_a_hist_autorange.py::test_A2_explicit_numeric_range_remains_exact_green_control": "invariance",
+    "test_phase_13_88_bug_a_hist_autorange.py::test_A3_weights_vector_same_rows_remains_green_control": "invariance",
+    "test_phase_13_88_bug_a_hist_autorange.py::test_A4_two_expression_vector_uses_union_domain": "invariance",
+
+    # Bug B: exact 0.5 numerical ratio oracle across owners/expressions.
+    "test_phase_13_88_bug_b_profile_expressions.py::test_B1_profile_normalize_materializes_computed_positional_expressions[plain-[y,2*y]:x]": "invariance",
+    "test_phase_13_88_bug_b_profile_expressions.py::test_B1_profile_normalize_materializes_computed_positional_expressions[plain-[y,2*y]:2*x]": "invariance",
+    "test_phase_13_88_bug_b_profile_expressions.py::test_B1_profile_normalize_materializes_computed_positional_expressions[grouped-[y,2*y]:x]": "invariance",
+    "test_phase_13_88_bug_b_profile_expressions.py::test_B1_profile_normalize_materializes_computed_positional_expressions[grouped-[y,2*y]:2*x]": "invariance",
+    "test_phase_13_88_bug_b_profile_expressions.py::test_B1_profile_normalize_materializes_computed_positional_expressions[faceted-[y,2*y]:x]": "invariance",
+    "test_phase_13_88_bug_b_profile_expressions.py::test_B1_profile_normalize_materializes_computed_positional_expressions[faceted-[y,2*y]:2*x]": "invariance",
+    # B2 proves the integrated selection-vector + computed-x path is live,
+    # but does not independently assert a numerical equality.
+    "test_phase_13_88_bug_b_profile_expressions.py::test_B2_single_y_computed_x_supported_with_selection_vector": "integration",
+
+    # F7: every owner must reproduce the canonical resolve_range_1d centers.
+    "test_phase_13_88_bug_b_profile_expressions.py::test_F7_profile_normalize_uses_canonical_shared_autorange_not_raw_minmax[plain]": "invariance",
+    "test_phase_13_88_bug_b_profile_expressions.py::test_F7_profile_normalize_uses_canonical_shared_autorange_not_raw_minmax[grouped]": "invariance",
+    "test_phase_13_88_bug_b_profile_expressions.py::test_F7_profile_normalize_uses_canonical_shared_autorange_not_raw_minmax[faceted]": "invariance",
+
+    # Bug C: public draw-door / typed-owner equality plus independent NumPy truth.
+    "test_phase_13_88_bug_c_draw_hist_normalize.py::test_C1_draw_hist_vector_normalize_matches_typed_owner": "invariance",
+    "test_phase_13_88_bug_c_draw_hist_normalize.py::test_C2_draw_hist_computed_vector_element_is_materialized": "invariance",
 }

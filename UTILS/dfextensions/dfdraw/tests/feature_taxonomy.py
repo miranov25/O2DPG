@@ -2190,6 +2190,55 @@ FEATURES = [
         ],
     },
 
+    # ── PHASE_13_88_DF — normalization correctness repairs ──
+
+    {
+        "id": "NORMALIZE.hist_shared_autorange",
+        "name": "Histogram ratio normalization resolves one canonical pooled range before branch rendering; explicit ranges remain exact and edge compatibility stays guarded (PHASE_13_88 Bug A)",
+        "category": "NORMALIZE",
+        "tests": [
+            "test_phase_13_88_bug_a_hist_autorange.py::test_A1_hist_selection_vector_uses_one_canonical_pooled_range[None]",
+            "test_phase_13_88_bug_a_hist_autorange.py::test_A1_hist_selection_vector_uses_one_canonical_pooled_range[hybrid]",
+            "test_phase_13_88_bug_a_hist_autorange.py::test_A1_hist_selection_vector_uses_one_canonical_pooled_range[robust_4mad]",
+            "test_phase_13_88_bug_a_hist_autorange.py::test_A2_explicit_numeric_range_remains_exact_green_control",
+            "test_phase_13_88_bug_a_hist_autorange.py::test_A3_weights_vector_same_rows_remains_green_control",
+            "test_phase_13_88_bug_a_hist_autorange.py::test_A4_two_expression_vector_uses_union_domain",
+        ],
+    },
+    {
+        "id": "NORMALIZE.profile_expression_materialization",
+        "name": "Normalized profiles materialize supported computed x/y positional expressions on the active plain/grouped/faceted curve frame before low-level rendering (PHASE_13_88 Bug B)",
+        "category": "NORMALIZE",
+        "tests": [
+            "test_phase_13_88_bug_b_profile_expressions.py::test_B1_profile_normalize_materializes_computed_positional_expressions[plain-[y,2*y]:x]",
+            "test_phase_13_88_bug_b_profile_expressions.py::test_B1_profile_normalize_materializes_computed_positional_expressions[plain-[y,2*y]:2*x]",
+            "test_phase_13_88_bug_b_profile_expressions.py::test_B1_profile_normalize_materializes_computed_positional_expressions[grouped-[y,2*y]:x]",
+            "test_phase_13_88_bug_b_profile_expressions.py::test_B1_profile_normalize_materializes_computed_positional_expressions[grouped-[y,2*y]:2*x]",
+            "test_phase_13_88_bug_b_profile_expressions.py::test_B1_profile_normalize_materializes_computed_positional_expressions[faceted-[y,2*y]:x]",
+            "test_phase_13_88_bug_b_profile_expressions.py::test_B1_profile_normalize_materializes_computed_positional_expressions[faceted-[y,2*y]:2*x]",
+            "test_phase_13_88_bug_b_profile_expressions.py::test_B2_single_y_computed_x_supported_with_selection_vector",
+        ],
+    },
+    {
+        "id": "NORMALIZE.profile_shared_autorange",
+        "name": "Plain, grouped and faceted normalized-profile owners share the canonical configured 1-D autorange instead of local raw min/max (PHASE_13_88 F7)",
+        "category": "NORMALIZE",
+        "tests": [
+            "test_phase_13_88_bug_b_profile_expressions.py::test_F7_profile_normalize_uses_canonical_shared_autorange_not_raw_minmax[plain]",
+            "test_phase_13_88_bug_b_profile_expressions.py::test_F7_profile_normalize_uses_canonical_shared_autorange_not_raw_minmax[grouped]",
+            "test_phase_13_88_bug_b_profile_expressions.py::test_F7_profile_normalize_uses_canonical_shared_autorange_not_raw_minmax[faceted]",
+        ],
+    },
+    {
+        "id": "NORMALIZE.hist_draw_parity",
+        "name": "Public draw() preserves atomic two-expression histogram normalize semantics and computed branch expressions exactly as the typed hist() owner (PHASE_13_88 Bug C/follow-up)",
+        "category": "NORMALIZE",
+        "tests": [
+            "test_phase_13_88_bug_c_draw_hist_normalize.py::test_C1_draw_hist_vector_normalize_matches_typed_owner",
+            "test_phase_13_88_bug_c_draw_hist_normalize.py::test_C2_draw_hist_computed_vector_element_is_materialized",
+        ],
+    },
+
     # ── Phase 13.49.DF — meta-tests for the capability matrix itself ──
     {
         "id": "META.capability_matrix",
