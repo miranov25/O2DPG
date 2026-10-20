@@ -4,8 +4,8 @@ Strengthens BN-1 SMOKE with independent raw-fixture numerical oracles.
 No dfdraw normalization helper is used to build expected values.
 
 Coverage:
-  * 30 ratified ratio core rows (20 numerical PASS + 10 current gaps),
-  * 6 explicit eager/lazy equivalence pairs for the currently reachable core,
+  * 30 ratified ratio core rows, all independently numerical PASS,
+  * 6 explicit eager/lazy equivalence pairs for selection/weights-vector core,
   * 5 bounded mode seams: delta/log_ratio/pull/callable-2/callable-4.
 """
 from __future__ import annotations
@@ -41,11 +41,11 @@ def _bin_indices(x, bins=BINS):
     return idx, inside, edges
 
 
-def _profile_oracle(*, mask=None, weights=None, bins=BINS):
+def _profile_oracle(*, value_key="value", mask=None, weights=None, bins=BINS):
     """Independent per-bin profile oracle from the deterministic raw fixture."""
     a = B1._arrays()
     x = np.asarray(a["x"], dtype=float)
-    y = np.asarray(a["value"], dtype=float)
+    y = np.asarray(a[value_key], dtype=float)
     idx, inside, edges = _bin_indices(x, bins=bins)
     if mask is None:
         mask = np.ones(len(x), dtype=bool)
@@ -94,6 +94,13 @@ def _ratio_core_oracle(source):
     elif source == "weights_vector":
         signal = _profile_oracle(weights=a["w0"])
         reference = _profile_oracle(weights=a["w1"])
+    elif source == "y_vector":
+        # Independent raw-fixture truth for the two Y-vector curves.  All five
+        # operand forms (column/alias/expression/subframe/struct) are alternate
+        # public representations of these same two raw arrays.  Do not reuse
+        # ADF/dfdraw output to construct the expected values.
+        signal = _profile_oracle(value_key="value")
+        reference = _profile_oracle(value_key="color")
     else:
         raise AssertionError(f"no reachable BN-2 raw oracle for source {source!r}")
 

@@ -7941,10 +7941,10 @@ def preclean_c3_case(root_path: str, gallery_module=None) -> CaseSpec:
                        comparator="exact"),
             Observable("signal_central", "INDEPENDENT", "ARRAY", "raw base-formula bin means",
                        comparator="close", atol=1e-12, rtol=1e-12,
-                       rationale="same float64 arithmetic mean on identical selected rows"),
+                       rationale="source-dtype arithmetic mean on identical selected rows"),
             Observable("reference_central", "INDEPENDENT", "ARRAY", "raw 2×base bin means",
                        comparator="close", atol=2e-12, rtol=1e-12,
-                       rationale="same float64 arithmetic mean on exact scaled rows"),
+                       rationale="exact 2× dtype-authoritative base mean on identical selected rows"),
             Observable("ratio_values", "INDEPENDENT", "ARRAY", "raw signal/reference ratio",
                        comparator="close", atol=2e-13, rtol=2e-13,
                        rationale="ratio of independently reduced strictly-positive scaled branches"),
@@ -7976,23 +7976,34 @@ def preclean_c3_case(root_path: str, gallery_module=None) -> CaseSpec:
 
 def _preclean_c3_expected(adf: Any) -> dict:
     df = adf.df
-    sector = np.asarray(df["sector"], dtype=float)
-    tgl = np.asarray(df["tgl"], dtype=float)
+
+    # Preserve the source precision.  The old oracle forced sector/tgl to
+    # float64, evaluated the complete formula there, and cast only at the end.
+    # That is a different arithmetic path from a normal float32 materialized
+    # alias and produced a false C3 red at O(float32 rounding).
+    sector = np.asarray(df["sector"])
+    tgl = np.asarray(df["tgl"])
     ncl = np.asarray(df["ncl"], dtype=float)
     dcar = np.asarray(df["dcar_tpc_vertex"], dtype=float)
     base_mask = (ncl > 60) & (np.abs(dcar) < 10)
+
+    # Independent truth still comes only from the raw source columns.
     base_values = 1.0 + 0.02 * sector + 0.01 * tgl * tgl
-    scaled_values = PRECLEAN_C3_SCALE * base_values
-    # When the product-side aliases have already been materialized, use only
-    # their authoritative dtype as part of the contract reference.  Values are
-    # still reconstructed independently from raw sector/tgl; no ADF result is
-    # reused as expected data.
+
+    # AD-19/13.76.ADF: once the product alias exists, its recorded dtype is
+    # authoritative.  Use only that dtype metadata, never the product values.
     if "preclean_ratio_base" in df.columns:
         base_values = _it_cast_expected_to_authoritative_dtype(
             df, "preclean_ratio_base", base_values)
+
+    # The declared second alias is exactly 2 * preclean_ratio_base.  Build the
+    # independent reference in the same semantic order: raw base formula ->
+    # authoritative base dtype -> exact scale -> authoritative scaled dtype.
+    scaled_values = PRECLEAN_C3_SCALE * base_values
     if "preclean_ratio_scaled" in df.columns:
         scaled_values = _it_cast_expected_to_authoritative_dtype(
             df, "preclean_ratio_scaled", scaled_values)
+
     signal = _it_profile(sector, base_values, base_mask)
     reference = _it_profile(sector, scaled_values, base_mask)
     valid = ((signal["count"] > 0) & (reference["count"] > 0)
@@ -8047,19 +8058,43 @@ def _preclean_c3_normalize_payload(stats: Any) -> dict:
 
 def _preclean_c3_l1_materialization(adf: Any) -> dict:
     df = adf.df
-    sector = np.asarray(df["sector"], dtype=float)
-    tgl = np.asarray(df["tgl"], dtype=float)
-    expected_base = 1.0 + 0.02 * sector + 0.01 * tgl * tgl
-    expected_scaled = PRECLEAN_C3_SCALE * expected_base
-    expected_base = _it_cast_expected_to_authoritative_dtype(
-        df, "preclean_ratio_base", expected_base)
-    expected_scaled = _it_cast_expected_to_authoritative_dtype(
-        df, "preclean_ratio_scaled", expected_scaled)
+
+    # Preserve source precision; do not manufacture a float64-first reference.
+    sector = np.asarray(df["sector"])
+    tgl = np.asarray(df["tgl"])
+
     base = np.asarray(df["preclean_ratio_base"])
     scaled = np.asarray(df["preclean_ratio_scaled"])
+
+    # Independent base truth from raw source columns, then cast to the already
+    # established product dtype.  No ADF materialized value is used as truth.
+    expected_base = 1.0 + 0.02 * sector + 0.01 * tgl * tgl
+    expected_base = _it_cast_expected_to_authoritative_dtype(
+        df, "preclean_ratio_base", expected_base)
+
+    # Reproduce the declared alias chain semantically: scaled = 2 * base.
+    expected_scaled = PRECLEAN_C3_SCALE * expected_base
+    expected_scaled = _it_cast_expected_to_authoritative_dtype(
+        df, "preclean_ratio_scaled", expected_scaled)
+
+    # Strong product invariant independently demonstrated on real dEdx data:
+    # the second materialized alias must be exactly 2 * the first at its
+    # authoritative dtype.
+    scaled_from_materialized_base = (
+        PRECLEAN_C3_SCALE * base
+    ).astype(scaled.dtype, copy=False)
+
     base_ok = bool(np.array_equal(base, expected_base, equal_nan=True))
     scaled_ok = bool(np.array_equal(scaled, expected_scaled, equal_nan=True))
-    return {"base_ok": base_ok, "scaled_ok": scaled_ok, "all_ok": bool(base_ok and scaled_ok)}
+    chain_ok = bool(np.array_equal(
+        scaled, scaled_from_materialized_base, equal_nan=True))
+
+    return {
+        "base_ok": base_ok,
+        "scaled_ok": scaled_ok,
+        "chain_ok": chain_ok,
+        "all_ok": bool(base_ok and scaled_ok and chain_ok),
+    }
 
 
 def _preclean_c3_direct_dfdraw(adf: Any, expected: dict) -> dict:

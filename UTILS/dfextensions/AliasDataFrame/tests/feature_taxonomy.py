@@ -322,7 +322,7 @@ FEATURES = [
      ]},
     {"id": "DRAW.normalize_integration",
      "name": "ADF normalization integration bridge",
-     "description": "Checks ADF-to-dfdraw normalize= integration across curve sources, operand representations and eager/lazy loading without duplicating dfdraw-owned normalization mathematics. Ratified-supported current gaps remain explicit strict-XFAIL evidence rather than being reclassified as intended refusals.",
+     "description": "Checks ADF-to-dfdraw normalize= integration across curve sources, operand representations and eager/lazy loading without duplicating dfdraw-owned normalization mathematics. The 30-cell ratio core is independently green; bounded unsupported seams remain explicit refusal/XFAIL evidence.",
      "category": "DRAWING",
      "surface": {
          "canonical_mode": "ratio",
@@ -333,8 +333,8 @@ FEATURES = [
          "evidence": ["BN-SMOKE", "BN-INVARIANCE", "BN3-SEAMS"],
          "mode_seams": 5,
          "bn3_seams": 11,
-         "bn3_passing": 8,
-         "bn3_known_gap": 3,
+         "bn3_passing": 9,
+         "bn3_known_gap": 2,
      },
      "contract_file": "tests/phase_13_79_normalization_contract.json",
      "test_patterns": [

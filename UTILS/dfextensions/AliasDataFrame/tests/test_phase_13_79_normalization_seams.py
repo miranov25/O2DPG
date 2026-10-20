@@ -6,7 +6,8 @@ production code:
   * draw / draw_batch / draw_figures public-surface forwarding,
   * normalize_layout='diff_only',
   * ADF vector_compose auto-force for selection/weights vectors,
-  * non-profile REFUSE_BY_DESIGN executable contract (current warn+ignore gap).
+  * 1D histogram ratio support with an independent shared-bin NumPy oracle,
+  * scatter/hist2d REFUSE_BY_DESIGN executable contracts (current warn+ignore gaps).
 """
 from __future__ import annotations
 
@@ -215,6 +216,8 @@ NONPROFILE = tuple(CONTRACT["non_profile_contract"])
 
 
 def _nonprofile_param(row):
+    if row["current_state"] == "PASSING":
+        return pytest.param(row, id=row["plot_type"])
     return pytest.param(
         row,
         id=row["plot_type"],
@@ -239,6 +242,63 @@ def test_bn3_nonprofile_normalize_refuse_by_design(row):
     }
     if plot_type != "scatter":
         kwargs["bins"] = BINS
+
+    if row["current_state"] == "PASSING":
+        # Legacy node identity retained for the historical non-profile seam.
+        # 1D histogram ratio is now supported.  Exercise the repaired default
+        # auto-range path and compare both branch histograms and their ratio to
+        # an independent NumPy calculation on the raw fixture arrays.
+        assert plot_type == "hist"
+        kwargs["vector_compose"] = "outer"
+        result = adf.draw(expr, **kwargs)
+        try:
+            stats = result[2]
+            assert stats["normalize_mode"] == "ratio"
+            assert "normalize_data" in stats
+            branches = stats["hist_branch_data"]
+            assert len(branches) == 2
+            e0 = branches[0][["x_low", "x_high"]].to_numpy(dtype=float)
+            e1 = branches[1][["x_low", "x_high"]].to_numpy(dtype=float)
+            np.testing.assert_array_equal(e0, e1)
+            edges = np.r_[e0[:, 0], e0[-1, 1]]
+
+            a = B1._arrays()
+            values = np.asarray(a["value"], dtype=float)
+            sel0 = np.asarray(a["sel0"], dtype=bool)
+            sel1 = np.asarray(a["sel1"], dtype=bool)
+            h0, _ = np.histogram(values[sel0], bins=edges)
+            h1, _ = np.histogram(values[sel1], bins=edges)
+            np.testing.assert_allclose(
+                branches[0]["value"].to_numpy(float), h0.astype(float),
+                rtol=0, atol=0,
+            )
+            np.testing.assert_allclose(
+                branches[1]["value"].to_numpy(float), h1.astype(float),
+                rtol=0, atol=0,
+            )
+
+            expected = np.full(len(h0), np.nan, dtype=float)
+            valid = h1 != 0
+            expected[valid] = h0[valid] / h1[valid]
+            nd = stats["normalize_data"]
+            np.testing.assert_allclose(
+                nd["signal_central"].to_numpy(float), h0.astype(float),
+                rtol=0, atol=0,
+            )
+            np.testing.assert_allclose(
+                nd["reference_central"].to_numpy(float), h1.astype(float),
+                rtol=0, atol=0,
+            )
+            np.testing.assert_array_equal(
+                nd["mask_undefined"].to_numpy(bool), ~valid,
+            )
+            np.testing.assert_allclose(
+                nd["value"].to_numpy(float), expected,
+                rtol=1e-13, atol=1e-13, equal_nan=True,
+            )
+        finally:
+            _close_result_figures(result)
+        return
 
     with warnings.catch_warnings(record=True) as caught:
         warnings.simplefilter("always")

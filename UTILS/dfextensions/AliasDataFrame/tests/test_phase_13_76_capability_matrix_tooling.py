@@ -631,7 +631,7 @@ class TestPhase1379NormalizationRegistration:
         feature = next(f for f in gen.FEATURES if f["id"] == "DRAW.normalize_integration")
         summary = gen.feature_contract_summary(feature)
         assert summary["declared_cells"] == 30
-        assert summary["cell_state_counts"] == {"KNOWN_GAP": 18, "PASSING": 12}
+        assert summary["cell_state_counts"] == {"PASSING": 30}
         assert summary["interface_contract_counts"] == {"SUPPORTED": 30}
         assert summary["seams"] == 16
         assert len(summary["sha256"]) == 64
@@ -646,12 +646,9 @@ class TestPhase1379NormalizationRegistration:
         contract_path = PROJECT_ROOT / "tests" / "phase_13_79_normalization_contract.json"
         payload = json.loads(contract_path.read_text(encoding="utf-8"))
         assert payload["measurement_summary"]["derived_core_cells"] == 30
-        assert payload["measurement_summary"]["passing"] == 12
-        assert payload["measurement_summary"]["known_gap"] == 18
-        assert payload["measurement_summary"]["gap_families"] == {
-            "BUG_20260701_ADF_subframe_ref_slot_symmetry": 8,
-            "BUG_dfdraw_20260905_draw_profile_y_vector_normalize_ignored": 10,
-        }
+        assert payload["measurement_summary"]["passing"] == 30
+        assert payload["measurement_summary"]["known_gap"] == 0
+        assert payload["measurement_summary"]["gap_families"] == {}
         assert set(payload["governing_global_decisions"]) == {
             "AD-4/13.76.ADF", "AD-16/13.76.ADF",
         }
@@ -667,8 +664,8 @@ class TestPhase1379NormalizationRegistration:
             "status": "MEASURED_CANDIDATE",
             "oracle_id": "independent_ratio_profile_numpy_v01",
             "core_rows": 30,
-            "passing": 12,
-            "known_gap": 18,
+            "passing": 30,
+            "known_gap": 0,
             "eager_lazy_equivalence_pairs": 6,
             "mode_seams_passing": 5,
             "oracle_independence": (
@@ -701,18 +698,20 @@ class TestPhase1379NormalizationRegistration:
         assert payload["bn3_seams"] == {
             "status": "MEASURED_CANDIDATE",
             "total_seams": 11,
-            "passing": 8,
-            "known_gap": 3,
+            "passing": 9,
+            "known_gap": 2,
             "composition_passing": 2,
             "public_surface_passing": 3,
             "layout_passing": 1,
             "vector_compose_passing": 2,
-            "non_profile_known_gap": 3,
+            "hist_ratio_passing": 1,
+            "non_profile_known_gap": 2,
             "non_profile_bug": "BUG_dfdraw_20260905_nonprofile_normalize_warn_ignore",
             "ratio_oracle_id": "independent_ratio_profile_numpy_v01",
+            "hist_ratio_oracle_id": "independent_hist_ratio_numpy_v01",
             "vector_compose_oracle_id": "public_delegation_capture_plus_independent_ratio_v01",
-            "non_profile_current_behavior": "warn+ignore",
-            "non_profile_required_behavior": "raise deterministic API-level exception",
+            "non_profile_current_behavior": "hist ratio supported; scatter/hist2d retain warn+ignore gap",
+            "non_profile_required_behavior": "hist ratio supported; scatter/hist2d must refuse normalize deterministically",
         }
 
     def test_T33_normalization_bn3_states_and_nonprofile_refusal_contract_are_exact(self):
@@ -722,13 +721,15 @@ class TestPhase1379NormalizationRegistration:
         assert len(bn3) == 11
         passing = [row for row in bn3 if row["current_state"] == "PASSING"]
         gaps = [row for row in bn3 if row["current_state"] == "KNOWN_GAP_WARN_AND_IGNORE"]
-        assert len(passing) == 8
-        assert len(gaps) == 3
+        assert len(passing) == 9
+        assert len(gaps) == 2
         assert {row["kind"] for row in passing} == {
-            "composition", "public_surface", "layout", "vector_compose",
+            "composition", "public_surface", "layout", "vector_compose", "non_profile",
         }
+        hist_seam = next(row for row in passing if row["seam_id"] == "normalize:nonprofile:hist")
+        assert hist_seam["interface_contract"] == "SUPPORTED"
+        assert hist_seam["oracle_id"] == "independent_hist_ratio_numpy_v01"
         assert {row["seam_id"] for row in gaps} == {
-            "normalize:nonprofile:hist",
             "normalize:nonprofile:scatter",
             "normalize:nonprofile:hist2d",
         }
@@ -736,8 +737,15 @@ class TestPhase1379NormalizationRegistration:
         assert all(row["owning_bug"] == "BUG_dfdraw_20260905_nonprofile_normalize_warn_ignore" for row in gaps)
         nonprofile = payload["non_profile_contract"]
         assert {row["plot_type"] for row in nonprofile} == {"hist", "scatter", "hist2d"}
-        assert all(row["current_state"] == "KNOWN_GAP_WARN_AND_IGNORE" for row in nonprofile)
-        assert all("is ignored" in row["observed_warning_fragment"] for row in nonprofile)
+        by_type = {row["plot_type"]: row for row in nonprofile}
+        assert by_type["hist"]["current_state"] == "PASSING"
+        assert by_type["hist"]["interface_contract"] == "SUPPORTED"
+        assert by_type["hist"]["owning_bug"] is None
+        for plot_type in ("scatter", "hist2d"):
+            row = by_type[plot_type]
+            assert row["current_state"] == "KNOWN_GAP_WARN_AND_IGNORE"
+            assert row["interface_contract"] == "REFUSE_BY_DESIGN"
+            assert "is ignored" in row["observed_warning_fragment"]
 
 class TestCapabilityMatrixSourceLocatorPerformance:
     """Regression guard for the source-location AST cache."""

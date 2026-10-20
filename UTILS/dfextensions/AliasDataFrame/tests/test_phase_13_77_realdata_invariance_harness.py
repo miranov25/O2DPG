@@ -7302,6 +7302,13 @@ def test_preclean_c3_case_is_primary_ratio_y_vector_and_gallery_owned(tmp_path):
 def test_preclean_c3_runner_matches_exact_ratio_truth(tmp_path):
     import time_series_draw as G
     adf = _it_attach_stable_ids(_hardening_adf(n=7200))
+
+    # Production data commonly carries float32 source columns.  The C3 oracle
+    # must test that path directly and must not require bitwise identity with
+    # an artificial float64-first reconstruction.
+    adf.df["sector"] = adf.df["sector"].astype(np.float32)
+    adf.df["tgl"] = adf.df["tgl"].astype(np.float32)
+
     root = tmp_path / "synthetic.root"
     root.write_bytes(b"root")
     case = H.preclean_c3_case(str(root), gallery_module=G)
@@ -7312,6 +7319,9 @@ def test_preclean_c3_runner_matches_exact_ratio_truth(tmp_path):
     assert result.executed_comparisons == len(case.observables) == 7
     assert all(cmp["ok"] for cmp in result.comparisons)
     assert result.observed["expected_ratio"] == 0.5
+    assert result.observed["L1_materialization"]["base_ok"] is True
+    assert result.observed["L1_materialization"]["scaled_ok"] is True
+    assert result.observed["L1_materialization"]["chain_ok"] is True
     assert result.observed["L1_materialization"]["all_ok"] is True
     assert result.observed["ownership_ladder"]["first_disagreement_layer"] == "NONE"
 

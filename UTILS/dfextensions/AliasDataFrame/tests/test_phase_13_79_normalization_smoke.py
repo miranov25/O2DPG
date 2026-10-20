@@ -5,7 +5,8 @@ Ratified BN-0 core:
     with vector_compose='outer' pinned explicitly.
 
 This checkpoint is test-first.  No ADF/dfdraw production code is changed.
-Known implementation gaps remain strict XFAIL with exact signature checks.
+The 2026-10-20 reconciliation promotes all 30 ratio-core rows to PASSING;
+remaining non-profile refusal gaps are tracked in BN-3.
 """
 from __future__ import annotations
 
@@ -69,22 +70,35 @@ def test_bn0_contract_complete_and_ratified():
 def test_bn0_contract_measured_state_arithmetic():
     passing = [r for r in CELLS if r["current_state"] == "PASSING"]
     gaps = [r for r in CELLS if r["current_state"] == "KNOWN_GAP"]
-    assert len(passing) == 20
-    assert len(gaps) == 10
-    by_bug = {}
-    for row in gaps:
-        by_bug[row["owning_bug"]] = by_bug.get(row["owning_bug"], 0) + 1
-        sig = row["current_gap_signature"]
-        assert sig and sig["type"] and sig["message_fragment"]
-    assert BUG_VECTOR_QUALIFIED not in by_bug
-    assert by_bug == {BUG_Y_VECTOR_ROUTING: 10}
+    assert len(passing) == 30
+    assert len(gaps) == 0
+    assert CONTRACT["measurement_summary"] == {
+        "derived_core_cells": 30,
+        "gap_families": {},
+        "known_gap": 0,
+        "passing": 30,
+    }
+    y_rows = [r for r in CELLS if r["curve_source"] == "y_vector"]
+    assert len(y_rows) == 10
+    assert all(r["evidence_class"] == "BN-INVARIANCE" for r in y_rows)
+    assert all(r["oracle_id"] == "independent_ratio_profile_numpy_v01" for r in y_rows)
+    assert all(r["owning_bug"] is None for r in y_rows)
 
 
 def test_bn0_non_profile_decision_is_explicit_refusal_contract():
+    # Legacy node identity retained.  The 2026-10-20 reconciliation supersedes
+    # historical BN0-D4 for 1D hist only; scatter/hist2d remain refusals.
     rows = CONTRACT["non_profile_contract"]
     assert {r["plot_type"] for r in rows} == {"hist", "scatter", "hist2d"}
-    assert all(r["interface_contract"] == "REFUSE_BY_DESIGN" for r in rows)
-    assert all(r["required_behavior"].startswith("raise deterministic") for r in rows)
+    by_type = {r["plot_type"]: r for r in rows}
+    assert by_type["hist"]["current_state"] == "PASSING"
+    assert by_type["hist"]["interface_contract"] == "SUPPORTED"
+    assert by_type["hist"]["owning_bug"] is None
+    for plot_type in ("scatter", "hist2d"):
+        row = by_type[plot_type]
+        assert row["current_state"] == "KNOWN_GAP_WARN_AND_IGNORE"
+        assert row["interface_contract"] == "REFUSE_BY_DESIGN"
+        assert row["required_behavior"].startswith("raise deterministic")
 
 
 def _cell_id(row):
