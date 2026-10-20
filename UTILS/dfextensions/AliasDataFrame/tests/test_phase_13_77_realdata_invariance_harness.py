@@ -5204,13 +5204,29 @@ def test_a6_33_reused_core_optional_skip_is_strict_failure(tmp_path):
     root = tmp_path / "input.root"
     root.write_bytes(b"root")
 
+    skipped_name = "fig32_subframe_vertex"
+    dispositions = {
+        row["gallery_function"]: row
+        for row in H.gallery_disposition_table(gallery)
+    }
+    required_names = {fn.__name__ for fn in gallery.FIGURES_MANDATORY}
+    required_names.update(
+        fn.__name__ for fn in gallery.FIGURES_OPTIONAL
+        if dispositions[fn.__name__]["disposition"] == "REUSED_CORE"
+    )
+    expected_full_pages = len(required_names) + sum(
+        int(gallery.declared_extra_page_count(name))
+        for name in required_names
+    )
+    skipped_pages = 1 + int(gallery.declared_extra_page_count(skipped_name))
+
     def skipped_core(adf):
         return None
-    skipped_core.__name__ = "fig32_subframe_vertex"
-    skipped_core.__doc__ = "fig32_subframe_vertex"
+    skipped_core.__name__ = skipped_name
+    skipped_core.__doc__ = skipped_name
     gallery.fig32_subframe_vertex = skipped_core
     gallery.FIGURES_OPTIONAL = [
-        skipped_core if fn.__name__ == "fig32_subframe_vertex" else fn
+        skipped_core if fn.__name__ == skipped_name else fn
         for fn in gallery.FIGURES_OPTIONAL
     ]
 
@@ -5222,9 +5238,9 @@ def test_a6_33_reused_core_optional_skip_is_strict_failure(tmp_path):
     assert results[0].status == H.FAIL
     evidence = results[0].observed["visual_evidence"]
     assert evidence["ok"] is False
-    assert evidence["page_count"] == 56
-    assert evidence["expected_page_count"] == 59
-    assert any(e["gallery_function"] == "fig32_subframe_vertex"
+    assert evidence["expected_page_count"] == expected_full_pages
+    assert evidence["page_count"] == expected_full_pages - skipped_pages
+    assert any(e["gallery_function"] == skipped_name
                for e in evidence["errors"])
     assert any(e["gallery_function"] == "__page_count__"
                for e in evidence["errors"])
