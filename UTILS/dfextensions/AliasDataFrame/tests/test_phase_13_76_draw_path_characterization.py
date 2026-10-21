@@ -675,12 +675,11 @@ class TestEntry1EntryLayer:
 
 # ---------------------------------------------------------------------------
 # B2 — consolidation contract (proposal §14): within ONE user draw call, the
-# struct-catalog check does its full work exactly once, and each plot-
-# specification dictionary (plus the shared defaults dictionary) is rewritten
-# exactly once. The drawing entry points leave the counts in
-# _last_draw_prep_stats. Measured before B2 on this fixture: 7 catalog runs
-# and 5 rewrites per 2-plot batch/figures call; after: 1 and 3 (two plots +
-# one defaults dictionary).
+# struct-catalog owner is entered exactly once, and each plot-specification
+# dictionary (plus the shared defaults dictionary) is rewritten exactly once.
+# B3.4.2 closes this contract for draw() and draw_batch() by removing redundant
+# defensive helper re-checks only on catalog-owned paths. draw_figures() remains
+# the separately pinned next increment.
 # ---------------------------------------------------------------------------
 
 @needs_dfdraw
@@ -692,16 +691,9 @@ class TestB2ConsolidationContract:
             pytest.skip("struct fixture not present (make_fixtures.py)")
         return A.AliasDataFrame.read_tree_lazy(fixture, "tree")
 
-    @pytest.mark.xfail(
-        strict=True,
-        reason="B3.4 acceptance (re-anchored from B3.2, disclosed): the "
-               "catalog INVOCATION count reaches 1 only when the demolition "
-               "step removes the defensive re-checks inside shared helpers "
-               "(get_required_branches, _dict_dispatch_columns) for "
-               "executor-owned flows; the executor already performs the one "
-               "owned ensure, and helper re-checks take the fingerprint "
-               "fast path")
     def test_b2_1_draw_single_prep_pass(self):
+        """B3.4.2: draw() establishes the struct catalog once; downstream
+        resolver/dispatch helpers reuse that owned preparation state."""
         adf = self._lazy_struct_adf()
         adf.draw("dedxTPC.dEdxMaxTPC:mult", type="profile", bins=5,
                  lazy=True)
@@ -735,11 +727,9 @@ class TestB2ConsolidationContract:
              "b": {"expr": "dedxTPC.dEdxTotTPC", "type": "hist", "bins": 5}})
         assert "dedxTPC/dEdxMaxTPC" in state.branches_loaded
 
-    @pytest.mark.xfail(
-        strict=True,
-        reason="B3.4 acceptance (catalog invocation count; see b2_1 reason) "
-               "- batch surface")
     def test_b2_2b_batch_single_catalog_invocation(self):
+        """B3.4.2: draw_batch() executor owns the one catalog establishment;
+        resolver/dispatch helpers do not re-enter it."""
         adf = self._lazy_struct_adf()
         adf.draw_batch(
             {"a": {"expr": "dedxTPC.dEdxMaxTPC:mult", "type": "profile",

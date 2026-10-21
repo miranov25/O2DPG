@@ -5093,7 +5093,8 @@ class AliasDataFrame:
         P1-PlanPurity by construction (see _DrawDependencyPlan)."""
         out = set()
         for _e in plan.especs:
-            out |= self.get_required_branches(**_e.required_branch_kwargs())
+            out |= self.get_required_branches(
+                **_e.required_branch_kwargs(), _catalog_ready=True)
         return out
 
     def _iter_frame_graph(self):
@@ -14392,7 +14393,8 @@ function collapseDepth(maxD) {{
                               weights_vector=None,
                               selection_vector=None,
                               aliases: list = None,
-                              validate: bool = False) -> set:
+                              validate: bool = False,
+                              _catalog_ready: bool = False) -> set:
         """
         Get base branches required for expression, selection, and parameters.
         
@@ -14433,7 +14435,13 @@ function collapseDepth(maxD) {{
         >>> adf.get_required_branches(expr='x:y', validate=True)
         {'x', 'y'}  # Only if x, y exist
         """
-        self._ensure_struct_catalog()   # PHASE_13_75_ADF D2 (fp-cached no-op when stable)
+        # PHASE_13_76_ADF B3.4.2: standalone/public callers retain the
+        # defensive catalog lifecycle check. Canonical draw preparation may
+        # pass _catalog_ready=True only after its owner has established the
+        # catalog for this call; this removes duplicate helper invocations
+        # without weakening standalone get_required_branches().
+        if not _catalog_ready:
+            self._ensure_struct_catalog()
         all_columns = set()
         
         # 1. Parse main expression into column references.
@@ -20214,7 +20222,7 @@ function collapseDepth(maxD) {{
     def _dict_dispatch_columns(self, df_cols, expr=None, selection=None,
                                group_by=None, color=None, facet_by=None,
                                weights=None, weights_vector=None,
-                               selection_vector=None):
+                               selection_vector=None, _catalog_ready=False):
         """Phase 13.61.ADF (D-ADF-DICT): columns the draw dispatch frame must
         carry for dfdraw to evaluate every channel.
 
@@ -20234,7 +20242,8 @@ function collapseDepth(maxD) {{
                 expr=expr, selection=selection, group_by=group_by, color=color,
                 facet_by=facet_by, weights=weights,
                 weights_vector=weights_vector,
-                selection_vector=selection_vector, validate=True))
+                selection_vector=selection_vector, validate=True,
+                _catalog_ready=_catalog_ready))
         except Exception as _e:
             # Memory-safety: a resolver failure must NOT silently revert to the
             # full frame (that reintroduces the OOM this phase exists to prevent).
@@ -20496,7 +20505,9 @@ function collapseDepth(maxD) {{
         # PHASE_13_75_ADF D3 (Option A, one owner): rewrite struct refs BEFORE the
         # reduced dict-dispatch projection so internal member__struct names are
         # plain identifiers when the projection intersects tokens with df columns.
-        self._ensure_struct_catalog()
+        # PHASE_13_76_ADF B3.4.2: lazy draw() already established the catalog
+        # during canonical required-branch resolution above; the eager call
+        # removed here was a no-op because there is no lazy reader.
         if self._structs:
             expr = self._prepare_struct_refs(expr)
             self._struct_rewrite_draw_slots(kwargs)
@@ -20506,7 +20517,8 @@ function collapseDepth(maxD) {{
                 group_by=kwargs.get('group_by'), color=kwargs.get('color'),
                 facet_by=kwargs.get('facet_by'), weights=kwargs.get('weights'),
                 weights_vector=kwargs.get('weights_vector'),
-                selection_vector=kwargs.get('selection_vector'))
+                selection_vector=kwargs.get('selection_vector'),
+                _catalog_ready=True)
             if _need:
                 df_subset = pd.DataFrame(
                     {_c: df_subset[_c] for _c in df_subset.columns if _c in _need},
@@ -23252,7 +23264,8 @@ function collapseDepth(maxD) {{
                         color=_m.get('color'), facet_by=_m.get('facet_by'),
                         weights=_m.get('weights'),
                         weights_vector=_m.get('weights_vector'),
-                        selection_vector=_m.get('selection_vector'))
+                        selection_vector=_m.get('selection_vector'),
+                        _catalog_ready=True)
             if _need_b:
                 df_for_plot = pd.DataFrame(
                     {_c: df_for_plot[_c] for _c in df_for_plot.columns if _c in _need_b},
