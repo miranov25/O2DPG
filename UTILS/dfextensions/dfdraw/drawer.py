@@ -4678,20 +4678,25 @@ class DFDraw:
                 forwarded['auto_title'] = False
 
             # PHASE_13_86 Stage B-d: facet_by='vector' lowers one expression
-            # component to each profile panel before the normal scalar label
-            # resolution block is reached. Resolve the shared x label and each
-            # component-specific y label here while the original AliasDataFrame
-            # metadata source is still available. Explicit xlabel=/ylabel= remain
+            # component to each panel before the normal scalar label-resolution
+            # block is reached. Resolve metadata while the original duck-typed
+            # data source is still available. Profile components label y;
+            # PHASE_13_91 histogram components label x. Explicit labels remain
             # authoritative.
-            if plot_kind == 'profile' and facet_by == 'vector':
-                if forwarded.get('xlabel') is None:
-                    _facet_xlabel = self._get_label(str(x_expr))
+            if facet_by == 'vector':
+                if plot_kind == 'profile':
+                    if forwarded.get('xlabel') is None:
+                        _facet_xlabel = self._get_label(str(x_expr))
+                        if _facet_xlabel is not None:
+                            forwarded['xlabel'] = _facet_xlabel
+                    if forwarded.get('ylabel') is None:
+                        _facet_ylabel = self._get_label(str(subplot_y))
+                        if _facet_ylabel is not None:
+                            forwarded['ylabel'] = _facet_ylabel
+                elif plot_kind == 'hist' and forwarded.get('xlabel') is None:
+                    _facet_xlabel = self._get_label(str(subplot_y))
                     if _facet_xlabel is not None:
                         forwarded['xlabel'] = _facet_xlabel
-                if forwarded.get('ylabel') is None:
-                    _facet_ylabel = self._get_label(str(subplot_y))
-                    if _facet_ylabel is not None:
-                        forwarded['ylabel'] = _facet_ylabel
 
             # BUG-A/BUG-B: vector controls are coordinator-level inputs for a
             # faceted profile. Pull them out of `forwarded` so they reach the
@@ -5652,7 +5657,13 @@ class DFDraw:
             )
             # PHASE_13_88_DF Bug C: histogram vector normalization is owned
             # atomically by hist(), before generic vector scalarization.
-            if type == "hist" and normalize is not None:
+            # PHASE_13_91_DF: facet_by="vector" has the same ownership
+            # requirement: the typed hist() owner must receive the complete
+            # bracket vector so it can materialize each component once and
+            # hand the list to the existing facet coordinator.
+            if type == "hist" and (
+                normalize is not None or facet_by == "vector"
+            ):
                 return self.hist(
                     expr, selection=selection, bins=bins, stats=stats,
                     norm=norm, title=title, ax=ax, sample=sample, save=save,
@@ -6340,15 +6351,102 @@ class DFDraw:
         # vector_compose='inner' on n_y=1 + n_s>=2, the iteration helper
         # raises an actionable "3-axis inner requires equal lengths" error.
         _y_is_vector = isinstance(y_expr, list)
-        # PHASE_13_86 Stage B / B6: histogram expression-vector × facet has
-        # no per-cell expression-vector owner in this bounded phase.  Refuse
-        # loudly instead of letting generic vector overlay recurse into a
-        # facet grid and fail with an unrelated axes/same=True error.
+        # PHASE_13_91_DF: bounded histogram expression-vector ×
+        # facet_by="vector" owner. This composes existing mechanisms only:
+        # selection/sample -> existing expression evaluator -> existing facet
+        # coordinator -> existing low-level histogram renderer.
+        if _y_is_vector and facet_by == "vector":
+            # Cross-products with active selection/weights vectors are outside
+            # the ratified 13.91 scope. Singleton vectors were already lowered
+            # to scalar semantics above, so only genuinely multi-branch inputs
+            # reach these guards.
+            if selection_vector is not None and len(selection_vector) >= 2:
+                raise NotImplementedError(
+                    "hist expression-vector × facet_by='vector' with active "
+                    "selection_vector is not supported in PHASE_13_91; "
+                    "use one global selection or separate calls"
+                )
+            if weights_vector is not None and len(weights_vector) >= 2:
+                raise NotImplementedError(
+                    "hist expression-vector × facet_by='vector' with active "
+                    "weights_vector is not supported in PHASE_13_91; "
+                    "use scalar weights= or separate calls"
+                )
+            if facet:
+                raise ValueError(
+                    "facet=True is not supported with histogram expression "
+                    "vector + facet_by='vector'; facet_by='vector' already "
+                    "owns the subplot layout"
+                )
+
+            # Existing faceted stats are keyed by expression identity. Equal
+            # strings would overwrite one another, so reject before allocating
+            # a Figure rather than returning incomplete statistics.
+            _hist_vector_ids = [str(_e) for _e in y_expr]
+            if len(set(_hist_vector_ids)) != len(_hist_vector_ids):
+                raise ValueError(
+                    "hist facet_by='vector' requires unique expression "
+                    "identities; duplicate expression strings would overwrite "
+                    "per-panel statistics"
+                )
+
+            # Apply outer selection/sample ONCE. Computed components are then
+            # materialized on that active frame with the canonical evaluator,
+            # matching the established profile vector-facet owner.
+            df_for_facet = self._apply_selection(self.df, selection)
+            df_for_facet = self._apply_sampling(df_for_facet, sample)
+            for _hist_component in y_expr:
+                if _hist_component not in df_for_facet.columns:
+                    df_for_facet = df_for_facet.assign(**{
+                        _hist_component: self._eval_column(
+                            _hist_component, df=df_for_facet
+                        )
+                    })
+
+            fig, axes, stats_dict = self._dispatch_faceted_render(
+                df=df_for_facet, x_expr=None, y_expr=y_expr,
+                facet_by="vector", plot_kind="hist",
+                bins=bins, range=range, norm=norm,
+                stats=stats, title=title, xlabel=xlabel, ylabel=ylabel,
+                group_by=group_by, top_k=top_k, ncols=ncols,
+                sharex=sharex, sharey=sharey,
+                auto_title=auto_title, selection=selection,
+                stat_fields=stat_fields, nan_policy=nan_policy,
+                weights=weights,
+                share_x=share_x, share_y=share_y,
+                share_across_figures=share_across_figures,
+                group_by_bins=group_by_bins,
+                group_by_quantiles=group_by_quantiles,
+                hist_norm=hist_norm, min_entries=min_entries,
+                color=color, marker=marker,
+                hist_errors=hist_errors, linestyle_cycle=linestyle_cycle,
+                time_format=time_format, cumulative=cumulative,
+                fit=fit, fit_textbox_kwargs=fit_textbox_kwargs,
+                summary_fit=summary_fit,
+                **kwargs
+            )
+
+            if save:
+                fig.savefig(
+                    save, dpi=get_style_value("figure.dpi", 100),
+                    bbox_inches="tight"
+                )
+            self._maybe_attach_summary_fit(
+                stats_dict, summary_fit,
+                group_by=group_by, facet_by=facet_by,
+                expr_for_auto_title=expr, fig=fig
+            )
+            _apply_legend_mode(
+                fig, _normalize_legend_spec(legend, show_legend)
+            )
+            return fig, axes, stats_dict
+
+        # Other histogram expression-vector × facet combinations remain
+        # deliberately unsupported in this bounded phase.
         if _y_is_vector and facet_by is not None:
             raise NotImplementedError(
-                "hist expression-vector × facet_by is not supported in "
-                "PHASE_13_86 Stage B; profile is the supported vector-facet "
-                "owner"
+                "hist expression-vector × facet_by is supported only for "
+                "facet_by='vector' in PHASE_13_91"
             )
         # Phase 13.27.DF Commit 2 FIX1 (§7a): single-Y vector dispatch is
         # gated on facet_by being absent or channel-mode 'vector' (which
