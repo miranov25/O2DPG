@@ -744,4 +744,30 @@ TEST_LAYERS = {
     # Bug C: public draw-door / typed-owner equality plus independent NumPy truth.
     "test_phase_13_88_bug_c_draw_hist_normalize.py::test_C1_draw_hist_vector_normalize_matches_typed_owner": "invariance",
     "test_phase_13_88_bug_c_draw_hist_normalize.py::test_C2_draw_hist_computed_vector_element_is_materialized": "invariance",
+
+    # ── PHASE_13_89_DF — explicit-axis normalize ownership ──
+    # Supported embedding: ownership/geometry invariants plus exact numerical
+    # parity against the established standalone normalize owner.
+    "test_phase_13_89_explicit_ax_normalize_red.py::test_R1_R3_plain_overlay_diff_embeds_in_caller_slot_and_preserves_numbers[delta-typed]": "invariance",
+    "test_phase_13_89_explicit_ax_normalize_red.py::test_R1_R3_plain_overlay_diff_embeds_in_caller_slot_and_preserves_numbers[delta-draw]": "invariance",
+    "test_phase_13_89_explicit_ax_normalize_red.py::test_R1_R3_plain_overlay_diff_embeds_in_caller_slot_and_preserves_numbers[ratio-typed]": "invariance",
+    "test_phase_13_89_explicit_ax_normalize_red.py::test_R1_R3_plain_overlay_diff_embeds_in_caller_slot_and_preserves_numbers[ratio-draw]": "invariance",
+    "test_phase_13_89_explicit_ax_normalize_red.py::test_R2_draw_selection_vector_production_shape_embeds_and_preserves_numbers": "invariance",
+    "test_phase_13_89_explicit_ax_normalize_red.py::test_R4_diff_only_uses_exact_supplied_axis[delta]": "invariance",
+    "test_phase_13_89_explicit_ax_normalize_red.py::test_R4_diff_only_uses_exact_supplied_axis[ratio]": "invariance",
+    "test_phase_13_89_explicit_ax_normalize_red.py::test_R5_multisubplot_embedding_changes_only_target_slot": "invariance",
+
+    # Standalone control proves the neighboring integrated owners remain live,
+    # but does not independently rederive their numerical statistics.
+    "test_phase_13_89_explicit_ax_normalize_red.py::test_R10_profile_and_hist_standalone_controls_remain_supported": "integration",
+
+    # Fail-loud behavior is itself part of the public ownership contract:
+    # unsupported combinations must refuse before caller mutation or leakage.
+    "test_phase_13_89_explicit_ax_normalize_red.py::test_R6_custom_add_axes_refuses_before_mutation_or_leak": "invariance",
+    "test_phase_13_89_explicit_ax_normalize_red.py::test_R7_nonempty_placeholder_refuses_before_mutation_or_leak": "invariance",
+    "test_phase_13_89_explicit_ax_normalize_red.py::test_R8_grouped_or_faceted_normalize_with_ax_refuses_without_leak[grouped]": "invariance",
+    "test_phase_13_89_explicit_ax_normalize_red.py::test_R8_grouped_or_faceted_normalize_with_ax_refuses_without_leak[faceted]": "invariance",
+    "test_phase_13_89_explicit_ax_normalize_red.py::test_R9_hist_normalize_ax_preserves_existing_loud_refusal[typed]": "invariance",
+    "test_phase_13_89_explicit_ax_normalize_red.py::test_R9_hist_normalize_ax_preserves_existing_loud_refusal[draw]": "invariance",
+    "test_phase_13_89_explicit_ax_normalize_red.py::test_R11_ax_plus_save_refuses_without_mutating_caller": "invariance",
 }

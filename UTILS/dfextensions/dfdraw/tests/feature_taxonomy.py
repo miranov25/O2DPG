@@ -2239,6 +2239,39 @@ FEATURES = [
         ],
     },
 
+    # ── PHASE_13_89_DF — explicit-axis normalize ownership ──
+
+    {
+        "id": "NORMALIZE.profile_explicit_ax_embedding",
+        "name": "Plain normalized profiles embed into caller-owned subplot Axes without changing numerical normalization or unrelated Figure ownership (PHASE_13_89)",
+        "category": "NORMALIZE",
+        "tests": [
+            "test_phase_13_89_explicit_ax_normalize_red.py::test_R1_R3_plain_overlay_diff_embeds_in_caller_slot_and_preserves_numbers[delta-typed]",
+            "test_phase_13_89_explicit_ax_normalize_red.py::test_R1_R3_plain_overlay_diff_embeds_in_caller_slot_and_preserves_numbers[delta-draw]",
+            "test_phase_13_89_explicit_ax_normalize_red.py::test_R1_R3_plain_overlay_diff_embeds_in_caller_slot_and_preserves_numbers[ratio-typed]",
+            "test_phase_13_89_explicit_ax_normalize_red.py::test_R1_R3_plain_overlay_diff_embeds_in_caller_slot_and_preserves_numbers[ratio-draw]",
+            "test_phase_13_89_explicit_ax_normalize_red.py::test_R2_draw_selection_vector_production_shape_embeds_and_preserves_numbers",
+            "test_phase_13_89_explicit_ax_normalize_red.py::test_R4_diff_only_uses_exact_supplied_axis[delta]",
+            "test_phase_13_89_explicit_ax_normalize_red.py::test_R4_diff_only_uses_exact_supplied_axis[ratio]",
+            "test_phase_13_89_explicit_ax_normalize_red.py::test_R5_multisubplot_embedding_changes_only_target_slot",
+            "test_phase_13_89_explicit_ax_normalize_red.py::test_R10_profile_and_hist_standalone_controls_remain_supported",
+        ],
+    },
+    {
+        "id": "NORMALIZE.explicit_ax_refusal_guards",
+        "name": "Unsupported normalize + explicit-Axes ownership combinations refuse before caller mutation or persistent Figure leakage (PHASE_13_89)",
+        "category": "NORMALIZE",
+        "tests": [
+            "test_phase_13_89_explicit_ax_normalize_red.py::test_R6_custom_add_axes_refuses_before_mutation_or_leak",
+            "test_phase_13_89_explicit_ax_normalize_red.py::test_R7_nonempty_placeholder_refuses_before_mutation_or_leak",
+            "test_phase_13_89_explicit_ax_normalize_red.py::test_R8_grouped_or_faceted_normalize_with_ax_refuses_without_leak[grouped]",
+            "test_phase_13_89_explicit_ax_normalize_red.py::test_R8_grouped_or_faceted_normalize_with_ax_refuses_without_leak[faceted]",
+            "test_phase_13_89_explicit_ax_normalize_red.py::test_R9_hist_normalize_ax_preserves_existing_loud_refusal[typed]",
+            "test_phase_13_89_explicit_ax_normalize_red.py::test_R9_hist_normalize_ax_preserves_existing_loud_refusal[draw]",
+            "test_phase_13_89_explicit_ax_normalize_red.py::test_R11_ax_plus_save_refuses_without_mutating_caller",
+        ],
+    },
+
     # ── Phase 13.49.DF — meta-tests for the capability matrix itself ──
     {
         "id": "META.capability_matrix",
