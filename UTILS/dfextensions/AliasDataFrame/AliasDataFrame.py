@@ -20450,6 +20450,15 @@ function collapseDepth(maxD) {{
 
             if branches_to_load:
                 self.ensure_branches(list(branches_to_load))
+                # PHASE_13_76_ADF B3.4.2 F-1 / D-3 lifecycle repair:
+                # required-branch loading can leave a registered struct
+                # partial.  B3.4.2 correctly removed the redundant
+                # _ensure_struct_catalog() re-entry, but that helper used to
+                # provide a second, effectful leg: full-structure completion.
+                # Keep the single catalog owner and invoke the already-owned
+                # completion effect directly, immediately after the load that
+                # can create the partial state.
+                self._complete_partial_structs()
         # =================================================================
         
         # Track what's already materialized

@@ -702,6 +702,53 @@ class TestB2ConsolidationContract:
         assert st["catalog_full_runs"] == 1, st
         assert st["rewrite_full_runs"] == 1, st
 
+    @pytest.mark.parametrize("draw_dict", [True, False])
+    def test_b2_1b_draw_preserves_d3_full_struct_completion(self, draw_dict):
+        """B3.4.2 F-1 / D-3 lifecycle oracle.
+
+        A fresh lazy draw that requests exactly one member of a registered
+        struct must leave the touched struct complete after the draw.  This
+        pins the stateful postcondition that the old post-load catalog
+        re-check provided, while separately requiring B3.4.2's single catalog
+        invocation to remain intact.  Crossing draw_dict proves the lifecycle
+        contract is independent of the reduced-dispatch optimization.
+        """
+        adf = self._lazy_struct_adf()
+        adf.draw_dict = draw_dict
+
+        members = ("dEdxMaxTPC", "dEdxTotTPC", "dEdxMaxIROC")
+        physical = {f"dedxTPC/{m}" for m in members}
+        internal = {f"{m}__dedxTPC" for m in members}
+
+        assert not (internal & set(adf.df.columns)), (
+            "fixture entered with a struct member already materialized; "
+            "the lifecycle oracle would be vacuous")
+
+        before_loaded = set(adf._lazy_reader.loaded_branches)
+        _fig, _ax, stats = adf.draw(
+            "dedxTPC.dEdxMaxTPC:mult",
+            type="profile",
+            bins=5,
+            lazy=True,
+        )
+        plt.close("all")
+
+        assert stats["n"] > 0
+        assert internal <= set(adf.df.columns), (
+            "D-3 regression: public draw() loaded one struct member but did "
+            f"not complete all registered siblings; columns={sorted(adf.df.columns)}")
+        assert physical <= set(adf._lazy_reader.loaded_branches), (
+            "D-3 regression: sibling physical branches were not loaded; "
+            f"loaded={sorted(adf._lazy_reader.loaded_branches)}")
+        assert physical <= (
+            set(adf._lazy_reader.loaded_branches) - before_loaded
+        ), "fresh fixture no longer proves that draw() caused full completion"
+
+        st = adf._last_draw_prep_stats
+        assert st["catalog_full_runs"] == 1, (
+            "F-1 repair must not restore the redundant catalog re-entry")
+        assert st["rewrite_full_runs"] == 1, st
+
     def test_b2_2_batch_rewrite_once_per_dict_by_construction(self):
         """B3.2 ACCEPTANCE, GREEN BY CONSTRUCTION: the single side-effect
         executor rewrites each dictionary exactly once for the whole batch
