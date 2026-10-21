@@ -505,6 +505,7 @@ FEATURES = [
             "test_vector.py::TestVectorDispatch::test_scatter_NN",
             "test_vector.py::TestVectorDispatch::test_draw_dispatches_profile",
             "test_vector.py::TestVectorDispatch::test_draw_1d_auto_dispatches_hist",
+            "test_phase_13_91_hist_expression_vector_facets_red.py::test_R7_nonfaceted_hist_expression_vector_overlay_remains_supported",
         ],
     },
     {
@@ -2136,6 +2137,7 @@ FEATURES = [
             "test_phase_13_86_stage_a_red.py::TestStageAStructuralBoundaryInventory::test_A10c_draw_profile_facet_vector_preserves_intact_expression_for_typed_owner",
             "test_phase_13_86_stage_ba.py::test_Ba1_draw_profile_facet_vector_matches_typed_owner",
             "test_phase_13_86_stage_ba.py::test_Ba2_vector_facets_keep_expression_components_distinct",
+            "test_phase_13_91_hist_expression_vector_facets_red.py::test_R8_profile_expression_vector_facets_remain_supported",
         ],
     },
 
@@ -2269,6 +2271,33 @@ FEATURES = [
             "test_phase_13_89_explicit_ax_normalize_red.py::test_R9_hist_normalize_ax_preserves_existing_loud_refusal[typed]",
             "test_phase_13_89_explicit_ax_normalize_red.py::test_R9_hist_normalize_ax_preserves_existing_loud_refusal[draw]",
             "test_phase_13_89_explicit_ax_normalize_red.py::test_R11_ax_plus_save_refuses_without_mutating_caller",
+        ],
+    },
+
+    # ── PHASE_13_91_DF — histogram expression-vector facets ──
+
+    {
+        "id": "HIST.expression_vector_facets",
+        "name": "Histogram bracket-expression vectors render one facet per component through typed/draw doors, with independent counts, stable expression identity, and per-component x-axis metadata (PHASE_13_91)",
+        "category": "HIST",
+        "tests": [
+            "test_phase_13_91_hist_expression_vector_facets_red.py::test_R1_R2_computed_expression_vector_facets_match_numpy_truth[typed]",
+            "test_phase_13_91_hist_expression_vector_facets_red.py::test_R1_R2_computed_expression_vector_facets_match_numpy_truth[draw]",
+            "test_phase_13_91_hist_expression_vector_facets_red.py::test_R3_typed_and_draw_doors_have_identical_panel_values",
+            "test_phase_13_91_hist_expression_vector_facets_red.py::test_R4_physical_column_vector_facets_preserve_component_x_metadata[typed]",
+            "test_phase_13_91_hist_expression_vector_facets_red.py::test_R4_physical_column_vector_facets_preserve_component_x_metadata[draw]",
+        ],
+    },
+    {
+        "id": "HIST.expression_vector_facet_guards",
+        "name": "Histogram expression-vector facet composition rejects duplicate identities and deferred vector/normalize cross-products before Figure allocation (PHASE_13_91)",
+        "category": "HIST",
+        "tests": [
+            "test_phase_13_91_hist_expression_vector_facets_red.py::test_R5_duplicate_expression_identity_refuses_before_figure_allocation[typed]",
+            "test_phase_13_91_hist_expression_vector_facets_red.py::test_R5_duplicate_expression_identity_refuses_before_figure_allocation[draw]",
+            "test_phase_13_91_hist_expression_vector_facets_red.py::test_R6_deferred_cross_products_refuse_before_figure_allocation[selection-vector]",
+            "test_phase_13_91_hist_expression_vector_facets_red.py::test_R6_deferred_cross_products_refuse_before_figure_allocation[weights-vector]",
+            "test_phase_13_91_hist_expression_vector_facets_red.py::test_R6_deferred_cross_products_refuse_before_figure_allocation[normalize]",
         ],
     },
 

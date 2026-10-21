@@ -770,4 +770,27 @@ TEST_LAYERS = {
     "test_phase_13_89_explicit_ax_normalize_red.py::test_R9_hist_normalize_ax_preserves_existing_loud_refusal[typed]": "invariance",
     "test_phase_13_89_explicit_ax_normalize_red.py::test_R9_hist_normalize_ax_preserves_existing_loud_refusal[draw]": "invariance",
     "test_phase_13_89_explicit_ax_normalize_red.py::test_R11_ax_plus_save_refuses_without_mutating_caller": "invariance",
+
+    # ── PHASE_13_91_DF — histogram expression-vector facets ──
+    # Exact independent NumPy histogram counts and public-door equivalence.
+    "test_phase_13_91_hist_expression_vector_facets_red.py::test_R1_R2_computed_expression_vector_facets_match_numpy_truth[typed]": "invariance",
+    "test_phase_13_91_hist_expression_vector_facets_red.py::test_R1_R2_computed_expression_vector_facets_match_numpy_truth[draw]": "invariance",
+    "test_phase_13_91_hist_expression_vector_facets_red.py::test_R3_typed_and_draw_doors_have_identical_panel_values": "invariance",
+
+    # Metadata assertions prove integrated ADF/dfdraw label propagation, not
+    # independent histogram arithmetic.
+    "test_phase_13_91_hist_expression_vector_facets_red.py::test_R4_physical_column_vector_facets_preserve_component_x_metadata[typed]": "integration",
+    "test_phase_13_91_hist_expression_vector_facets_red.py::test_R4_physical_column_vector_facets_preserve_component_x_metadata[draw]": "integration",
+
+    # Loud refusal before Figure allocation is part of the bounded public
+    # semantic contract and therefore counts as invariance evidence.
+    "test_phase_13_91_hist_expression_vector_facets_red.py::test_R5_duplicate_expression_identity_refuses_before_figure_allocation[typed]": "invariance",
+    "test_phase_13_91_hist_expression_vector_facets_red.py::test_R5_duplicate_expression_identity_refuses_before_figure_allocation[draw]": "invariance",
+    "test_phase_13_91_hist_expression_vector_facets_red.py::test_R6_deferred_cross_products_refuse_before_figure_allocation[selection-vector]": "invariance",
+    "test_phase_13_91_hist_expression_vector_facets_red.py::test_R6_deferred_cross_products_refuse_before_figure_allocation[weights-vector]": "invariance",
+    "test_phase_13_91_hist_expression_vector_facets_red.py::test_R6_deferred_cross_products_refuse_before_figure_allocation[normalize]": "invariance",
+
+    # Neighboring/backward-compatibility controls are integrated path checks.
+    "test_phase_13_91_hist_expression_vector_facets_red.py::test_R7_nonfaceted_hist_expression_vector_overlay_remains_supported": "integration",
+    "test_phase_13_91_hist_expression_vector_facets_red.py::test_R8_profile_expression_vector_facets_remain_supported": "integration",
 }
