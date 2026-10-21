@@ -20393,60 +20393,38 @@ function collapseDepth(maxD) {{
             )
 
         # ------------------------------------------------------------------
-        # PHASE_13_76_ADF B3.1: request normalization and flag resolution are
-        # owned by _EffectiveDrawSpec and _DrawExecutionPolicy (private records) (Rev 2 §11.1/2).
-        # The pre-B3 inline path is kept VERBATIM behind the environment
-        # switch ADF_B3_OLD_DRAW_PATH=1 for A/B equivalence testing only and
-        # is removed in step B3.4.
+        # PHASE_13_76_ADF B3.4.1: retire the pre-B3 inline draw head and its
+        # legacy A/B environment switch. Request normalization and flag
+        # resolution now have one canonical owner: _EffectiveDrawSpec and
+        # _DrawExecutionPolicy.
         # ------------------------------------------------------------------
         _required_branches = None
-        if os.environ.get('ADF_B3_OLD_DRAW_PATH') == '1':
-            # --- OLD PATH (verbatim pre-B3.1 behavior) ---
-            effective_lazy = self._resolve_draw_param(lazy, 'lazy')
-            effective_keep = self._resolve_draw_param(keep_materialized, 'keep_materialized')
-            self._ensure_vector_kwargs_aliases(kwargs)
-            self._normalize_vector_compose_kwargs(kwargs, expr=expr)
-            if self._lazy_reader is not None:
-                self._lazy_ensure_subframe_refs(' '.join(str(t) for t in [
-                    expr, kwargs.get('selection'), kwargs.get('group_by'), kwargs.get('color'),
-                    kwargs.get('facet_by'), kwargs.get('weights')] if t))
-                _required_branches = self.get_required_branches(
-                    expr=expr,
-                    selection=kwargs.get('selection'),
-                    group_by=kwargs.get('group_by'),
-                    color=kwargs.get('color'),
-                    facet_by=kwargs.get('facet_by'),
-                    weights=kwargs.get('weights'),
-                    weights_vector=kwargs.get('weights_vector'),
-                    selection_vector=kwargs.get('selection_vector')
-                )
-        else:
-            # --- NEW PATH: the two Rev-2 §11 owners ---
-            _policy = _DrawExecutionPolicy.resolve(
-                self, lazy=lazy, keep_materialized=keep_materialized)
-            effective_lazy = _policy.lazy
-            effective_keep = _policy.keep_materialized
-            # Effect-producing normalization: an explicit draw-side step
-            # (same two calls as the old path); its proper owner arrives with
-            # the B3.2 dependency-plan/executor.
-            self._ensure_vector_kwargs_aliases(kwargs)
-            self._normalize_vector_compose_kwargs(kwargs, expr=expr)
-            _espec = _EffectiveDrawSpec.from_call(
-                expr, type, kwargs,
-                entry_begin=entry_begin, entry_end=entry_end,
-                entry_mask=entry_mask)
-            # PHASE_13_76_ADF B3.3a/B3.3b / AD-16/13.76.ADF:
-            # qualified-reference discovery is graph-scoped and uses the full
-            # reference-bearing slot vocabulary, including vector-slot elements.
-            self._lazy_ensure_subframe_refs(
-                _espec.reference_text_blob(include_vector_slots=True))
-            if self._lazy_reader is not None:
-                _required_branches = self.get_required_branches(
-                    **_espec.required_branch_kwargs())
+        _policy = _DrawExecutionPolicy.resolve(
+            self, lazy=lazy, keep_materialized=keep_materialized)
+        effective_lazy = _policy.lazy
+        effective_keep = _policy.keep_materialized
+
+        # Effect-producing normalization remains an explicit draw-side step;
+        # the dependency plan/executor consumes the normalized request below.
+        self._ensure_vector_kwargs_aliases(kwargs)
+        self._normalize_vector_compose_kwargs(kwargs, expr=expr)
+        _espec = _EffectiveDrawSpec.from_call(
+            expr, type, kwargs,
+            entry_begin=entry_begin, entry_end=entry_end,
+            entry_mask=entry_mask)
+
+        # PHASE_13_76_ADF B3.3a/B3.3b / AD-16/13.76.ADF:
+        # qualified-reference discovery is graph-scoped and uses the full
+        # reference-bearing slot vocabulary, including vector-slot elements.
+        self._lazy_ensure_subframe_refs(
+            _espec.reference_text_blob(include_vector_slots=True))
+        if self._lazy_reader is not None:
+            _required_branches = self.get_required_branches(
+                **_espec.required_branch_kwargs())
 
         # =================================================================
-        # Phase 7.3: Auto-load branches in lazy mode (shared tail; identical
-        # under both request-normalization paths above)
+        # Phase 7.3: Auto-load branches in lazy mode. This shared tail now
+        # follows the single canonical request-normalization path above.
         # =================================================================
         if _required_branches is not None:
             required_branches = _required_branches

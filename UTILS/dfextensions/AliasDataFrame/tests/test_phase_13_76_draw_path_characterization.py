@@ -788,26 +788,13 @@ class TestB2ConsolidationContract:
 
 
 # ---------------------------------------------------------------------------
-# B3.1 — EffectiveDrawSpec + DrawExecutionPolicy on draw() (Rev 2 §11.1/2).
-# The old inline head survives verbatim behind ADF_B3_OLD_DRAW_PATH=1 until
-# step B3.4; these tests hold the two paths against each other. Counting is
-# INDEPENDENT (monkeypatch of the real helpers), per the GPT24 review of B2:
-# the oracle is not allowed to be the implementation's own counters.
+# B3.1/B3.4 — EffectiveDrawSpec + DrawExecutionPolicy on draw().
+#
+# B3.4.1 retired the pre-B3 inline draw head and its A/B environment switch.
+# The remaining tests pin the canonical owners directly instead of comparing
+# live code against a branch that no longer exists. Historical old-vs-new
+# equivalence evidence remains in the frozen pre-B3.4 snapshot and reviews.
 # ---------------------------------------------------------------------------
-
-class _CallCounter:
-    """Wrap a real method; count invocations; delegate unchanged."""
-    def __init__(self, obj, name):
-        self.count = 0
-        self._orig = getattr(obj, name)
-        self._obj, self._name = obj, name
-        def spy(*a, **k):
-            self.count += 1
-            return self._orig(*a, **k)
-        setattr(obj, name, spy)
-    def restore(self):
-        setattr(self._obj, self._name, self._orig)
-
 
 @needs_dfdraw
 class TestB31EffectiveSpecOnDraw:
@@ -824,78 +811,9 @@ class TestB31EffectiveSpecOnDraw:
             pytest.skip("struct fixture not present (make_fixtures.py)")
         return A.AliasDataFrame.read_tree_lazy(fixture, "tree")
 
-    def _stats_under(self, monkeypatch, old_path, make_adf, draw_args,
-                     draw_kwargs):
-        if old_path:
-            monkeypatch.setenv("ADF_B3_OLD_DRAW_PATH", "1")
-        else:
-            monkeypatch.delenv("ADF_B3_OLD_DRAW_PATH", raising=False)
-        adf = make_adf()
-        _f, _a, st = adf.draw(*draw_args, **draw_kwargs)
-        plt.close("all")
-        return st
-
-    @pytest.mark.parametrize("label,args,kw", [
-        ("plain",     ("x",), {"type": "hist", "bins": 12}),
-        ("slots",     ("x",), {"type": "hist", "bins": 12,
-                               "selection": "x>0", "weights": "w"}),
-        ("entry",     ("x",), {"type": "hist", "bins": 12,
-                               "entry_begin": 50, "entry_end": 200}),
-        ("vector",    ("[x,w]:cat",), {"type": "profile", "bins": 4,
-                                       "selection_vector": ["x>0", "w>1"]}),
-    ])
-    def test_b31_1_old_and_new_paths_produce_identical_stats(
-            self, monkeypatch, label, args, kw):
-        s_old = self._stats_under(monkeypatch, True, self._fresh_eager,
-                                  args, kw)
-        s_new = self._stats_under(monkeypatch, False, self._fresh_eager,
-                                  args, kw)
-        olds = s_old if isinstance(s_old, list) else [s_old]
-        news = s_new if isinstance(s_new, list) else [s_new]
-        assert len(olds) == len(news), (
-            f"[{label}] channel count differs: {len(olds)} vs {len(news)}")
-        for ch, (o, n) in enumerate(zip(olds, news)):
-            for key in ("n", "mean", "std", "mean_x", "mean_y"):
-                if key in o:
-                    assert n[key] == pytest.approx(o[key], rel=1e-12), (
-                        f"[{label}] ch{ch} {key}: old {o[key]} vs new {n[key]}")
-
-    def test_b31_2_lazy_struct_identical_and_helpers_called_equally(
-            self, monkeypatch):
-        results = {}
-        for tag, old in (("old", True), ("new", False)):
-            if old:
-                monkeypatch.setenv("ADF_B3_OLD_DRAW_PATH", "1")
-            else:
-                monkeypatch.delenv("ADF_B3_OLD_DRAW_PATH", raising=False)
-            adf = self._fresh_lazy()
-            spies = {nm: _CallCounter(adf, nm) for nm in (
-                "_ensure_vector_kwargs_aliases",
-                "_normalize_vector_compose_kwargs",
-                "get_required_branches",
-                "_lazy_ensure_subframe_refs")}
-            try:
-                _f, _a, st = adf.draw("dedxTPC.dEdxMaxTPC:mult",
-                                      type="profile", bins=5, lazy=True)
-            finally:
-                counts = {nm: sp.count for nm, sp in spies.items()}
-                for sp in spies.values():
-                    sp.restore()
-            plt.close("all")
-            results[tag] = (st, counts)
-        st_old, c_old = results["old"]
-        st_new, c_new = results["new"]
-        assert c_new == c_old, (
-            f"helper invocation counts diverge: old {c_old} vs new {c_new}")
-        for key in ("n", "mean_x", "mean_y"):
-            if key in st_old:
-                assert st_new[key] == pytest.approx(st_old[key], rel=1e-12)
-
     def test_b31_3_spec_slot_set_covers_scan_gap_slots(self):
-        """The one-source slot list must contain the historically missed
-        parameters (facet_by, weights, weights_vector, selection_vector —
-        the Phase 13.58 scan-gap record), and required_branch_kwargs must
-        map every slot plus the expression."""
+        """The one-source slot list contains every historical scan-gap slot,
+        and required_branch_kwargs maps every slot plus the expression."""
         for missed in ("facet_by", "weights", "weights_vector",
                        "selection_vector"):
             assert missed in _EffectiveDrawSpec.SLOT_NAMES
@@ -915,10 +833,9 @@ class TestB31EffectiveSpecOnDraw:
                                              keep_materialized=True)
         assert pol2.lazy is False and pol2.keep_materialized is True
 
-
     def test_b31_5_effective_spec_construction_is_pure(self):
-        """GPT25 blocking finding 1: building the specification record must
-        not load branches, materialize aliases, or mutate anything."""
+        """Building the specification record must not load branches,
+        materialize aliases, or mutate caller state."""
         adf = self._fresh_lazy()
         cols_before = list(adf.df.columns)
         loaded_before = set(adf._lazy_reader.loaded_branches)
@@ -936,9 +853,8 @@ class TestB31EffectiveSpecOnDraw:
         assert spec.has_entry_selection()
 
     def test_b31_6_reference_blob_covers_every_slot_from_one_source(self):
-        """GPT25 subframe-coverage correction: the pre-scan text is derived
-        from SLOT_NAMES, so every slot - scalar and vector - reaches it.
-        Source-derived: markers are injected per slot name, no hand list."""
+        """The graph pre-scan text is derived from SLOT_NAMES, so every
+        scalar and vector reference-bearing slot reaches the same owner."""
         style = {}
         for i, name in enumerate(_EffectiveDrawSpec.SLOT_NAMES):
             marker = f"SUBQ{i}.col{i}"
@@ -949,11 +865,9 @@ class TestB31EffectiveSpecOnDraw:
         for i, name in enumerate(_EffectiveDrawSpec.SLOT_NAMES):
             assert f"SUBQ{i}.col{i}" in blob, f"slot {name} missing from blob"
 
-
     def test_b31_7_blob_never_crashes_on_array_valued_vector_slots(self):
-        """GPT27 item 2: a numpy-array-valued vector slot previously hit
-        "truth value of an array is ambiguous" in the blob join. Only real
-        strings may reach the join; arrays are ignored, not stringified."""
+        """Only real strings may reach the qualified-reference text join;
+        array-valued vector elements are ignored rather than stringified."""
         arr = np.linspace(0.5, 2.0, 7)
         spec = _EffectiveDrawSpec.from_call(
             "x", "hist", {"weights_vector": arr,
@@ -964,8 +878,7 @@ class TestB31EffectiveSpecOnDraw:
         assert "linspace" not in blob and "[" not in blob
 
     def test_b31_8_record_isolated_from_later_caller_dict_rewrites(self):
-        """GPT25 item 4: the record holds a structural copy; rewriting the
-        caller's dictionary AFTER construction must not alter the record."""
+        """The effective-spec record owns a structural copy of caller data."""
         style = {"selection": "x>0", "weights": "w",
                  "selection_vector": ["a>1", "b>2"]}
         spec = _EffectiveDrawSpec.from_call("x", "hist", style)
@@ -976,18 +889,12 @@ class TestB31EffectiveSpecOnDraw:
         assert spec.slot("weights") == "w"
         assert list(spec.slot("selection_vector")) == ["a>1", "b>2"]
 
-    def test_b31_9_prescan_and_supported_vector_subframe_equivalence_old_vs_new_path(
-            self, monkeypatch):
-        """B3.3 successor to the historical refusal characterization.
+    def test_b31_9_supported_vector_subframe_uses_canonical_prescan(self):
+        """Qualified subframe refs in selection_vector stay a positive contract.
 
-        Qualified subframe references inside selection_vector are now a
-        supported contract.  The legacy path is intentionally preserved
-        verbatim until B3.4 and therefore keeps its scalar-only qualified-
-        reference pre-scan, while the consolidated path must include vector
-        slots in that pre-scan.  Both paths must nevertheless produce the
-        same numerical result and converge to the same lazy/materialized
-        state.  The selected row count is checked independently against the
-        ROOT fixture bytes rather than against either ADF path.
+        The canonical path must include the vector reference in graph-scoped
+        pre-scan, load its dependency, and reproduce the independently
+        measured ROOT selected-row count.
         """
         import uproot
 
@@ -997,190 +904,32 @@ class TestB31EffectiveSpecOnDraw:
             library="np")
         expected_n = int(np.count_nonzero(np.asarray(raw) > 40.0))
 
-        scalar_calls, vector_calls = {}, {}
-        stats, final_state = {}, {}
-        for tag, old in (("old", True), ("new", False)):
-            if old:
-                monkeypatch.setenv("ADF_B3_OLD_DRAW_PATH", "1")
-            else:
-                monkeypatch.delenv("ADF_B3_OLD_DRAW_PATH", raising=False)
-            adf = self._fresh_lazy()
-            calls = []
-            orig = adf._lazy_ensure_subframe_refs
+        adf = self._fresh_lazy()
+        calls = []
+        orig = adf._lazy_ensure_subframe_refs
 
-            def spy(text, _orig=orig, _calls=calls):
-                _calls.append(text)
-                return _orig(text)
+        def spy(text, _orig=orig, _calls=calls):
+            _calls.append(text)
+            return _orig(text)
 
-            adf._lazy_ensure_subframe_refs = spy
+        adf._lazy_ensure_subframe_refs = spy
 
-            # Scalar-slot behavior remains identical across old/new paths.
-            _f, _a, _st = adf.draw("dedxTPC.dEdxMaxTPC:mult",
-                                   type="profile", bins=5, lazy=True,
-                                   selection="mult>0")
-            plt.close("all")
-            scalar_calls[tag] = list(calls)
-
-            before = len(calls)
-            _f, _a, st = adf.draw(
-                "mult", type="hist", bins=5, lazy=True,
-                selection_vector=["dedxTPC.dEdxTotTPC>40"])
-            plt.close("all")
-            vector_calls[tag] = list(calls[before:])
-
-            st0 = st[0] if isinstance(st, list) else st
-            assert st0["n"] == expected_n, (
-                "qualified selection_vector row count disagrees with the "
-                "independent ROOT fixture reference")
-
-            stats[tag] = st0
-            final_state[tag] = {
-                "loaded": set(adf._lazy_reader.loaded_branches),
-                "columns": list(adf.df.columns),
-                "materialized": set(adf._get_materialized_aliases()),
-            }
-            assert any("dEdxTotTPC" in str(b)
-                       for b in final_state[tag]["loaded"]), (
-                "qualified selection_vector dependency was not loaded")
-
-        # B3.3 intentionally changes the preparation mechanism: the legacy
-        # path remains scalar-only until B3.4, while the consolidated path
-        # includes vector slots in the graph-scoped pre-scan.
-        assert scalar_calls["new"] == scalar_calls["old"], (
-            f"scalar pre-scan call sequences diverge:\n"
-            f"old: {scalar_calls['old']}\nnew: {scalar_calls['new']}")
-        assert all("dedxTPC.dEdxTotTPC" not in str(t)
-                   for t in vector_calls["old"]), (
-            "legacy path unexpectedly changed its preserved scalar-only "
-            "qualified-reference pre-scan before B3.4")
-        assert any("dedxTPC.dEdxTotTPC" in str(t)
-                   for t in vector_calls["new"]), (
-            "consolidated path did not include the supported vector reference "
-            "in its graph-scoped qualified-reference pre-scan")
-
-        self._deep_numeric_equal(stats["old"], stats["new"],
-                                 "B31_9.stats")
-        assert final_state["new"] == final_state["old"], (
-            "supported qualified-vector call leaves different lazy/materialized "
-            "state under old and new draw paths")
-
-
-    @staticmethod
-    def _deep_numeric_equal(a, b, path=""):
-        """Recursive comparison for stats payloads: dicts, lists/tuples,
-        numpy arrays and scalars, exact to 1e-12 relative."""
-        import numbers
-        if isinstance(a, dict) and isinstance(b, dict):
-            assert set(a) == set(b), f"{path}: keys differ"
-            for k in a:
-                TestB31EffectiveSpecOnDraw._deep_numeric_equal(
-                    a[k], b[k], f"{path}.{k}")
-        elif isinstance(a, (list, tuple)) and isinstance(b, (list, tuple)):
-            assert len(a) == len(b), f"{path}: length differs"
-            for i, (x, y) in enumerate(zip(a, b)):
-                TestB31EffectiveSpecOnDraw._deep_numeric_equal(
-                    x, y, f"{path}[{i}]")
-        elif isinstance(a, pd.DataFrame) and isinstance(b, pd.DataFrame):
-            assert list(a.columns) == list(b.columns), f"{path}: columns"
-            for col in a.columns:
-                np.testing.assert_allclose(
-                    a[col].to_numpy(dtype=float),
-                    b[col].to_numpy(dtype=float),
-                    rtol=1e-12, err_msg=f"{path}.{col}")
-        elif isinstance(a, np.ndarray) or isinstance(b, np.ndarray):
-            np.testing.assert_allclose(np.asarray(a), np.asarray(b),
-                                       rtol=1e-12, err_msg=path)
-        elif isinstance(a, numbers.Number) and isinstance(b, numbers.Number):
-            assert b == pytest.approx(a, rel=1e-12, nan_ok=True), path
-        else:
-            assert a == b, path
-
-    @pytest.mark.parametrize("label,expr,extra", [
-        ("scalar", "x:cat", {"weights": "w"}),
-        ("vector", "[x,w]:cat", {"selection_vector": ["x>0", "w>1"]}),
-    ])
-    def test_b31_10_profile_data_per_bin_identical_old_vs_new(
-            self, monkeypatch, label, expr, extra):
-        """GPT26/GPT27 round-3 (the P1-8 defect shape): summary statistics
-        are not enough — the complete per-bin profile payload must be
-        identical between the old and new paths, for EVERY channel of a
-        vector request (GPT26 round-4 extension: the vector path is where
-        B3.1's real defects lived)."""
-        payloads = {}
-        for tag, old in (("old", True), ("new", False)):
-            if old:
-                monkeypatch.setenv("ADF_B3_OLD_DRAW_PATH", "1")
-            else:
-                monkeypatch.delenv("ADF_B3_OLD_DRAW_PATH", raising=False)
-            adf = self._fresh_eager()
-            _f, _a, st = adf.draw(expr, type="profile", bins=3,
-                                  return_data=True, **extra)
-            plt.close("all")
-            channels = st if isinstance(st, list) else [st]
-            for ch, cst in enumerate(channels):
-                assert "profile_data" in cst, (
-                    f"[{label}] ch{ch}: profile_data missing despite "
-                    "return_data=True (public contract, 13.75 P1-8)")
-            payloads[tag] = channels
-        assert len(payloads["old"]) == len(payloads["new"]), (
-            f"[{label}] channel count differs")
-        for ch, (o, n) in enumerate(zip(payloads["old"], payloads["new"])):
-            self._deep_numeric_equal(o["profile_data"], n["profile_data"],
-                                     f"[{label}] profile_data[{ch}]")
-
-    @pytest.mark.parametrize("shape", ["eager_alias_selection",
-                                       "lazy_struct_profile",
-                                       "vector_selection"])
-    def test_b31_11_delegated_frame_columns_identical_old_vs_new(
-            self, monkeypatch, shape):
-        """Bounded-plan requirement three of three: the FRAME handed to
-        dfdraw is compared, not only the returned statistics — identical
-        columns and row count under old and new paths, on the three shapes
-        this refactor actually touched (GPT26 round-4: eager alias with
-        selection; lazy struct profile; vector with selection_vector)."""
-        import sys as _sys
-        # warm-up so the dfdraw module ADF uses is loaded, then patch every
-        # loaded candidate name (package-style on alma2 imports 'dfdraw';
-        # the sandbox loads 'dfextensions.dfdraw')
-        warm = self._fresh_eager()
-        warm.draw("x", type="hist", bins=4)
+        _f, _a, st = adf.draw(
+            "mult", type="hist", bins=5, lazy=True,
+            selection_vector=["dedxTPC.dEdxTotTPC>40"])
         plt.close("all")
-        mods = [_sys.modules[k] for k in ("dfdraw", "dfextensions.dfdraw")
-                if k in _sys.modules]
-        assert mods, "no dfdraw module loaded after a successful draw"
-        delegated = {}
-        real_cls = mods[0].DFDraw
-        for tag, old in (("old", True), ("new", False)):
-            if old:
-                monkeypatch.setenv("ADF_B3_OLD_DRAW_PATH", "1")
-            else:
-                monkeypatch.delenv("ADF_B3_OLD_DRAW_PATH", raising=False)
-            frames = []
-            class _Spy(real_cls):
-                def __init__(self, df, *a, **k):
-                    frames.append((list(df.columns), len(df)))
-                    super().__init__(df, *a, **k)
-            for _m in mods:
-                monkeypatch.setattr(_m, "DFDraw", _Spy)
-            if shape == "eager_alias_selection":
-                adf = self._fresh_eager()
-                adf.add_alias("z", "x*2")
-                adf.draw_lazy = True
-                _f, _a, _st = adf.draw("z", type="hist", bins=8,
-                                       selection="x>0")
-            elif shape == "lazy_struct_profile":
-                adf = self._fresh_lazy()
-                _f, _a, _st = adf.draw("dedxTPC.dEdxMaxTPC:mult",
-                                       type="profile", bins=5, lazy=True)
-            else:  # vector_selection
-                adf = self._fresh_eager()
-                _f, _a, _st = adf.draw("[x,w]:cat", type="profile", bins=3,
-                                       selection_vector=["x>0", "w>1"])
-            plt.close("all")
-            delegated[tag] = frames
-        assert delegated["new"] == delegated["old"], (
-            f"delegated frames diverge:\nold: {delegated['old']}\n"
-            f"new: {delegated['new']}")
+
+        st0 = st[0] if isinstance(st, list) else st
+        assert st0["n"] == expected_n, (
+            "qualified selection_vector row count disagrees with the "
+            "independent ROOT fixture reference")
+        assert any("dedxTPC.dEdxTotTPC" in str(t) for t in calls), (
+            "canonical graph-scoped pre-scan did not include the supported "
+            "qualified vector reference")
+        assert any("dEdxTotTPC" in str(b)
+                   for b in adf._lazy_reader.loaded_branches), (
+            "qualified selection_vector dependency was not loaded")
+
 
 
 @needs_dfdraw
