@@ -4665,6 +4665,10 @@ class DFDraw:
             # Strip kwargs that are facet-coordinator-only (don't forward)
             # AD-68: ax provided per-subplot; selection already applied at top
             forwarded = dict(plot_kwargs)
+            # PHASE_13_90_DF: faceted rendering has one layout owner.
+            # Per-panel renderers must not run whole-figure layout; the facet
+            # coordinator performs the single final layout pass.
+            forwarded['_suppress_layout'] = True
             forwarded.pop('ax', None)
             forwarded.pop('selection', None)
             forwarded.pop('save', None)
