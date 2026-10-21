@@ -2616,36 +2616,82 @@ class DFDraw:
     # M1 scope: exactly 2 curves (validated at entry in profile()); no group_by
     # or facet_by composition (M2). Supports overlay+diff and diff_only layouts.
 
-    def _build_normalize_axes(self, normalize_layout: str, figsize):
-        """
-        PHASE_13_84_DF: one owner of the normalize figure layout.
+    def _build_normalize_axes(self, normalize_layout: str, figsize, ax=None):
+        """Build or embed the normalize layout.
 
-        Builds the figure for a normalize plot: an upper panel for the curves
-        and a lower panel for the derived quantity (``overlay+diff``), or only
-        the lower panel (``diff_only``). Extracted verbatim from
-        ``_dispatch_normalize_render`` so that the profile and the histogram
-        normalization dispatchers share it.
+        PHASE_13_84_DF introduced this as the single layout owner shared by
+        profile and histogram normalization. PHASE_13_89_DF extends only the
+        plain-profile caller-axis contract:
 
-        Returns ``(fig, ax_top, ax_diff)``; ``ax_top`` is ``None`` for
-        ``diff_only``.
+        * ``ax is None`` preserves the historical standalone behavior.
+        * ``diff_only`` renders into the exact supplied Axes.
+        * ``overlay+diff`` replaces one empty subplot-backed placeholder slot
+          with a nested 2x1 grid in the same caller-owned Figure.
+
+        Histogram normalization keeps its public ``ax=`` refusal, so the
+        optional target reaches this helper only from the plain profile owner.
         """
-        from matplotlib.gridspec import GridSpec
+        from matplotlib.gridspec import GridSpec, GridSpecFromSubplotSpec
         from .style import get_style_value
-        if normalize_layout == "overlay+diff":
-            fig = plt.figure(figsize=figsize)
-            gs = GridSpec(
-                2, 1,
-                height_ratios=get_style_value("normalize.panel.height_ratio", [3, 1]),
-                hspace=get_style_value("normalize.panel.hspace", 0.05),
+
+        if ax is None:
+            if normalize_layout == "overlay+diff":
+                fig = plt.figure(figsize=figsize)
+                gs = GridSpec(
+                    2, 1,
+                    height_ratios=get_style_value(
+                        "normalize.panel.height_ratio", [3, 1]
+                    ),
+                    hspace=get_style_value("normalize.panel.hspace", 0.05),
+                )
+                ax_top = fig.add_subplot(gs[0])
+                ax_diff = fig.add_subplot(gs[1], sharex=ax_top)
+                plt.setp(ax_top.get_xticklabels(), visible=False)
+            else:  # 'diff_only' (validated at entry)
+                fig, ax_diff = plt.subplots(figsize=figsize)
+                ax_top = None
+            return fig, ax_top, ax_diff
+
+        # Caller-owned embedding: capture/validate ownership before mutation.
+        fig = getattr(ax, "figure", None)
+        if fig is None or ax not in getattr(fig, "axes", ()):
+            raise ValueError(
+                "normalize ax= must be an Axes attached to its caller-owned Figure"
             )
-            ax_top = fig.add_subplot(gs[0])
-            ax_diff = fig.add_subplot(gs[1], sharex=ax_top)
-            # Hide x-tick-labels on the top panel — they belong to ax_diff
-            # (which inherits the formatter via sharex; sidesteps BUG-004).
-            plt.setp(ax_top.get_xticklabels(), visible=False)
-        else:  # 'diff_only' (validated at entry)
-            fig, ax_diff = plt.subplots(figsize=figsize)
-            ax_top = None
+
+        if normalize_layout == "diff_only":
+            # A single Axes is sufficient; no subplot slot replacement is needed.
+            return fig, None, ax
+
+        # overlay+diff needs an embeddable, empty subplot slot.
+        get_subplotspec = getattr(ax, "get_subplotspec", None)
+        subplot_spec = get_subplotspec() if callable(get_subplotspec) else None
+        if subplot_spec is None:
+            raise ValueError(
+                "normalize_layout='overlay+diff' cannot embed into ax=: "
+                "the supplied Axes has no usable subplot slot; use diff_only "
+                "or provide an empty subplot-backed Axes"
+            )
+        if ax.has_data() or len(ax.texts) or len(ax.containers):
+            raise ValueError(
+                "normalize_layout='overlay+diff' requires an empty replaceable "
+                "subplot Axes when ax= is supplied"
+            )
+
+        height_ratios = get_style_value("normalize.panel.height_ratio", [3, 1])
+        hspace = get_style_value("normalize.panel.hspace", 0.05)
+
+        # All preflight above is complete. Only now replace the target slot.
+        ax.remove()
+        gs = GridSpecFromSubplotSpec(
+            2, 1,
+            subplot_spec=subplot_spec,
+            height_ratios=height_ratios,
+            hspace=hspace,
+        )
+        ax_top = fig.add_subplot(gs[0])
+        ax_diff = fig.add_subplot(gs[1], sharex=ax_top)
+        plt.setp(ax_top.get_xticklabels(), visible=False)
         return fig, ax_top, ax_diff
 
     # PHASE_13_84_DF: 1D histogram ratio normalization.
@@ -3040,6 +3086,7 @@ class DFDraw:
         ylabel,
         weights,
         nan_policy,
+        ax=None,
         # Pass-through bag for less-common kwargs
         **passthrough,
     ):
@@ -3090,7 +3137,10 @@ class DFDraw:
         # PHASE_13_84_DF: the layout block moved verbatim into
         # _build_normalize_axes so the histogram normalization dispatcher
         # shares one layout owner. Behaviour here is unchanged.
-        fig, ax_top, ax_diff = self._build_normalize_axes(normalize_layout, figsize)
+        _embedded_in_caller = ax is not None
+        fig, ax_top, ax_diff = self._build_normalize_axes(
+            normalize_layout, figsize, ax=ax
+        )
 
         # --- 5. Loop the 2 curves: render top panel + capture per-bin stats ----
         # Reset color cycle so signal and reference get curve-cycle colors 0/1.
@@ -3243,7 +3293,7 @@ class DFDraw:
             try:
                 from .plots._auto_title import (
                     parse_auto_title_parts, build_auto_title, resolve_auto_title,
-                    fit_auto_title_to_figure
+                    fit_auto_title_to_figure, apply_auto_title,
                 )
                 _at = resolve_auto_title(_auto_title_val)
                 if _at:
@@ -3254,7 +3304,7 @@ class DFDraw:
                               else (str(x_list[0]) if x_list else ''))
                     td = build_auto_title(
                         _x_str, _y_str,
-                        group_by=None,  # no group_by in single-curve normalize
+                        group_by=None,
                         selection=selection,
                         weights=None,
                         parts=parts,
@@ -3263,22 +3313,38 @@ class DFDraw:
                     td = fit_auto_title_to_figure(
                         fig, td, sub_fontsize=_title_fontsize
                     )
-                    _main = td.get('main', '')
-                    _sub = td.get('sub')
-                    fig.suptitle(
-                        f"{_main}\n{_sub}" if _sub else _main,
-                        fontsize=_title_fontsize,
-                    )
-                    plt.subplots_adjust(top=_suptitle_top_for_title(_get_suptitle(fig) or None))
+                    if _embedded_in_caller:
+                        # Caller owns the Figure; title only the local plot slot.
+                        apply_auto_title(
+                            ax_top if ax_top is not None else ax_diff, td
+                        )
+                    else:
+                        _main = td.get('main', '')
+                        _sub = td.get('sub')
+                        fig.suptitle(
+                            f"{_main}\n{_sub}" if _sub else _main,
+                            fontsize=_title_fontsize,
+                        )
+                        plt.subplots_adjust(
+                            top=_suptitle_top_for_title(_get_suptitle(fig) or None)
+                        )
             except Exception:
-                # Failsafe — same defensive pattern as BUG-002 fix.
                 _y_str = (y_list if isinstance(y_list, str)
                           else f"[{','.join(map(str, y_list))}]")
                 _x_str = (x_list if isinstance(x_list, str)
                           else str(x_list[0] if x_list else ''))
-                fig.suptitle(f"{_y_str} vs {_x_str}",
-                             fontsize=get_style_value("axes.titlesize", 14))
-                plt.subplots_adjust(top=_suptitle_top_for_title(_get_suptitle(fig) or None))
+                if _embedded_in_caller:
+                    (ax_top if ax_top is not None else ax_diff).set_title(
+                        f"{_y_str} vs {_x_str}"
+                    )
+                else:
+                    fig.suptitle(
+                        f"{_y_str} vs {_x_str}",
+                        fontsize=get_style_value("axes.titlesize", 14),
+                    )
+                    plt.subplots_adjust(
+                        top=_suptitle_top_for_title(_get_suptitle(fig) or None)
+                    )
 
         # --- 9. Build stats dict (M1 scope per v1.1 §7) ------------------------
         # Drop profile_data from user-facing stats — internal-only.
@@ -7553,9 +7619,25 @@ class DFDraw:
             if same:
                 raise ValueError(
                     "normalize= is mutually exclusive with same=True — the "
-                    "differential bottom panel requires a new figure. Either "
-                    "drop same=True or call normalize-mode profile() in its "
-                    "own figure."
+                    "differential bottom panel requires a dedicated layout. Either "
+                    "drop same=True or call normalize-mode profile() separately."
+                )
+            # PHASE_13_89_DF: caller-owned Figure contract. Reject unsupported
+            # compositions before any normalize dispatcher can allocate/mutate.
+            if ax is not None and save is not None:
+                raise NotImplementedError(
+                    "profile normalize= with ax= and save= is not supported: "
+                    "the caller owns saving the supplied Figure"
+                )
+            if ax is not None and group_by is not None:
+                raise NotImplementedError(
+                    "profile normalize= with group_by and ax= is not supported "
+                    "in PHASE_13_89; grouped embedding requires its own reviewed layout"
+                )
+            if ax is not None and facet_by is not None:
+                raise NotImplementedError(
+                    "profile normalize= with facet_by and ax= is not supported "
+                    "in PHASE_13_89; faceted embedding requires its own reviewed layout"
                 )
             # (d) Exactly 2 vector elements required (AD-80: vector[0]=signal,
             # vector[1]=reference). The vector source is either y (multi-Y),
@@ -7879,6 +7961,7 @@ class DFDraw:
                     ylabel=ylabel,
                     weights=weights,
                     nan_policy=nan_policy,
+                    ax=ax,
                     **_passthrough,
                 )
                 self._maybe_attach_summary_fit(
