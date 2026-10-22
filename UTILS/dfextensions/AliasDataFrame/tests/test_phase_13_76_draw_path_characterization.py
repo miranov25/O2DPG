@@ -824,6 +824,94 @@ class TestB2ConsolidationContract:
             set(adf._lazy_reader.loaded_branches) - before_loaded
         ), "fresh fixture no longer proves draw_figures caused completion"
 
+    @pytest.mark.parametrize(
+        "placement",
+        ["top_defaults", "figure_defaults", "top_selection"],
+    )
+    def test_b2_3b_figures_defaults_paths_keep_single_catalog_owner(
+            self, placement):
+        """B3.4.3 F-1: supported defaults/control paths must reuse the
+        draw_figures-owned catalog rather than re-entering it through
+        _autoload_expr_branches().
+
+        The selection is deliberately a simple physical column so this test
+        isolates ownership rather than adding expression semantics.  The
+        request also names one struct member and therefore retains the
+        non-vacuous D-3 sibling-completion postcondition.
+        """
+        adf = self._lazy_struct_adf()
+        physical = {
+            "dedxTPC/dEdxMaxTPC",
+            "dedxTPC/dEdxTotTPC",
+            "dedxTPC/dEdxMaxIROC",
+        }
+        internal = {
+            "dEdxMaxTPC__dedxTPC",
+            "dEdxTotTPC__dedxTPC",
+            "dEdxMaxIROC__dedxTPC",
+        }
+        before_loaded = set(adf._lazy_reader.loaded_branches)
+
+        figures = [{
+            "name": "f",
+            "ncols": 1,
+            "plots": [{
+                "expr": "dedxTPC.dEdxMaxTPC:mult",
+                "type": "profile",
+                "bins": 5,
+            }],
+        }]
+        defaults = None
+        call_kwargs = {}
+
+        if placement == "top_defaults":
+            defaults = {"selection": "mult >= 0"}
+        elif placement == "figure_defaults":
+            figures[0]["defaults"] = {"selection": "mult >= 0"}
+        else:
+            call_kwargs["selection"] = "mult >= 0"
+
+        figures_before = copy.deepcopy(figures)
+        defaults_before = copy.deepcopy(defaults)
+        kwargs_before = copy.deepcopy(call_kwargs)
+
+        result = adf.draw_figures(
+            figures,
+            defaults=defaults,
+            lazy=True,
+            verbose=False,
+            **call_kwargs,
+        )
+        plt.close("all")
+
+        st = adf._last_draw_prep_stats
+        assert st["catalog_full_runs"] == 1, (
+            f"{placement}: nested defaults/control preparation re-entered "
+            f"the struct catalog: {st}")
+
+        stats = result["f"]["stats"][0]
+        expected_n = int(np.count_nonzero(
+            np.asarray(adf.df["mult"]) >= 0))
+        assert stats["n"] == expected_n, (
+            f"{placement}: selection/default semantics changed: "
+            f"{stats['n']} != pandas truth {expected_n}")
+
+        assert figures == figures_before, (
+            f"{placement}: caller figure specs mutated")
+        assert defaults == defaults_before, (
+            f"{placement}: caller defaults mutated")
+        assert call_kwargs == kwargs_before, (
+            f"{placement}: caller top-level kwargs mutated")
+
+        assert internal <= set(adf.df.columns), (
+            f"{placement}: D-3 regression; columns={sorted(adf.df.columns)}")
+        assert physical <= set(adf._lazy_reader.loaded_branches), (
+            f"{placement}: D-3 physical siblings missing; "
+            f"loaded={sorted(adf._lazy_reader.loaded_branches)}")
+        assert physical <= (
+            set(adf._lazy_reader.loaded_branches) - before_loaded
+        ), f"{placement}: fresh fixture no longer proves D-3 completion"
+
     def test_b2_4_results_identical_with_consolidation(self):
         """The consolidation must not change a single number: same plot
         through draw and draw_batch on the struct fixture, statistics

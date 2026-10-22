@@ -5294,14 +5294,19 @@ class AliasDataFrame:
 
         return (frozenset(map(str, reads)), frozenset(map(str, cols)))
 
-    def _autoload_expr_branches(self, expr):
+    def _autoload_expr_branches(self, expr, *, _catalog_ready=False):
         """PHASE_13_66_ADF (F-fable5_5-2): autoload branches referenced by an
         EXPRESSION via the expr= leg of get_required_branches (struct-aware through
         _analyze_expression), then filter+load. Shared helper so the expr leg and
         ensure_columns's selection leg cannot drift (P1-B: ensure_columns uses the
         selection= leg, whose parser drops dotted struct members).
+
+        ``_catalog_ready`` is the internal ownership marker used when a public
+        surface has already established the struct catalog. Standalone callers
+        retain the defensive catalog check by default.
         """
-        self._ensure_struct_catalog()   # PHASE_13_75_ADF D2: defensive, fp-cached
+        if not _catalog_ready:
+            self._ensure_struct_catalog()   # PHASE_13_75_ADF D2: defensive, fp-cached
         # PHASE_13_66_ADF: directly load any registered struct referenced in expr
         # (robust: does not depend on the get_required_branches expr-leg resolving the
         # physical branch). ensure_struct loads the physical slash branch + A-1 rename.
@@ -5310,7 +5315,7 @@ class AliasDataFrame:
                 if _logical in expr:
                     self.ensure_struct(_st_name)
                     break
-        needed = self.get_required_branches(expr=expr)
+        needed = self.get_required_branches(expr=expr, _catalog_ready=True)
         all_subframes = (set(self._subframes.subframes.keys())
                          | set(getattr(self, "_subframe_readers", {}).keys()))
         needed = {b for b in needed
@@ -23481,7 +23486,7 @@ function collapseDepth(maxD) {{
                                  "weights", "facet_by", "color"):
                         _v = _d0.get(_sl0)
                         if isinstance(_v, str):
-                            self._autoload_expr_branches(_v)
+                            self._autoload_expr_branches(_v, _catalog_ready=True)
                     self._struct_rewrite_draw_slots(_d0)
             for _fs0 in (specs or []):
                 if isinstance(_fs0, dict) and isinstance(_fs0.get("defaults"), dict):
@@ -23490,7 +23495,7 @@ function collapseDepth(maxD) {{
                                  "weights", "facet_by", "color"):
                         _v = _fd.get(_sl0)
                         if isinstance(_v, str):
-                            self._autoload_expr_branches(_v)
+                            self._autoload_expr_branches(_v, _catalog_ready=True)
                     self._struct_rewrite_draw_slots(_fd)
         # Import dfdraw
         try:
