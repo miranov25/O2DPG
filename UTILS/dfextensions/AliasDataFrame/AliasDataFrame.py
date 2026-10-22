@@ -23613,7 +23613,8 @@ function collapseDepth(maxD) {{
                         facet_by=merged_plot.get('facet_by'),
                         weights=merged_plot.get('weights'),
                         weights_vector=merged_plot.get('weights_vector'),
-                        selection_vector=merged_plot.get('selection_vector')
+                        selection_vector=merged_plot.get('selection_vector'),
+                        _catalog_ready=True
                     )
                     all_required.update(required)
             
@@ -23630,6 +23631,10 @@ function collapseDepth(maxD) {{
                 if verbose:
                     print(f"[draw_figures] Loading {len(branches_to_load)} branches")
                 self.ensure_branches(list(branches_to_load))
+                # PHASE_13_76_ADF B3.4.3: keep one catalog owner while
+                # preserving D-3 after the lazy load that can leave a
+                # registered struct partial.
+                self._complete_partial_structs()
         
         # ═══════════════════════════════════════════════════════════════════
         # PHASE 3: Materialize all aliases at once (if lazy)
@@ -23687,11 +23692,10 @@ function collapseDepth(maxD) {{
         # across every plot in every figure spec, built ONCE per call. The big
         # frame is never copied or grown; the subframe merge adds sf_ columns.
         _md_dict = {**(defaults or {}), **kwargs}
-        # PHASE_13_75_ADF D3 (figures surface, Option A/one owner): normalize
-        # every plot spec (incl. SHORT-FORM strings, which the later PHASE_13_66
-        # rewrite block never touched — panel finding P75-5) to a dict and
-        # rewrite struct refs BEFORE the union projection below.
-        self._ensure_struct_catalog()
+        # PHASE_13_75_ADF D3 / PHASE_13_76_ADF B3.4.3: the catalog was
+        # established once at draw_figures() entry and D-3 completion ran
+        # immediately after branch loading. Normalize every plot spec here
+        # and perform its one owned struct rewrite before union projection.
         if self._structs:
             for _fs in specs:
                 if not isinstance(_fs, dict):
@@ -23726,7 +23730,8 @@ function collapseDepth(maxD) {{
                         color=_m.get('color'), facet_by=_m.get('facet_by'),
                         weights=_m.get('weights'),
                         weights_vector=_m.get('weights_vector'),
-                        selection_vector=_m.get('selection_vector'))
+                        selection_vector=_m.get('selection_vector'),
+                        _catalog_ready=True)
         if _need_f:
             df_subset = pd.DataFrame(
                 {_c: df_subset[_c] for _c in df_subset.columns if _c in _need_f},
@@ -23891,12 +23896,11 @@ function collapseDepth(maxD) {{
                             for dot_ref, flat_ref in subframe_replacements.items():
                                 plot_spec = plot_spec.replace(dot_ref, flat_ref)
                             plots[i] = plot_spec
-            # PHASE_13_66_ADF: struct rewrite (runs regardless of subframes).
-            if self._structs:
-                for _fig_spec in specs:
-                    for _plot_spec in _fig_spec.get('plots', []):
-                        if isinstance(_plot_spec, dict):
-                            self._struct_rewrite_draw_slots(_plot_spec)
+            # PHASE_13_76_ADF B3.4.3: no second struct rewrite here.
+            # Plot mappings were already rewritten exactly once before union
+            # projection. Subframe replacement above changes only resolved
+            # dotted subframe references and does not reintroduce logical
+            # struct-member spelling.
         
         # ═══════════════════════════════════════════════════════════════════
         # PHASE 5: Generate figures

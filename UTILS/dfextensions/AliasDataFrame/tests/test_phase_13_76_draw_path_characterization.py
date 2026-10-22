@@ -786,12 +786,23 @@ class TestB2ConsolidationContract:
         plt.close("all")
         assert adf._last_draw_prep_stats["catalog_full_runs"] == 1
 
-    @pytest.mark.xfail(
-        strict=True,
-        reason="B3.3 acceptance: draw_figures migrates onto the dependency "
-               "plan and single executor in the next increment")
     def test_b2_3_figures_one_catalog_run_one_rewrite_per_dict(self):
+        """B3.4.3: draw_figures owns one catalog establishment and rewrites
+        each owned mapping exactly once while preserving D-3 full-struct
+        completion after its lazy union branch load.
+        """
         adf = self._lazy_struct_adf()
+        physical = {
+            "dedxTPC/dEdxMaxTPC",
+            "dedxTPC/dEdxTotTPC",
+            "dedxTPC/dEdxMaxIROC",
+        }
+        internal = {
+            "dEdxMaxTPC__dedxTPC",
+            "dEdxTotTPC__dedxTPC",
+            "dEdxMaxIROC__dedxTPC",
+        }
+        before_loaded = set(adf._lazy_reader.loaded_branches)
         adf.draw_figures(
             [{"name": "f", "ncols": 2,
               "plots": [{"expr": "dedxTPC.dEdxMaxTPC:mult",
@@ -803,6 +814,15 @@ class TestB2ConsolidationContract:
         st = adf._last_draw_prep_stats
         assert st["catalog_full_runs"] == 1, st
         assert st["rewrite_full_runs"] == 3, st
+        assert internal <= set(adf.df.columns), (
+            "D-3 regression: draw_figures loaded struct members without "
+            f"completing all registered siblings; columns={sorted(adf.df.columns)}")
+        assert physical <= set(adf._lazy_reader.loaded_branches), (
+            "D-3 regression: draw_figures did not load all physical siblings; "
+            f"loaded={sorted(adf._lazy_reader.loaded_branches)}")
+        assert physical <= (
+            set(adf._lazy_reader.loaded_branches) - before_loaded
+        ), "fresh fixture no longer proves draw_figures caused completion"
 
     def test_b2_4_results_identical_with_consolidation(self):
         """The consolidation must not change a single number: same plot
