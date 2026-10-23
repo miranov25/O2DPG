@@ -984,6 +984,96 @@ class TestB2ConsolidationContract:
         plt.close("all")
         assert adf._last_draw_prep_stats["catalog_full_runs"] == 1
 
+    def test_b2_2c_batch_top_level_forwarded_ref_keeps_single_catalog_owner(self):
+        """B3.4.4 F-1: a top-level forwarded dataframe reference must reuse
+        the draw_batch executor-owned struct catalog.
+
+        This specifically exercises the shared `_execute_draw_plan()` autoload
+        loop widened by B3.4.4 for xerr/yerr/marker/size.  The fresh lazy
+        struct fixture makes the ownership and D-3 assertions non-vacuous,
+        while top-level ``yerr="mult"`` proves that the forwarded reference
+        remains numerically live all the way into the rendered error bars.
+        """
+        from matplotlib.container import ErrorbarContainer
+
+        adf = self._lazy_struct_adf()
+
+        members = ("dEdxMaxTPC", "dEdxTotTPC", "dEdxMaxIROC")
+        physical = {f"dedxTPC/{m}" for m in members}
+        internal = {f"{m}__dedxTPC" for m in members}
+
+        assert not (internal & set(adf.df.columns)), (
+            "fixture entered with a struct member already materialized; "
+            "the D-3/ownership oracle would be vacuous")
+
+        specs = {
+            "p": {
+                "expr": "dedxTPC.dEdxMaxTPC:mult",
+                "type": "scatter",
+            }
+        }
+        top_kwargs = {"yerr": "mult"}
+        specs_before = copy.deepcopy(specs)
+        kwargs_before = copy.deepcopy(top_kwargs)
+        before_loaded = set(adf._lazy_reader.loaded_branches)
+
+        result = adf.draw_batch(
+            specs,
+            lazy=True,
+            verbose=False,
+            **top_kwargs,
+        )
+
+        try:
+            assert result["_summary"]["failed"] == 0, result.get("_errors")
+
+            prep = adf._last_draw_prep_stats
+            assert prep["catalog_full_runs"] == 1, (
+                "B3.4.4 F-1: top-level forwarded reference re-entered the "
+                f"catalog-owned executor path: {prep}")
+
+            assert specs == specs_before, "draw_batch mutated caller specs"
+            assert top_kwargs == kwargs_before, (
+                "draw_batch mutated caller top-level forwarded kwargs")
+
+            assert internal <= set(adf.df.columns), (
+                "D-3 regression: forwarded-reference batch draw did not "
+                f"complete struct siblings; columns={sorted(adf.df.columns)}")
+            assert physical <= set(adf._lazy_reader.loaded_branches), (
+                "D-3 regression: physical struct siblings were not loaded; "
+                f"loaded={sorted(adf._lazy_reader.loaded_branches)}")
+            assert physical <= (
+                set(adf._lazy_reader.loaded_branches) - before_loaded
+            ), "fresh fixture no longer proves D-3 completion"
+
+            ax = result["p"]["ax"]
+            containers = [
+                c for c in ax.containers
+                if isinstance(c, ErrorbarContainer)
+            ]
+            assert len(containers) == 1, (
+                f"expected one ErrorbarContainer, got {len(containers)}")
+
+            barcols = containers[0].lines[2]
+            ybar = barcols[-1] if isinstance(barcols, tuple) else barcols
+            observed = np.asarray([
+                (segment[1][1] - segment[0][1]) / 2.0
+                for segment in ybar.get_segments()
+            ])
+            expected = np.asarray(adf.df["mult"], dtype=float)
+
+            assert observed.size == expected.size > 0, (
+                "errorbar geometry is empty or row cardinality changed")
+            np.testing.assert_allclose(
+                observed,
+                expected,
+                rtol=0,
+                atol=1e-12,
+                err_msg="top-level yerr no longer matches mult truth",
+            )
+        finally:
+            plt.close("all")
+
     def test_b2_3_figures_one_catalog_run_one_rewrite_per_dict(self):
         """B3.4.3: draw_figures owns one catalog establishment and rewrites
         each owned mapping exactly once while preserving D-3 full-struct

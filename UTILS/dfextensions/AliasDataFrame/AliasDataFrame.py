@@ -22476,7 +22476,13 @@ function collapseDepth(maxD) {{
                             "xerr", "yerr", "marker", "size"):
                     _v = _d.get(_sl)
                     if isinstance(_v, str):
-                        self._autoload_expr_branches(_v)
+                        # PHASE_13_76_ADF B3.4.4 F-1: _execute_draw_plan()
+                        # already owns the catalog established above. Reuse
+                        # that state instead of re-entering the defensive
+                        # standalone helper path for top-level/default
+                        # reference-bearing kwargs.
+                        self._autoload_expr_branches(
+                            _v, _catalog_ready=True)
             for _d in plan.rewrite_dicts:
                 self._struct_rewrite_draw_slots(_d)
                 state.dicts_rewritten += 1
