@@ -528,6 +528,204 @@ class TestSweep3FiguresColumn:
             plt.close("all")
 
 
+
+# ---------------------------------------------------------------------------
+# B3.5 — retained slot × public-surface proof before further demolition.
+#
+# Reuse-first closure of the cells not already proved numerically by O-1 /
+# SWEEP-1..3:
+#   * selection_vector × draw_figures
+#   * weights_vector × draw / draw_batch / draw_figures
+#   * normalize × draw / draw_batch / draw_figures
+#
+# These are preservation oracles, not new functionality.  They are deliberately
+# numerical: vector-weight branches are compared to independent scalar weighted
+# calls, and normalized payloads are required both to agree across the three
+# public surfaces and to satisfy their declared delta algebra.
+# ---------------------------------------------------------------------------
+
+@needs_dfdraw
+class TestB35SlotSurfaceProof:
+    _PROFILE_COLS = ("x_center", "y_mean", "y_std", "y_sem",
+                     "count", "sum_weights")
+
+    @staticmethod
+    def _assert_profile_data_equal(actual, expected, label):
+        """Compare the rendered weighted-profile payload, not only smoke stats."""
+        assert "profile_data" in actual, f"{label}: missing profile_data"
+        assert "profile_data" in expected, f"{label}: scalar reference missing profile_data"
+        a = actual["profile_data"]
+        e = expected["profile_data"]
+        assert len(a) == len(e), f"{label}: profile row count differs"
+        for col in TestB35SlotSurfaceProof._PROFILE_COLS:
+            assert col in a.columns, f"{label}: vector payload missing {col}"
+            assert col in e.columns, f"{label}: scalar payload missing {col}"
+            av = a[col].to_numpy()
+            ev = e[col].to_numpy()
+            if col == "count":
+                assert np.array_equal(av, ev), (
+                    f"{label}: per-bin count differs from scalar weighted truth")
+            else:
+                assert np.allclose(av, ev, rtol=1e-12, atol=1e-12,
+                                   equal_nan=True), (
+                    f"{label}: {col} differs from scalar weighted truth")
+
+    @staticmethod
+    def _weighted_scalar_truth(adf):
+        """Independent scalar references for the two weights-vector channels."""
+        _f1, _a1, s1 = adf.draw(
+            "y1:x", type="profile", bins=6, range=(0.0, 1.0),
+            weights="w", return_data=True)
+        _f2, _a2, s2 = adf.draw(
+            "y2:x", type="profile", bins=6, range=(0.0, 1.0),
+            weights="w*w", return_data=True)
+        plt.close("all")
+        return s1, s2
+
+    @staticmethod
+    def _vector_weight_spec():
+        return {
+            "expr": "[y1,y2]:x",
+            "type": "profile",
+            "bins": 6,
+            "range": (0.0, 1.0),
+            "weights_vector": ["w", "w*w"],
+            "return_data": True,
+        }
+
+    def test_b35_1_selection_vector_numerical_truth_on_draw_figures(self):
+        adf, _ = _vector_adf()
+        expected = [
+            int((adf.df.y1 > 0).sum()),
+            int((adf.df.y2 > 4).sum()),
+        ]
+        spec = {
+            "expr": "[y1,y2]:x",
+            "type": "profile",
+            "bins": 6,
+            "range": (0.0, 1.0),
+            "selection_vector": ["y1>0", "y2>4"],
+        }
+        res = adf.draw_figures(
+            [{"name": "f", "ncols": 1, "plots": [spec]}],
+            verbose=False)
+        plt.close("all")
+        stats = res["f"]["stats"][0]
+        assert isinstance(stats, list) and len(stats) == 2
+        assert [stats[0]["n"], stats[1]["n"]] == expected
+
+    def test_b35_2_weights_vector_numerical_truth_on_draw(self):
+        adf, _ = _vector_adf()
+        ref1, ref2 = self._weighted_scalar_truth(adf)
+        spec = self._vector_weight_spec()
+        _f, _a, stats = adf.draw(
+            spec["expr"],
+            **{k: v for k, v in spec.items() if k != "expr"})
+        plt.close("all")
+        assert isinstance(stats, list) and len(stats) == 2
+        self._assert_profile_data_equal(stats[0], ref1, "draw channel 0")
+        self._assert_profile_data_equal(stats[1], ref2, "draw channel 1")
+
+    def test_b35_3_weights_vector_numerical_truth_on_draw_batch(self):
+        adf, _ = _vector_adf()
+        ref1, ref2 = self._weighted_scalar_truth(adf)
+        spec = self._vector_weight_spec()
+        res = adf.draw_batch({"p": dict(spec)}, verbose=False)
+        plt.close("all")
+        assert res["_summary"]["failed"] == 0, res["_errors"]
+        stats = res["p"]["stats"]
+        assert isinstance(stats, list) and len(stats) == 2
+        self._assert_profile_data_equal(stats[0], ref1, "draw_batch channel 0")
+        self._assert_profile_data_equal(stats[1], ref2, "draw_batch channel 1")
+
+    def test_b35_4_weights_vector_numerical_truth_on_draw_figures(self):
+        adf, _ = _vector_adf()
+        ref1, ref2 = self._weighted_scalar_truth(adf)
+        spec = self._vector_weight_spec()
+        res = adf.draw_figures(
+            [{"name": "f", "ncols": 1, "plots": [dict(spec)]}],
+            verbose=False)
+        plt.close("all")
+        stats = res["f"]["stats"][0]
+        assert isinstance(stats, list) and len(stats) == 2
+        self._assert_profile_data_equal(stats[0], ref1, "draw_figures channel 0")
+        self._assert_profile_data_equal(stats[1], ref2, "draw_figures channel 1")
+
+    @staticmethod
+    def _assert_delta_payload(stats, label):
+        assert stats.get("normalize_mode") == "delta", (
+            f"{label}: normalize mode changed")
+        nd = stats.get("normalize_data")
+        assert nd is not None, f"{label}: normalize_data missing"
+        required = {
+            "x_center", "value", "mask_undefined",
+            "signal_central", "signal_count",
+            "reference_central", "reference_count",
+        }
+        assert required <= set(nd.columns), (
+            f"{label}: normalize_data missing {sorted(required - set(nd.columns))}")
+        mask = ~nd["mask_undefined"].to_numpy(dtype=bool)
+        assert int(mask.sum()) >= 3, f"{label}: normalization proof is vacuous"
+        expected = (
+            nd["signal_central"].to_numpy()
+            - nd["reference_central"].to_numpy()
+        )
+        assert np.allclose(
+            nd["value"].to_numpy()[mask], expected[mask],
+            rtol=1e-12, atol=1e-12, equal_nan=True
+        ), f"{label}: delta payload violates signal-reference truth"
+        return nd
+
+    def test_b35_5_normalize_delta_same_truth_across_three_surfaces(self):
+        adf, _ = _vector_adf()
+        spec = {
+            "expr": "[y1,y2]:x",
+            "type": "profile",
+            "bins": 6,
+            "range": (0.0, 1.0),
+            "normalize": "delta",
+            "return_data": True,
+        }
+
+        _f, _a, s_draw = adf.draw(
+            spec["expr"],
+            **{k: v for k, v in spec.items() if k != "expr"})
+
+        rb = adf.draw_batch({"p": dict(spec)}, verbose=False)
+        assert rb["_summary"]["failed"] == 0, rb["_errors"]
+        s_batch = rb["p"]["stats"]
+
+        rf = adf.draw_figures(
+            [{"name": "f", "ncols": 1, "plots": [dict(spec)]}],
+            verbose=False)
+        s_fig = rf["f"]["stats"][0]
+        plt.close("all")
+
+        payloads = [
+            self._assert_delta_payload(s_draw, "draw"),
+            self._assert_delta_payload(s_batch, "draw_batch"),
+            self._assert_delta_payload(s_fig, "draw_figures"),
+        ]
+
+        base = payloads[0]
+        for label, other in zip(("draw_batch", "draw_figures"), payloads[1:]):
+            assert np.array_equal(
+                other["mask_undefined"].to_numpy(dtype=bool),
+                base["mask_undefined"].to_numpy(dtype=bool)
+            ), f"{label}: normalized valid-bin mask diverges from draw"
+
+            for col in (
+                "x_center", "value",
+                "signal_central", "signal_count",
+                "reference_central", "reference_count",
+            ):
+                assert np.allclose(
+                    other[col].to_numpy(),
+                    base[col].to_numpy(),
+                    rtol=1e-12, atol=1e-12, equal_nan=True
+                ), f"{label}: normalize_data[{col}] diverges from draw"
+
+
 # ---------------------------------------------------------------------------
 # STATE-1 — data-state equivalence (last sweep axis, Rev2 §8.8): the same
 # logical data drawn from an eager frame, a lazy tree, and a lazy 2-file
@@ -957,16 +1155,29 @@ class TestB31EffectiveSpecOnDraw:
         return A.AliasDataFrame.read_tree_lazy(fixture, "tree")
 
     def test_b31_3_spec_slot_set_covers_scan_gap_slots(self):
-        """The one-source slot list contains every historical scan-gap slot,
-        and required_branch_kwargs maps every slot plus the expression."""
+        """Core slots remain the PHASE_13_79 authority while forwarded
+        reference-bearing kwargs also reach required-branch discovery.
+
+        B3.4.4 deliberately keeps scatter-only xerr/yerr/marker/size outside
+        SLOT_NAMES so the ratified core slot grid does not widen, but they are
+        part of required_branch_kwargs() through FORWARDED_REFERENCE_NAMES.
+        """
         for missed in ("facet_by", "weights", "weights_vector",
                        "selection_vector"):
             assert missed in _EffectiveDrawSpec.SLOT_NAMES
+        assert set(_EffectiveDrawSpec.FORWARDED_REFERENCE_NAMES) == {
+            "xerr", "yerr", "marker", "size"
+        }
+
         spec = _EffectiveDrawSpec.from_call(
             "x", "hist", {"selection": "x>0", "weights": "w"})
         rk = spec.required_branch_kwargs()
         assert rk["expr"] == "x" and rk["selection"] == "x>0"
-        assert set(rk) == {"expr", *_EffectiveDrawSpec.SLOT_NAMES}
+        assert set(rk) == {
+            "expr",
+            *_EffectiveDrawSpec.SLOT_NAMES,
+            *_EffectiveDrawSpec.FORWARDED_REFERENCE_NAMES,
+        }
 
     def test_b31_4_policy_resolution_matches_instance_flags(self):
         adf = self._fresh_eager()

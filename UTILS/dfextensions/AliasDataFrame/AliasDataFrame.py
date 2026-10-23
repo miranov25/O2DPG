@@ -2351,14 +2351,17 @@ class _EffectiveDrawSpec:
     caller's dict cannot alter the record (also enforced by test). The
     normalization itself remains a separate, explicitly-owned step.
 
-    The slot accessors are the ONE source for "which parameters can carry
-    column references" — including facet_by, weights, weights_vector and
-    selection_vector, the parameters that were historically missed by
-    branch-requirement scans (behavior matrix; Phase 13.58 gap record).
+    The core slot accessors remain the PHASE_13_79-ratified ADF slot
+    authority.  Scatter-only dfdraw forwarding kwargs that can also carry
+    dataframe references are tracked separately in FORWARDED_REFERENCE_NAMES;
+    they participate in dependency/materialization/projection handling without
+    enlarging the core slot grid.
     """
 
     SLOT_NAMES = ('selection', 'group_by', 'color', 'facet_by', 'weights',
                   'weights_vector', 'selection_vector')
+
+    FORWARDED_REFERENCE_NAMES = ('xerr', 'yerr', 'marker', 'size')
 
     __slots__ = ("expr", "plot_type", "style",
                  "entry_begin", "entry_end", "entry_mask")
@@ -2398,11 +2401,20 @@ class _EffectiveDrawSpec:
         return {name: self.style.get(name) for name in self.SLOT_NAMES}
 
     def required_branch_kwargs(self):
-        """Exactly the keyword set get_required_branches needs — derived
-        from SLOT_NAMES so a future slot addition cannot silently diverge
-        between the scan and the specification."""
+        """Keyword set required by get_required_branches().
+
+        Core ADF slots come from SLOT_NAMES.  Scatter-only forwarded
+        dataframe-reference kwargs come from FORWARDED_REFERENCE_NAMES.
+        Keeping the two authorities distinct preserves the PHASE_13_79 slot
+        grid while preventing forwarded dependencies from being projected
+        away.
+        """
         out = {'expr': self.expr}
         out.update(self.slots())
+        out.update({
+            name: self.style.get(name)
+            for name in self.FORWARDED_REFERENCE_NAMES
+        })
         return out
 
     SCALAR_SLOT_NAMES = ('selection', 'group_by', 'color', 'facet_by',
@@ -2419,8 +2431,11 @@ class _EffectiveDrawSpec:
         EXACTLY; the draw() path uses that until the B3.2 dependency plan
         owns vector-slot dependencies (the widened scan is a behavior
         change, not restructuring, and lands with its owner)."""
-        names = (self.SLOT_NAMES if include_vector_slots
-                 else self.SCALAR_SLOT_NAMES)
+        names = (
+            (self.SLOT_NAMES if include_vector_slots
+             else self.SCALAR_SLOT_NAMES)
+            + self.FORWARDED_REFERENCE_NAMES
+        )
         parts = [self.expr] if isinstance(self.expr, str) else []
         for name in names:
             v = self.style.get(name)
@@ -4623,7 +4638,7 @@ class AliasDataFrame:
         _prep = getattr(self, "_draw_prep", None)
         if _prep is not None:
             _prep["rewrite_full_runs"] += 1
-        for _slot in ('expr',) + _EffectiveDrawSpec.SLOT_NAMES:
+        for _slot in ('expr',) + _EffectiveDrawSpec.SLOT_NAMES + _EffectiveDrawSpec.FORWARDED_REFERENCE_NAMES:
             v = d.get(_slot)
             if isinstance(v, str):
                 d[_slot] = self._prepare_struct_refs(v)
@@ -14397,6 +14412,10 @@ function collapseDepth(maxD) {{
                               weights=None,
                               weights_vector=None,
                               selection_vector=None,
+                              xerr=None,
+                              yerr=None,
+                              marker=None,
+                              size=None,
                               aliases: list = None,
                               validate: bool = False,
                               _catalog_ready: bool = False) -> set:
@@ -14519,6 +14538,12 @@ function collapseDepth(maxD) {{
         _add_colname_kwarg(weights)
         _add_colname_kwarg(weights_vector)
         _add_colname_kwarg(selection_vector, as_selection=True)
+        # PHASE_13_76_ADF B3.4.4: dfdraw scatter forwarding parameters that
+        # carry dataframe column/expression dependencies.
+        _add_colname_kwarg(xerr)
+        _add_colname_kwarg(yerr)
+        _add_colname_kwarg(marker)
+        _add_colname_kwarg(size)
 
         # 4. Add explicit aliases
         if aliases:
@@ -19902,7 +19927,8 @@ function collapseDepth(maxD) {{
     _FACET_BY_CHANNEL_ENUMS = frozenset({'group_by', 'vector', 'quantiles'})
 
     def _parse_expr_aliases(self, expr: str, group_by=None, color=None,
-                            selection=None, weights=None, facet_by=None):
+                            selection=None, weights=None, facet_by=None,
+                            xerr=None, yerr=None, marker=None, size=None):
         """
         Extract alias names from expression and optional parameters.
 
@@ -19962,6 +19988,11 @@ function collapseDepth(maxD) {{
             all_text += ' ' + selection
         if isinstance(weights, str) and weights:
             all_text += ' ' + weights
+        # PHASE_13_76_ADF B3.4.4: aliases referenced only through dfdraw
+        # scatter forwarding kwargs must participate in lazy materialization.
+        for _forward_ref in (xerr, yerr, marker, size):
+            if isinstance(_forward_ref, str) and _forward_ref:
+                all_text += ' ' + _forward_ref
         
         # Extract all identifiers from expression
         tokens = set(_re.findall(r'\b([a-zA-Z_][a-zA-Z0-9_]*)\b', all_text))
@@ -20227,7 +20258,8 @@ function collapseDepth(maxD) {{
     def _dict_dispatch_columns(self, df_cols, expr=None, selection=None,
                                group_by=None, color=None, facet_by=None,
                                weights=None, weights_vector=None,
-                               selection_vector=None, _catalog_ready=False):
+                               selection_vector=None, xerr=None, yerr=None,
+                               marker=None, size=None, _catalog_ready=False):
         """Phase 13.61.ADF (D-ADF-DICT): columns the draw dispatch frame must
         carry for dfdraw to evaluate every channel.
 
@@ -20247,7 +20279,9 @@ function collapseDepth(maxD) {{
                 expr=expr, selection=selection, group_by=group_by, color=color,
                 facet_by=facet_by, weights=weights,
                 weights_vector=weights_vector,
-                selection_vector=selection_vector, validate=True,
+                selection_vector=selection_vector,
+                xerr=xerr, yerr=yerr, marker=marker, size=size,
+                validate=True,
                 _catalog_ready=_catalog_ready))
         except Exception as _e:
             # Memory-safety: a resolver failure must NOT silently revert to the
@@ -20265,7 +20299,8 @@ function collapseDepth(maxD) {{
         # "blue"]) and must not be tokenized into column adds; a string color is
         # already covered by get_required_branches above.
         for c in (expr, selection, group_by, facet_by,
-                  weights, weights_vector, selection_vector):
+                  weights, weights_vector, selection_vector,
+                  xerr, yerr, marker, size):
             if c is None:
                 continue
             if isinstance(c, (list, tuple)):
@@ -20474,7 +20509,11 @@ function collapseDepth(maxD) {{
             expr, kwargs.get('group_by'), kwargs.get('color'),
             selection=kwargs.get('selection'),
             weights=kwargs.get('weights'),
-            facet_by=kwargs.get('facet_by')   # architect 2026-07-28
+            facet_by=kwargs.get('facet_by'),   # architect 2026-07-28
+            xerr=kwargs.get('xerr'),
+            yerr=kwargs.get('yerr'),
+            marker=kwargs.get('marker'),
+            size=kwargs.get('size')
         )
         
         # Check if entry selection is requested
@@ -20532,6 +20571,10 @@ function collapseDepth(maxD) {{
                 facet_by=kwargs.get('facet_by'), weights=kwargs.get('weights'),
                 weights_vector=kwargs.get('weights_vector'),
                 selection_vector=kwargs.get('selection_vector'),
+                xerr=kwargs.get('xerr'),
+                yerr=kwargs.get('yerr'),
+                marker=kwargs.get('marker'),
+                size=kwargs.get('size'),
                 _catalog_ready=True)
             if _need:
                 df_subset = pd.DataFrame(
@@ -20552,7 +20595,8 @@ function collapseDepth(maxD) {{
             # same slot vocabulary used by _EffectiveDrawSpec. Vector slots
             # contribute each string element instead of being refused.
             _scan_parts = [expr] if isinstance(expr, str) else []
-            for _slot in _EffectiveDrawSpec.SLOT_NAMES:
+            for _slot in (_EffectiveDrawSpec.SLOT_NAMES
+                          + _EffectiveDrawSpec.FORWARDED_REFERENCE_NAMES):
                 _v = kwargs.get(_slot)
                 if isinstance(_v, str) and _v:
                     _scan_parts.append(_v)
@@ -20672,7 +20716,8 @@ function collapseDepth(maxD) {{
                         kwargs['selection'] = kwargs['selection'].replace(dot_ref, flat_ref)
                     if 'group_by' in kwargs and isinstance(kwargs.get('group_by'), str):
                         kwargs['group_by'] = kwargs['group_by'].replace(dot_ref, flat_ref)
-                    for _slot in _EffectiveDrawSpec.SLOT_NAMES:
+                    for _slot in (_EffectiveDrawSpec.SLOT_NAMES
+                                      + _EffectiveDrawSpec.FORWARDED_REFERENCE_NAMES):
                         _v = kwargs.get(_slot)
                         if isinstance(_v, str):
                             kwargs[_slot] = _v.replace(dot_ref, flat_ref)
@@ -20713,7 +20758,12 @@ function collapseDepth(maxD) {{
                     "draw projection.") from exc
 
         # Create plotter and delegate
-        self._assert_struct_projection(df_subset.columns, [expr] + [kwargs.get(_sl) for _sl in ('selection','group_by','weights','facet_by','color')], 'draw')
+        self._assert_struct_projection(
+            df_subset.columns,
+            [expr] + [kwargs.get(_sl) for _sl in
+                      ('selection','group_by','weights','facet_by','color',
+                       'xerr','yerr','marker','size')],
+            'draw')
         plotter = DFDraw(df_subset)
         
         # Attach self for duck-typed axis title lookup
@@ -21881,8 +21931,13 @@ function collapseDepth(maxD) {{
 
         for _i, _es in enumerate(plan.especs):
             _slot_values = [("expr", _es.expr)]
-            _slot_values.extend((name, _es.style.get(name))
-                                for name in _EffectiveDrawSpec.SLOT_NAMES)
+            _slot_values.extend(
+                (name, _es.style.get(name))
+                for name in (
+                    _EffectiveDrawSpec.SLOT_NAMES
+                    + _EffectiveDrawSpec.FORWARDED_REFERENCE_NAMES
+                )
+            )
             for _slot, _value in _slot_values:
                 _texts = []
                 if isinstance(_value, str) and _value:
@@ -21909,7 +21964,11 @@ function collapseDepth(maxD) {{
                 _es.style.get("color"),
                 selection=_es.style.get("selection"),
                 weights=_es.style.get("weights"),
-                facet_by=_es.style.get("facet_by")))
+                facet_by=_es.style.get("facet_by"),
+                xerr=_es.style.get("xerr"),
+                yerr=_es.style.get("yerr"),
+                marker=_es.style.get("marker"),
+                size=_es.style.get("size")))
 
             # B3.2b v1.2: retain request identity while discovering dotted
             # requirements.  Owner-only sets remain the normative Rev-2 plan
@@ -22413,7 +22472,8 @@ function collapseDepth(maxD) {{
         if self._structs:
             for _d in plan.autoload_dicts:
                 for _sl in ("expr", "selection", "group_by",
-                            "weights", "facet_by", "color"):
+                            "weights", "facet_by", "color",
+                            "xerr", "yerr", "marker", "size"):
                     _v = _d.get(_sl)
                     if isinstance(_v, str):
                         self._autoload_expr_branches(_v)
@@ -22434,7 +22494,9 @@ function collapseDepth(maxD) {{
                 _needed.update(self._parse_expr_aliases(
                     _ms.get('expr'), _ms.get('group_by'), _ms.get('color'),
                     selection=_ms.get('selection'), weights=_ms.get('weights'),
-                    facet_by=_ms.get('facet_by')))   # architect 2026-07-28
+                    facet_by=_ms.get('facet_by'),   # architect 2026-07-28
+                    xerr=_ms.get('xerr'), yerr=_ms.get('yerr'),
+                    marker=_ms.get('marker'), size=_ms.get('size')))
             _to_mat = _needed - set(state.aliases_pre_existing)
             if _to_mat:
                 if verbose:
@@ -23279,6 +23341,8 @@ function collapseDepth(maxD) {{
                         weights=_m.get('weights'),
                         weights_vector=_m.get('weights_vector'),
                         selection_vector=_m.get('selection_vector'),
+                        xerr=_m.get('xerr'), yerr=_m.get('yerr'),
+                        marker=_m.get('marker'), size=_m.get('size'),
                         _catalog_ready=True)
             if _need_b:
                 df_for_plot = pd.DataFrame(
@@ -23307,7 +23371,18 @@ function collapseDepth(maxD) {{
         try:
             plotter = DFDraw(df_for_plot)
             plotter._data_source = self  # For duck-typed axis title lookup
-            self._assert_struct_projection(df_for_plot.columns, [_sp0.get(_sl9) for _sp0 in specs.values() if isinstance(_sp0, dict) for _sl9 in ('expr','selection','group_by','weights','facet_by','color') if isinstance(_sp0.get(_sl9), str)] + [_md_dict.get(_sl9) for _sl9 in ('expr','selection','group_by','weights','facet_by','color') if isinstance(_md_dict.get(_sl9), str)], 'draw_batch')
+            self._assert_struct_projection(
+                df_for_plot.columns,
+                [_sp0.get(_sl9) for _sp0 in specs.values()
+                 if isinstance(_sp0, dict)
+                 for _sl9 in ('expr','selection','group_by','weights','facet_by',
+                              'color','xerr','yerr','marker','size')
+                 if isinstance(_sp0.get(_sl9), str)]
+                + [_md_dict.get(_sl9)
+                   for _sl9 in ('expr','selection','group_by','weights','facet_by',
+                                'color','xerr','yerr','marker','size')
+                   if isinstance(_md_dict.get(_sl9), str)],
+                'draw_batch')
         except Exception:
             self._record_draw_failure(_state_b32, "projection",
                                       effective_clear, clear_after_on_error,
@@ -23483,7 +23558,8 @@ function collapseDepth(maxD) {{
                     # types/labels/paths) and LOUD — ADF/chain/load errors in a
                     # ratified expression slot propagate to the caller.
                     for _sl0 in ("expr", "selection", "group_by",
-                                 "weights", "facet_by", "color"):
+                                 "weights", "facet_by", "color",
+                                 "xerr", "yerr", "marker", "size"):
                         _v = _d0.get(_sl0)
                         if isinstance(_v, str):
                             self._autoload_expr_branches(_v, _catalog_ready=True)
@@ -23492,7 +23568,8 @@ function collapseDepth(maxD) {{
                 if isinstance(_fs0, dict) and isinstance(_fs0.get("defaults"), dict):
                     _fd = _fs0["defaults"]
                     for _sl0 in ("expr", "selection", "group_by",
-                                 "weights", "facet_by", "color"):
+                                 "weights", "facet_by", "color",
+                                 "xerr", "yerr", "marker", "size"):
                         _v = _fd.get(_sl0)
                         if isinstance(_v, str):
                             self._autoload_expr_branches(_v, _catalog_ready=True)
@@ -23584,7 +23661,11 @@ function collapseDepth(maxD) {{
                 
                 all_needed.update(self._parse_expr_aliases(
                     expr, group_by, color, selection=selection, weights=weights,
-                    facet_by=merged_plot.get('facet_by')))   # architect 2026-07-28
+                    facet_by=merged_plot.get('facet_by'),   # architect 2026-07-28
+                    xerr=merged_plot.get('xerr'),
+                    yerr=merged_plot.get('yerr'),
+                    marker=merged_plot.get('marker'),
+                    size=merged_plot.get('size')))
 
         # ═══════════════════════════════════════════════════════════════════
         # PHASE 2: Batch-load branches in lazy reader mode
@@ -23619,6 +23700,10 @@ function collapseDepth(maxD) {{
                         weights=merged_plot.get('weights'),
                         weights_vector=merged_plot.get('weights_vector'),
                         selection_vector=merged_plot.get('selection_vector'),
+                        xerr=merged_plot.get('xerr'),
+                        yerr=merged_plot.get('yerr'),
+                        marker=merged_plot.get('marker'),
+                        size=merged_plot.get('size'),
                         _catalog_ready=True
                     )
                     all_required.update(required)
@@ -23716,7 +23801,8 @@ function collapseDepth(maxD) {{
                     # plot dict, so the SAME effective specification feeds both
                     # the reduced projection below and the later delegation.
                     for _sl1 in ("selection", "group_by", "weights",
-                                 "facet_by", "color"):
+                                 "facet_by", "color", "xerr", "yerr", "marker",
+                                 "size"):
                         if _sl1 not in _ps and _sl1 in _figd:
                             _ps[_sl1] = _figd[_sl1]
                     self._struct_rewrite_draw_slots(_ps)
@@ -23736,6 +23822,8 @@ function collapseDepth(maxD) {{
                         weights=_m.get('weights'),
                         weights_vector=_m.get('weights_vector'),
                         selection_vector=_m.get('selection_vector'),
+                        xerr=_m.get('xerr'), yerr=_m.get('yerr'),
+                        marker=_m.get('marker'), size=_m.get('size'),
                         _catalog_ready=True)
         if _need_f:
             df_subset = pd.DataFrame(
