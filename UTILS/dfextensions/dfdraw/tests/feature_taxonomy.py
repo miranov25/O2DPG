@@ -2301,6 +2301,31 @@ FEATURES = [
         ],
     },
 
+
+    # ── PHASE_13_92_DF — mapped scatter color + error-bar composition ──
+    {
+        "id": "SCATTER.mapped_color_errorbars",
+        "name": "Numeric mapped scatter color composes with x/y error bars while preserving one common row domain, scatter-owned colorbar/marker semantics, lower-zorder marker-free uncertainty geometry, per-point marker composition, full-domain shared color normalization, categorical fail-loud behavior, and legacy neighboring owners (PHASE_13_92)",
+        "category": "SCATTER",
+        "tests": [
+            "test_phase_13_92_scatter_mapped_color_errorbars.py::test_R1_numeric_mapped_color_plus_yerr_two_layer",
+            "test_phase_13_92_scatter_mapped_color_errorbars.py::test_R2_numeric_mapped_color_plus_xerr_two_layer",
+            "test_phase_13_92_scatter_mapped_color_errorbars.py::test_R3_numeric_mapped_color_plus_both_errors_preserves_both_geometries",
+            "test_phase_13_92_scatter_mapped_color_errorbars.py::test_R4_R5_faceted_numeric_mapped_color_preserves_points_and_errors[yerr]",
+            "test_phase_13_92_scatter_mapped_color_errorbars.py::test_R4_R5_faceted_numeric_mapped_color_preserves_points_and_errors[xerr]",
+            "test_phase_13_92_scatter_mapped_color_errorbars.py::test_R6_computed_color_expression_plus_errorbar_and_colorbar",
+            "test_phase_13_92_scatter_mapped_color_errorbars.py::test_R7_colorbar_mappable_is_exact_point_collection_object",
+            "test_phase_13_92_scatter_mapped_color_errorbars.py::test_R8_asymmetric_row_alignment_after_selection_nan_and_range_filter",
+            "test_phase_13_92_scatter_mapped_color_errorbars.py::test_R9_errorbars_have_explicitly_lower_zorder_than_points",
+            "test_phase_13_92_scatter_mapped_color_errorbars.py::test_R10_per_point_marker_expression_plus_yerr_keeps_marker_owner",
+            "test_phase_13_92_scatter_mapped_color_errorbars.py::test_G1_string_categorical_color_plus_errors_remains_fail_loud",
+            "test_phase_13_92_scatter_mapped_color_errorbars.py::test_C1_fixed_scalar_color_plus_errors_keeps_legacy_errorbar_owner",
+            "test_phase_13_92_scatter_mapped_color_errorbars.py::test_C2_numeric_color_only_keeps_ordinary_scatter_path",
+            "test_phase_13_92_scatter_mapped_color_errorbars.py::test_R11_caller_dataframe_not_mutated_by_composed_path",
+            "test_phase_13_92_scatter_mapped_color_errorbars.py::test_R12_marker_split_preserves_full_numeric_color_domain_and_colorbar_owner",
+        ],
+    },
+
     # ── Phase 13.49.DF — meta-tests for the capability matrix itself ──
     {
         "id": "META.capability_matrix",

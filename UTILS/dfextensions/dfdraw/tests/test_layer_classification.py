@@ -793,4 +793,27 @@ TEST_LAYERS = {
     # Neighboring/backward-compatibility controls are integrated path checks.
     "test_phase_13_91_hist_expression_vector_facets_red.py::test_R7_nonfaceted_hist_expression_vector_overlay_remains_supported": "integration",
     "test_phase_13_91_hist_expression_vector_facets_red.py::test_R8_profile_expression_vector_facets_remain_supported": "integration",
+
+    # ── PHASE_13_92_DF — mapped scatter color + error-bar composition ──
+    # Independent geometry, row-domain, ownership, z-order, normalization,
+    # non-mutation and fail-loud assertions are semantic invariance evidence.
+    "test_phase_13_92_scatter_mapped_color_errorbars.py::test_R1_numeric_mapped_color_plus_yerr_two_layer": "invariance",
+    "test_phase_13_92_scatter_mapped_color_errorbars.py::test_R2_numeric_mapped_color_plus_xerr_two_layer": "invariance",
+    "test_phase_13_92_scatter_mapped_color_errorbars.py::test_R3_numeric_mapped_color_plus_both_errors_preserves_both_geometries": "invariance",
+    "test_phase_13_92_scatter_mapped_color_errorbars.py::test_R4_R5_faceted_numeric_mapped_color_preserves_points_and_errors[yerr]": "invariance",
+    "test_phase_13_92_scatter_mapped_color_errorbars.py::test_R4_R5_faceted_numeric_mapped_color_preserves_points_and_errors[xerr]": "invariance",
+    "test_phase_13_92_scatter_mapped_color_errorbars.py::test_R6_computed_color_expression_plus_errorbar_and_colorbar": "invariance",
+    "test_phase_13_92_scatter_mapped_color_errorbars.py::test_R7_colorbar_mappable_is_exact_point_collection_object": "invariance",
+    "test_phase_13_92_scatter_mapped_color_errorbars.py::test_R8_asymmetric_row_alignment_after_selection_nan_and_range_filter": "invariance",
+    "test_phase_13_92_scatter_mapped_color_errorbars.py::test_R9_errorbars_have_explicitly_lower_zorder_than_points": "invariance",
+    "test_phase_13_92_scatter_mapped_color_errorbars.py::test_R10_per_point_marker_expression_plus_yerr_keeps_marker_owner": "invariance",
+    "test_phase_13_92_scatter_mapped_color_errorbars.py::test_G1_string_categorical_color_plus_errors_remains_fail_loud": "invariance",
+    "test_phase_13_92_scatter_mapped_color_errorbars.py::test_R11_caller_dataframe_not_mutated_by_composed_path": "invariance",
+    "test_phase_13_92_scatter_mapped_color_errorbars.py::test_R12_marker_split_preserves_full_numeric_color_domain_and_colorbar_owner": "invariance",
+
+    # Explicit backward-compatibility controls exercise established neighboring
+    # owners rather than independently rederiving their full numerical semantics.
+    "test_phase_13_92_scatter_mapped_color_errorbars.py::test_C1_fixed_scalar_color_plus_errors_keeps_legacy_errorbar_owner": "integration",
+    "test_phase_13_92_scatter_mapped_color_errorbars.py::test_C2_numeric_color_only_keeps_ordinary_scatter_path": "integration",
+
 }
