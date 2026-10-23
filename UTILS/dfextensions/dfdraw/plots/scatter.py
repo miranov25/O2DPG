@@ -65,7 +65,8 @@ def draw_scatter(
     # Phase 13.28.DF: NaN/inf filter policy (AD-70)
     nan_policy: str = "filter",
     # Phase 13.38.DF: scatter error bars (column name or df.eval() expression).
-    # When either is set, render via ax.errorbar() instead of ax.scatter().
+    # PHASE_13_92_DF: numeric mapped color and per-point marker composition
+    # use a scatter point layer plus marker-free errorbar uncertainty layer.
     # NaN/inf policy in _eval_error(): raise on 100% non-finite, warn at >50%,
     # silent zeroing at ≤50%. Locked by §9.SE.6.
     xerr: Optional[str] = None,
@@ -273,51 +274,167 @@ def draw_scatter(
         )
         stats_dict["grouped"] = True
     else:
+        # PHASE_13_92_DF: all point/color/error/marker/size dependencies below
+        # are evaluated against the already selected, finite and range-filtered
+        # dataframe.  Use one local all-True mask so every parallel array has
+        # exactly the same row domain and ordering.
+        _row_mask = np.ones(len(df_filtered), dtype=bool)
+
         # Process color
         c, cmap_used, is_categorical = _process_color(
-            df_filtered, color, cmap, mask, len(x_data)
+            df_filtered, color, cmap, _row_mask, len(x_data)
         )
         
         # Process size
-        s = _process_size(df_filtered, size, default_size, mask, len(x_data))
+        s = _process_size(
+            df_filtered, size, default_size, _row_mask, len(x_data)
+        )
 
         # ============================================================== #
         # Phase 13.38.DF: scatter error bars + per-point marker resolution #
         # ============================================================== #
-        xerr_arr, xerr_nanfrac = _eval_error(df_filtered, xerr, mask, 'xerr')
-        yerr_arr, yerr_nanfrac = _eval_error(df_filtered, yerr, mask, 'yerr')
+        xerr_arr, xerr_nanfrac = _eval_error(
+            df_filtered, xerr, _row_mask, 'xerr'
+        )
+        yerr_arr, yerr_nanfrac = _eval_error(
+            df_filtered, yerr, _row_mask, 'yerr'
+        )
         if xerr is not None:
             stats_dict['xerr_nanfrac'] = xerr_nanfrac
         if yerr is not None:
             stats_dict['yerr_nanfrac'] = yerr_nanfrac
 
         resolved_marker, marker_is_scalar = _resolve_marker_per_point(
-            df_filtered, marker, mask
+            df_filtered, marker, _row_mask
         )
 
-        # Branch A: error bars present → ax.errorbar() dispatch
-        if xerr_arr is not None or yerr_arr is not None:
-            # PHASE_13_86 Stage A: matplotlib.errorbar has no canonical
-            # ScalarMappable path for dfdraw's per-point color mapping.  The
-            # previous implementation silently discarded numeric/categorical
-            # mappings (and any requested colorbar).  Until one owner supports
-            # that composition, refuse loudly rather than return a wrong plot.
-            _mapped_color = isinstance(c, np.ndarray) or is_categorical
-            if _mapped_color:
-                _facet_context = " in facet mode" if _facet_mode else ""
-                raise ValueError(
-                    "scatter" + _facet_context +
-                    ": color mapping/expression with xerr/yerr error bars is "
-                    "unsupported; refusing instead of silently dropping the "
-                    "color mapping/colorbar (BUG_dfdraw_20261010_"
-                    "scatter_errorbar_drops_color)"
-                )
-            # fmt determines point marker; default to first marker if per-point
+        _has_errors = xerr_arr is not None or yerr_arr is not None
+        _numeric_mapped_color = isinstance(c, np.ndarray) and not is_categorical
+        _per_point_marker = not marker_is_scalar
+
+        def _add_point_colorbar(point_mappable, *, marker_split=False):
+            """Attach a continuous colorbar to the actual point mappable."""
+            if (
+                point_mappable is not None
+                and _numeric_mapped_color
+                and colorbar
+            ):
+                cbar = plt.colorbar(point_mappable, ax=ax)
+                if clabel:
+                    cbar.set_label(clabel)
+                elif (
+                    isinstance(color, str)
+                    and (not marker_split or color not in df.columns)
+                ):
+                    # Preserve the established ordinary-scatter labeling:
+                    # scalar-marker paths label both columns and expressions;
+                    # split-marker paths historically label expressions only.
+                    cbar.set_label(color)
+
+        def _render_point_layer():
+            """Render the existing point owner without uncertainty geometry."""
+            if _per_point_marker:
+                # PHASE_13_92_DF real-data closure fix:
+                # marker splitting must not change the mapped-color domain.
+                # Every marker subgroup shares one Normalize derived from the
+                # full numeric color array (or the caller-supplied norm/clim).
+                # Otherwise a subgroup that contains only side==1, for example,
+                # auto-scales independently and corrupts both point colors and
+                # the colorbar range.
+                _split_scatter_kwargs = dict(kwargs)
+                _shared_color_norm = _split_scatter_kwargs.get('norm')
+                if _numeric_mapped_color and _shared_color_norm is None:
+                    _finite_c = np.asarray(c, dtype=float)
+                    _finite_c = _finite_c[np.isfinite(_finite_c)]
+                    if len(_finite_c) > 0:
+                        _vmin = _split_scatter_kwargs.pop(
+                            'vmin', float(np.min(_finite_c))
+                        )
+                        _vmax = _split_scatter_kwargs.pop(
+                            'vmax', float(np.max(_finite_c))
+                        )
+                        _shared_color_norm = Normalize(vmin=_vmin, vmax=_vmax)
+                        _split_scatter_kwargs['norm'] = _shared_color_norm
+
+                point_mappable = None
+                for m in np.unique(resolved_marker):
+                    idx = resolved_marker == m
+                    if not np.any(idx):
+                        continue
+                    if isinstance(c, np.ndarray):
+                        c_sub = c[idx]
+                    elif c is not None:
+                        c_sub = c
+                    else:
+                        c_sub = None
+                    s_sub = s[idx] if isinstance(s, np.ndarray) else s
+                    _scat = ax.scatter(
+                        x_data[idx], y_data[idx],
+                        c=c_sub, s=s_sub, alpha=alpha,
+                        edgecolors=edgecolors, linewidths=linewidths,
+                        cmap=cmap_used if not is_categorical else None,
+                        marker=m,
+                        label='_nolegend_',
+                        **_split_scatter_kwargs
+                    )
+                    # One stable point collection owns the colorbar.  All split
+                    # collections share the same cmap/norm, so the chosen owner
+                    # represents the full mapped-color domain by construction.
+                    if point_mappable is None:
+                        point_mappable = _scat
+                _add_point_colorbar(point_mappable, marker_split=True)
+                return point_mappable
+
+            point_mappable = ax.scatter(
+                x_data, y_data,
+                c=c, s=s, alpha=alpha,
+                edgecolors=edgecolors, linewidths=linewidths,
+                cmap=cmap_used if not is_categorical else None,
+                marker=marker if isinstance(marker, str) else 'o',
+                **kwargs
+            )
+            _add_point_colorbar(point_mappable)
+            return point_mappable
+
+        # PHASE_13_92_DF: numeric mapped color and/or per-point markers compose
+        # with uncertainty as two explicit layers.  The point layer owns point
+        # identity/mapped color/marker/size/colorbar.  The marker-free errorbar
+        # layer owns uncertainty geometry only and is explicitly below points.
+        if _has_errors and is_categorical:
+            _facet_context = " in facet mode" if _facet_mode else ""
+            raise ValueError(
+                "scatter" + _facet_context +
+                ": categorical color mapping/expression with xerr/yerr error "
+                "bars is unsupported; ordinary categorical scatter has no "
+                "verified mapped-color owner, so PHASE_13_92 keeps this "
+                "composition fail-loud"
+            )
+        elif _has_errors and (_numeric_mapped_color or _per_point_marker):
+            _point_zorder = kwargs.get('zorder', 1.0)
+            try:
+                _error_zorder = float(_point_zorder) - 0.1
+            except (TypeError, ValueError):
+                _error_zorder = 0.9
+
+            # Errorbar-specific style only.  Scatter kwargs intentionally do
+            # not leak into Axes.errorbar().
+            errorbars = ax.errorbar(
+                x_data, y_data,
+                xerr=xerr_arr, yerr=yerr_arr,
+                fmt='none',
+                alpha=alpha,
+                elinewidth=get_style_value("scatter.error_elinewidth", 1.0),
+                capsize=get_style_value("scatter.error_capsize", 2),
+                ecolor=get_style_value("scatter.error_ecolor", None),
+                zorder=_error_zorder,
+            )
+            scatter = _render_point_layer()
+        # Existing scalar fixed-color + scalar-marker errorbar path remains
+        # unchanged for backward compatibility.
+        elif _has_errors:
             fmt = resolved_marker if marker_is_scalar else (
                 resolved_marker[0] if len(resolved_marker) > 0 else 'o'
             )
-            # Resolve color for errorbar (scalar only — c=array goes via
-            # post-render path; eval-color + xerr/yerr is documented composition)
             resolved_color = c if isinstance(c, str) else None
             scatter = ax.errorbar(
                 x_data, y_data,
@@ -330,62 +447,8 @@ def draw_scatter(
                 ecolor=get_style_value("scatter.error_ecolor", None),
                 **kwargs
             )
-            # No colorbar in errorbar branch (errorbar doesn't return ScalarMappable)
-        # Branch B: per-point marker → np.unique loop with _nolegend_
-        elif not marker_is_scalar:
-            scatter = None
-            for m in np.unique(resolved_marker):
-                idx = resolved_marker == m
-                if not np.any(idx):
-                    continue
-                # Subset color array if continuous (np.ndarray)
-                if isinstance(c, np.ndarray):
-                    c_sub = c[idx]
-                elif c is not None:
-                    c_sub = c  # fixed color string
-                else:
-                    c_sub = None
-                # Subset size if it's an array
-                s_sub = s[idx] if isinstance(s, np.ndarray) else s
-                _scat = ax.scatter(
-                    x_data[idx], y_data[idx],
-                    c=c_sub, s=s_sub, alpha=alpha,
-                    edgecolors=edgecolors, linewidths=linewidths,
-                    cmap=cmap_used if not is_categorical else None,
-                    marker=m,
-                    label='_nolegend_',  # §9.ECM.8: prevent duplicate legend entries
-                    **kwargs
-                )
-                # Keep the last collection for colorbar attachment
-                scatter = _scat
-            # Colorbar (continuous expression color + per-point markers compose)
-            if scatter is not None and isinstance(c, np.ndarray) and not is_categorical and colorbar:
-                cbar = plt.colorbar(scatter, ax=ax)
-                if clabel:
-                    cbar.set_label(clabel)
-                elif isinstance(color, str) and color not in df.columns:
-                    # Expression color — label with the expression itself
-                    cbar.set_label(color)
-        # Branch C: existing scalar-marker ax.scatter (dispatch invariance §9.SE.5)
         else:
-            scatter = ax.scatter(
-                x_data, y_data,
-                c=c, s=s, alpha=alpha,
-                edgecolors=edgecolors, linewidths=linewidths,
-                cmap=cmap_used if not is_categorical else None,
-                marker=marker if isinstance(marker, str) else 'o',
-                **kwargs
-            )
-            # Colorbar for continuous color
-            if c is not None and not is_categorical and colorbar and not isinstance(c, str):
-                cbar = plt.colorbar(scatter, ax=ax)
-                if clabel:
-                    cbar.set_label(clabel)
-                elif isinstance(color, str) and color in df.columns:
-                    cbar.set_label(color)
-                elif isinstance(color, str) and color not in df.columns:
-                    # Phase 13.38.DF: expression color label
-                    cbar.set_label(color)
+            scatter = _render_point_layer()
 
         # Legend for categorical color (Phase 13.16.DF FIX1: skip when suppressed)
         if is_categorical and isinstance(color, str) and not _suppress_legend:
