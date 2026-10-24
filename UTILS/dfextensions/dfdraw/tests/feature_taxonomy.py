@@ -2425,4 +2425,33 @@ FEATURES = [
             "test_meta_capability_matrix.py::test_no_orphan_visual_tests",
         ],
     },
+    # ── Candidate N-D retained-state first slice (phase owner under review) ──
+    {
+        "id": "STATS.retained_histogram_state",
+        "name": 'Internal generic sparse weighted histogram retained state, named categorical coordinates and strict edge/provenance/schema guards (first-slice candidate)',
+        "category": "STATS",
+        "tests": [
+            'test_phase_13_82_retained_state_red.py::test_t1_weighted_histogram_against_numpy',
+            'test_phase_13_82_retained_state_red.py::test_t2_cancelled_weight_is_not_empty',
+            'test_phase_13_82_retained_state_red.py::test_t4_categorical_coordinate_is_semantic_dimension',
+            'test_phase_13_82_retained_state_red.py::test_t5_schema_name_and_partition_contract',
+            'test_phase_13_82_retained_state_red.py::test_t6_sparse_underflow_overflow_nan_and_last_edge',
+            'test_phase_13_82_retained_state_red.py::test_t9_invalid_resolved_edges_refused',
+            'test_phase_13_82_retained_state_red.py::test_t11_numeric_categories_preserve_identity',
+            'test_phase_13_82_retained_state_red.py::test_t13_two_named_categorical_dimensions_form_sparse_product',
+        ],
+    },
+    {
+        "id": "STATS.retained_profile_state",
+        "name": 'Internal generic weighted profile retained moments and logical payload round-trip with corruption guards (first-slice candidate)',
+        "category": "STATS",
+        "tests": [
+            'test_phase_13_82_retained_state_red.py::test_t3_weighted_profile_against_independent_raw_sums',
+            'test_phase_13_82_retained_state_red.py::test_t7_one_node_class_different_sufficient_state',
+            'test_phase_13_82_retained_state_red.py::test_t8_logical_payload_round_trip_with_metadata',
+            'test_phase_13_82_retained_state_red.py::test_t10_nonfinite_weight_and_profile_value_not_accumulated',
+            'test_phase_13_82_retained_state_red.py::test_t12_corrupt_payload_fractional_entries_refused',
+        ],
+    },
+
 ]

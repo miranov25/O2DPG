@@ -879,4 +879,19 @@ TEST_LAYERS = {
     'test_phase_13_93_stage_b_color_display_red.py::test_b_R11_legend_disjoint_from_column_headings_and_title[0.92]': 'invariance',
     'test_phase_13_93_stage_b_color_display_red.py::test_b_R12_after_return_manual_annotation_edit_is_not_reversed': 'invariance',
 
+    # ── Candidate N-D retained-state independent RED/GREEN oracles ──
+    'test_phase_13_82_retained_state_red.py::test_t1_weighted_histogram_against_numpy': 'invariance',
+    'test_phase_13_82_retained_state_red.py::test_t2_cancelled_weight_is_not_empty': 'invariance',
+    'test_phase_13_82_retained_state_red.py::test_t3_weighted_profile_against_independent_raw_sums': 'invariance',
+    'test_phase_13_82_retained_state_red.py::test_t4_categorical_coordinate_is_semantic_dimension': 'invariance',
+    'test_phase_13_82_retained_state_red.py::test_t5_schema_name_and_partition_contract': 'invariance',
+    'test_phase_13_82_retained_state_red.py::test_t6_sparse_underflow_overflow_nan_and_last_edge': 'invariance',
+    'test_phase_13_82_retained_state_red.py::test_t7_one_node_class_different_sufficient_state': 'invariance',
+    'test_phase_13_82_retained_state_red.py::test_t8_logical_payload_round_trip_with_metadata': 'invariance',
+    'test_phase_13_82_retained_state_red.py::test_t9_invalid_resolved_edges_refused': 'invariance',
+    'test_phase_13_82_retained_state_red.py::test_t10_nonfinite_weight_and_profile_value_not_accumulated': 'invariance',
+    'test_phase_13_82_retained_state_red.py::test_t11_numeric_categories_preserve_identity': 'invariance',
+    'test_phase_13_82_retained_state_red.py::test_t12_corrupt_payload_fractional_entries_refused': 'invariance',
+    'test_phase_13_82_retained_state_red.py::test_t13_two_named_categorical_dimensions_form_sparse_product': 'invariance',
+
 }
