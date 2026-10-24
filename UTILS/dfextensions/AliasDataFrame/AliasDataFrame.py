@@ -14538,12 +14538,40 @@ function collapseDepth(maxD) {{
         _add_colname_kwarg(weights)
         _add_colname_kwarg(weights_vector)
         _add_colname_kwarg(selection_vector, as_selection=True)
-        # PHASE_13_76_ADF B3.4.4: dfdraw scatter forwarding parameters that
-        # carry dataframe column/expression dependencies.
-        _add_colname_kwarg(xerr)
-        _add_colname_kwarg(yerr)
-        _add_colname_kwarg(marker)
-        _add_colname_kwarg(size)
+        # PHASE_13_76_ADF B3.4.4 RC-1: forwarded kwargs may be either
+        # dataframe references/expressions OR plotting literals
+        # (e.g. marker="o", "s", "^").  Only promote a forwarded string to a
+        # dependency when this frame can actually resolve the referenced
+        # token.  Unresolved strings stay literals and are forwarded unchanged
+        # to dfdraw.  Core slots intentionally keep their existing behavior.
+        _fwd_known = set(map(str, self.df.columns)) | set(self.aliases)
+        if self._lazy_reader is not None:
+            _fwd_known |= set(map(str, self._lazy_reader.available_branches))
+
+        for _fwd in (xerr, yerr, marker, size):
+            if not (isinstance(_fwd, str) and _fwd):
+                continue
+
+            _analysis = self._analyze_expression(_fwd)
+            _refs = set(_analysis.get('column_refs', set()))
+            for _sf_name, _sf_col in _analysis.get('subframe_refs', []):
+                _refs.add(f"{_sf_name}.{_sf_col}")
+
+            for _ref in _refs:
+                # Qualified struct/subframe references retain their canonical
+                # downstream owner; literal marker "." yields no refs here.
+                if "." in _ref:
+                    all_columns.add(_ref)
+                    continue
+
+                try:
+                    _base = set(self._resolve_to_base_branches({_ref}))
+                except Exception:
+                    continue
+
+                if (_ref in _fwd_known
+                        or (_base and _base <= _fwd_known)):
+                    all_columns.add(_ref)
 
         # 4. Add explicit aliases
         if aliases:

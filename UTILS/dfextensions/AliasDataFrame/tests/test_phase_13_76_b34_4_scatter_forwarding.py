@@ -1,5 +1,7 @@
 """PHASE_13_76_ADF B3.4.4 scatter forwarding dependency regression."""
 
+import os
+
 import numpy as np
 import pandas as pd
 import pytest
@@ -39,6 +41,15 @@ def _fixture(n=60):
     adf.add_alias("size_alias", "1.25*size_col")
     return adf, df
 
+
+
+def _lazy_root_fixture():
+    """Genuine lazy ROOT-backed fixture for B3.4.4 RC-2."""
+    fixture = os.path.join(
+        os.path.dirname(__file__), "lazy_struct_fixture_clean.root")
+    if not os.path.exists(fixture):
+        pytest.skip("struct fixture not present (make_fixtures.py)")
+    return A.AliasDataFrame.read_tree_lazy(fixture, "tree")
 
 def _selected(df):
     mask = df.eval("sel > 0").to_numpy(dtype=bool)
@@ -84,6 +95,51 @@ def _surface_axis(adf, surface, spec, *, lazy=False):
 
 @needs_dfdraw
 class TestB344ScatterForwarding:
+
+    @pytest.mark.parametrize("marker", ["o", "s", "^"])
+    @pytest.mark.parametrize(
+        "surface", ["draw", "draw_batch", "draw_figures"])
+    def test_lazy_root_literal_marker_across_public_surfaces(
+            self, surface, marker):
+        """B3.4.4 RC-2: literal marker styles are plotting values, not lazy
+        branch dependencies.
+
+        This is deliberately ROOT-backed.  The pre-RC-1 endpoint raises
+        BranchNotFoundError for these requests because the marker literal is
+        promoted to a fake required branch before dfdraw sees it.
+        """
+        adf = _lazy_root_fixture()
+        before_loaded = set(adf._lazy_reader.loaded_branches)
+
+        spec = {
+            "expr": "dedxTPC.dEdxMaxTPC:mult",
+            "type": "scatter",
+            "marker": marker,
+        }
+
+        fig, ax = _surface_axis(adf, surface, spec, lazy=True)
+        try:
+            # Public rendering completed and produced a scatter collection.
+            paths = [
+                c for c in ax.collections
+                if hasattr(c, "get_paths") and c.get_paths()
+            ]
+            assert paths, (
+                f"{surface}: marker={marker!r} produced no scatter collection")
+
+            # Most importantly, the plotting literal must never become a
+            # physical lazy-reader dependency.
+            assert marker not in set(adf._lazy_reader.loaded_branches), (
+                f"{surface}: literal marker {marker!r} was loaded as a branch")
+
+            # The request is non-vacuous: real expression dependencies did
+            # load from the ROOT-backed fixture.
+            after_loaded = set(adf._lazy_reader.loaded_branches)
+            assert after_loaded - before_loaded, (
+                f"{surface}: lazy fixture loaded no real branches")
+        finally:
+            plt.close("all")
+
     def test_direct_dfdraw_yerr_positive_control(self):
         _, df = _fixture()
         selected = _selected(df)
