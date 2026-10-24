@@ -310,3 +310,56 @@ def test_A_R13_legacy_2d_facet_presentation_unchanged_without_new_options():
         assert axes[1, 0].get_ylabel().startswith("row_dim=R1")
     finally:
         plt.close(fig)
+
+
+@pytest.mark.parametrize("left_margin", [0.06, 0.08])
+def test_A_R14_rendered_left_decorations_do_not_intersect(left_margin):
+    """Renderer bbox oracle: shared ylabel < row headings < tick/axis text.
+
+    The 0.06 margin is a falsifier for the old fixed x=.007/x=left-.04
+    layout; a 5x8 dense grid is the real dEdxAI topology.
+    """
+    df = _dense_df(rows=ROW_ORDER, cols=COL_ORDER, n_per_cell=3)
+    margins = [left_margin, .96, .89, .08]
+    fig, axes, _ = DFDraw(df).scatter(
+        'y:x', facet_by=['row_dim', 'col_dim'],
+        share_x='none', share_y='none', facet_labels='outer',
+        shared_xlabel='TPC region', shared_ylabel='Coefficient',
+        figure_margins=margins, subplot_spacing=[.25, .30],
+    )
+    try:
+        fig.canvas.draw()
+        renderer = fig.canvas.get_renderer()
+        pad = 1.5 * fig.dpi / 72.0
+        assert [fig.subplotpars.left, fig.subplotpars.right,
+                fig.subplotpars.top, fig.subplotpars.bottom] == pytest.approx(margins)
+        ylabel = next(t for t in fig.texts if t.get_text() == 'Coefficient')
+        ylabel_bbox = ylabel.get_window_extent(renderer)
+        headings = [next(t for t in fig.texts if t.get_text() == r)
+                    for r in ROW_ORDER]
+        heading_bboxes = [t.get_window_extent(renderer) for t in headings]
+        tight_left = min(ax.get_tightbbox(renderer).x0 for ax in axes[:, 0])
+        assert ylabel_bbox.x0 >= 0
+        assert all(ylabel_bbox.x1 + pad < box.x0 for box in heading_bboxes)
+        assert all(box.x1 + pad < tight_left for box in heading_bboxes)
+        assert fig._supxlabel.get_window_extent(renderer).y0 >= 0
+    finally:
+        plt.close(fig)
+
+
+def test_A_R15_too_narrow_left_gutter_warns_without_changing_margins():
+    """Explicit margins are authoritative even when decorations cannot fit."""
+    df = _dense_df(rows=ROW_ORDER[:2], cols=COL_ORDER[:2])
+    requested = [.025, .95, .89, .08]
+    with pytest.warns(UserWarning, match='insufficient room|increase.*figure_margins'):
+        fig, axes, _ = DFDraw(df).scatter(
+            'y:x', facet_by=['row_dim', 'col_dim'], facet_labels='outer',
+            shared_ylabel='Coefficient', shared_xlabel='Region',
+            figure_margins=requested, share_x='none', share_y='none')
+    try:
+        sp = fig.subplotpars
+        np.testing.assert_allclose(
+            [sp.left, sp.right, sp.top, sp.bottom], requested, atol=1e-12,
+            rtol=0)
+    finally:
+        plt.close(fig)

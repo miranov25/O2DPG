@@ -249,3 +249,57 @@ def test_b21_nonfaceted_legend_refuses_before_matplotlib():
     with pytest.raises(ValueError,match='color_display.*facet_by'):
         DFDraw(_frame()).scatter('coefficient:region',color='side',
                                 color_display='legend')
+
+
+@pytest.mark.parametrize('top_margin', [.89, .92])
+def test_b_R11_legend_disjoint_from_column_headings_and_title(top_margin):
+    """Renderer bbox oracle at both approved and previously colliding top gutters."""
+    df = _frame()
+    pieces = []
+    rows = ['Base', 'Rate', 'TPC', 'Unfm', 'Ft0']
+    cols = ['Constant', 'Tgl', 'Qpt', 'TglQpt',
+            'MdEdx', 'TglMdEdx', 'MdEdxQpt', 'TglMdEdxQpt']
+    for row in rows:
+        for col in cols:
+            part = df.iloc[:4].copy()
+            part['row'] = row
+            part['col'] = col
+            pieces.append(part)
+    full = pd.concat(pieces, ignore_index=True)
+    full['row'] = pd.Categorical(full['row'], categories=rows, ordered=True)
+    full['col'] = pd.Categorical(full['col'], categories=cols, ordered=True)
+    margins = [.08, .96, top_margin, .08]
+    fig, axes, _ = _draw(
+        full, color_display='legend', figure_margins=margins,
+        subplot_spacing=[.25, .30],
+    )
+    try:
+        fig.canvas.draw()
+        renderer = fig.canvas.get_renderer()
+        pad = 1.5 * fig.dpi / 72.0
+        legend_bbox = fig.legends[0].get_window_extent(renderer)
+        title_bbox = fig._suptitle.get_window_extent(renderer)
+        head_bboxes = [next(t for t in fig.texts if t.get_text() == col)
+                      .get_window_extent(renderer) for col in cols]
+        assert fig.subplotpars.top == pytest.approx(top_margin)
+        assert all(not legend_bbox.overlaps(head) for head in head_bboxes)
+        assert all(head.y1 + pad < legend_bbox.y0 for head in head_bboxes)
+        assert legend_bbox.y1 + pad < title_bbox.y0
+        assert title_bbox.y1 < fig.bbox.height
+    finally:
+        plt.close(fig)
+
+
+def test_b_R12_after_return_manual_annotation_edit_is_not_reversed():
+    """No draw_event/savefig callback may undo scientists' manual edits."""
+    fig, axes, _ = _draw(_frame(), color_display='legend',
+                         figure_margins=[.16,.94,.85,.12])
+    try:
+        fig.legends[0].set_bbox_to_anchor((.30, .75), transform=fig.transFigure)
+        fig._supylabel.set_x(.025)
+        expected_anchor = fig.legends[0].get_bbox_to_anchor().bounds
+        fig.canvas.draw()
+        assert fig.legends[0].get_bbox_to_anchor().bounds == pytest.approx(expected_anchor)
+        assert fig._supylabel.get_position()[0] == pytest.approx(.025)
+    finally:
+        plt.close(fig)

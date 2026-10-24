@@ -872,5 +872,11 @@ TEST_LAYERS = {
     'test_phase_13_93_stage_b_color_display_red.py::test_b19_grouped_color_owner_does_not_silently_fabricate_side_legend': 'invariance',
     'test_phase_13_93_stage_b_color_display_red.py::test_b20_nonfaceted_explicit_none_is_legacy_compatible': 'integration',
     'test_phase_13_93_stage_b_color_display_red.py::test_b21_nonfaceted_legend_refuses_before_matplotlib': 'invariance',
+    'test_phase_13_93_stage_a_dense_facet_red.py::test_A_R14_rendered_left_decorations_do_not_intersect[0.06]': 'invariance',
+    'test_phase_13_93_stage_a_dense_facet_red.py::test_A_R14_rendered_left_decorations_do_not_intersect[0.08]': 'invariance',
+    'test_phase_13_93_stage_a_dense_facet_red.py::test_A_R15_too_narrow_left_gutter_warns_without_changing_margins': 'invariance',
+    'test_phase_13_93_stage_b_color_display_red.py::test_b_R11_legend_disjoint_from_column_headings_and_title[0.89]': 'invariance',
+    'test_phase_13_93_stage_b_color_display_red.py::test_b_R11_legend_disjoint_from_column_headings_and_title[0.92]': 'invariance',
+    'test_phase_13_93_stage_b_color_display_red.py::test_b_R12_after_return_manual_annotation_edit_is_not_reversed': 'invariance',
 
 }

@@ -373,6 +373,105 @@ _ND_FACET_PRESENTATION_KWARGS = frozenset({
     'color_display', 'max_legend_categories',
 })
 
+
+
+def _position_nd_figure_decorations(fig, axes_grid, *,
+                                    row_headings=(), column_headings=(),
+                                    shared_xlabel=None, shared_ylabel=None,
+                                    legend=None, suptitle=None,
+                                    padding_pt=4.0):
+    """Place dfdraw-owned Figure annotations within the user's Axes geometry.
+
+    This is a *one-shot initial placement*, never a draw/save callback.  It
+    uses Matplotlib's actual renderer extents and does not call tight_layout,
+    subplots_adjust, change font sizes, or modify any data Axes.  Subsequent
+    user edits to the returned Figure remain authoritative.
+
+    Axes/tick decorations form the inner boundary.  Row labels and the shared
+    ylabel are packed outward to the left; column labels, Figure legend and
+    suptitle are packed upward.  Insufficient Figure space is warned about,
+    rather than silently moving the user's specified subplot margins.
+    """
+    import warnings
+
+    # One actual render produces reliable glyph extents (also on Agg/TkAgg).
+    # Do not register on draw_event: users must be free to adjust afterwards.
+    fig.canvas.draw()
+    renderer = fig.canvas.get_renderer()
+    width, height = fig.bbox.width, fig.bbox.height
+    gap = padding_pt * fig.dpi / 72.0
+    axes = np.asarray(axes_grid)
+
+    def bbox(artist):
+        return artist.get_window_extent(renderer)
+
+    def shift_x(artist, delta):
+        x, y = artist.get_position()
+        artist.set_position((x + delta / width, y))
+
+    def shift_y(artist, delta):
+        x, y = artist.get_position()
+        artist.set_position((x, y + delta / height))
+
+    # Tight axis bounds include tick labels and conventional axis labels.
+    # Do not treat the Axes' rectangular position as its full text extent.
+    left_edge = min(ax.get_tightbbox(renderer).x0 for ax in axes[:, 0])
+    top_edge = max(ax.get_tightbbox(renderer).y1 for ax in axes[0, :])
+    bottom_edge = min(ax.get_tightbbox(renderer).y0 for ax in axes[-1, :])
+
+    for heading in row_headings:
+        # All row headings share one right-aligned horizontal guide.
+        shift_x(heading, left_edge - gap - bbox(heading).x1)
+    if row_headings:
+        left_edge = min(bbox(h).x0 for h in row_headings)
+    if shared_ylabel is not None:
+        shift_x(shared_ylabel, left_edge - gap - bbox(shared_ylabel).x1)
+
+    for heading in column_headings:
+        shift_y(heading, top_edge + gap - bbox(heading).y0)
+    if column_headings:
+        top_edge = max(bbox(h).y1 for h in column_headings)
+
+    if shared_xlabel is not None:
+        shift_y(shared_xlabel, bottom_edge - gap - bbox(shared_xlabel).y1)
+
+    if legend is not None:
+        # Figure legend uses a different transform/anchor interface than Text.
+        # Set its lower edge above every column heading; never alter the Axes.
+        current = bbox(legend)
+        anchor = legend.get_bbox_to_anchor().transformed(fig.transFigure.inverted())
+        legend.set_bbox_to_anchor(
+            (anchor.x0, anchor.y0 + (top_edge + gap - current.y0) / height),
+            transform=fig.transFigure)
+        top_edge = bbox(legend).y1
+
+    if suptitle is not None:
+        if bbox(suptitle).y0 < top_edge + gap:
+            shift_y(suptitle, top_edge + gap - bbox(suptitle).y0)
+        top_edge = max(top_edge, bbox(suptitle).y1)
+
+    # A clear diagnostic is preferable to changing explicit margins or
+    # squeezing the user's typography.  Bounds are display pixels.
+    left_artists = list(row_headings)
+    if shared_ylabel is not None:
+        left_artists.append(shared_ylabel)
+    bottom_artists = [shared_xlabel] if shared_xlabel is not None else []
+    top_artists = list(column_headings)
+    if legend is not None:
+        top_artists.append(legend)
+    if suptitle is not None:
+        top_artists.append(suptitle)
+    if (any(bbox(a).x0 < gap for a in left_artists) or
+            any(bbox(a).y0 < gap for a in bottom_artists) or
+            any(bbox(a).y1 > height - gap for a in top_artists)):
+        warnings.warn(
+            'PHASE_13_93: Figure margins leave insufficient room for '
+            'non-overlapping facet headings, shared labels, legend and title; '
+            'increase the appropriate figure_margins or Figure size. '
+            'Explicit margins, spacing and font sizes were not changed.',
+            UserWarning, stacklevel=3)
+
+
 def _plan_nd_scatter_color_display(df, *, color, marker, color_display,
                                    max_legend_categories, cmap=None,
                                    draw_kwargs=None):
@@ -5528,11 +5627,17 @@ class DFDraw:
                 adjustment.update(zip(('wspace', 'hspace'), subplot_spacing))
             fig.subplots_adjust(**adjustment)
 
+        column_headings = []
+        row_headings = []
+        shared_xlabel_artist = None
+        shared_ylabel_artist = None
+        legend_artist = None
         if facet_labels == 'outer':
             for j, value in enumerate(col_values):
                 pos = axes[0, j].get_position()
-                fig.text((pos.x0 + pos.x1) / 2, pos.y1 + 0.012,
-                         str(value), ha='center', va='bottom', fontsize=10)
+                column_headings.append(fig.text(
+                    (pos.x0 + pos.x1) / 2, pos.y1 + 0.012,
+                    str(value), ha='center', va='bottom', fontsize=10))
         if facet_labels == 'outer' or shared_ylabel:
             # Moving semantic ylabels to Figure level must not silently erase
             # the row facet identity from left-edge panels. In explicit outer
@@ -5541,8 +5646,9 @@ class DFDraw:
                 pos = axes[i, 0].get_position()
                 # Leave a gutter between numeric y ticks and row headings.
                 text = str(value) if facet_labels == 'outer' else f'{row_col}={value}'
-                fig.text(pos.x0 - 0.04, (pos.y0 + pos.y1) / 2,
-                         text, ha='right', va='center', fontsize=10)
+                row_headings.append(fig.text(
+                    pos.x0 - 0.04, (pos.y0 + pos.y1) / 2,
+                    text, ha='right', va='center', fontsize=10))
 
         if shared_xlabel:
             label = (shared_xlabel if isinstance(shared_xlabel, str)
@@ -5550,7 +5656,7 @@ class DFDraw:
                                 if ax.get_xlabel()), str(x_expr or '')))
             for ax in axes.flat:
                 ax.set_xlabel('')
-            fig.supxlabel(label)
+            shared_xlabel_artist = fig.supxlabel(label)
         if shared_ylabel:
             # The legacy left-edge cell ylabel embeds 'row_dim=value\n'.
             # Semantic Figure labels must never inherit that facet heading.
@@ -5558,7 +5664,7 @@ class DFDraw:
                      else (plot_kwargs.get('ylabel') or str(y_expr or '')))
             for ax in axes.flat:
                 ax.set_ylabel('')
-            fig.supylabel(label, x=0.007)
+            shared_ylabel_artist = fig.supylabel(label, x=0.007)
 
         # ====================================================================
         # Phase 13.43.DF v1.2 §4.2.0 — Faceted fit aggregation (Option A).
@@ -5581,13 +5687,26 @@ class DFDraw:
             ]
             # One Figure artist, not 40 per-panel legends or colorbars.
             # This top gutter is above outer column headings when top <= .91.
-            fig.legend(
+            legend_artist = fig.legend(
                 proxies,
                 [f"{color_plan['title']}={v:g}" for v in color_plan['values']],
                 loc='upper center', bbox_to_anchor=(0.5, 0.95),
                 ncol=min(len(proxies), 8), fontsize=9,
                 frameon=False,
             )
+
+        # PHASE_13_93 closure repair: use rendered glyph/axes extents, not
+        # fixed Figure fractions, for the annotations owned by this N-D grid.
+        # One-shot initial placement only; users retain full post-draw control.
+        if (row_headings or column_headings or shared_xlabel_artist is not None
+                or shared_ylabel_artist is not None or legend_artist is not None):
+            _position_nd_figure_decorations(
+                fig, axes, row_headings=row_headings,
+                column_headings=column_headings,
+                shared_xlabel=shared_xlabel_artist,
+                shared_ylabel=shared_ylabel_artist,
+                legend=legend_artist,
+                suptitle=fig._suptitle)
 
         if any(isinstance(k, tuple) for k in stats_grid):
             aggregated_fits = {}
