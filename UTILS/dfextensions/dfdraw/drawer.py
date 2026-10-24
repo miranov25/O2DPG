@@ -265,12 +265,13 @@ def _classify_facet_dim(df, col, bins=None, quantiles=None):
     classification of the full frame, so they cannot diverge.
     """
     if bins is None and quantiles is None:
-        return None, sorted(df[col].dropna().unique().tolist())
+        return None, _resolve_facet_values(df, col)
     bin_series = _safe_cut_series(df[col], bins=bins, quantiles=quantiles)
     return bin_series, list(bin_series.cat.categories)
 
 
-def _resolve_facet_values(df, col, bins=None, quantiles=None):
+def _resolve_facet_values(df, col, bins=None, quantiles=None,
+                          facet_order=None):
     """Resolve a facet dimension's column + binning into a list of value-groups.
     
     Phase 13.41.DF v1.6 §4 (CP2-A: NEW helper, not pre-existing).
@@ -278,8 +279,31 @@ def _resolve_facet_values(df, col, bins=None, quantiles=None):
     Returns: list of values (scalars for discrete; pd.Interval objects for binned).
     """
     if bins is None and quantiles is None:
-        # Discrete column — sorted unique values
-        return sorted(df[col].dropna().unique().tolist())
+        # PHASE_13_93 Stage A: a categorical's declared order is scientific
+        # metadata. Restrict to observed non-null levels; preserve the legacy
+        # sorted fallback for ordinary (non-categorical) columns.
+        observed = df[col].dropna().unique().tolist()
+        if isinstance(df[col].dtype, pd.CategoricalDtype):
+            values = [v for v in df[col].cat.categories if v in observed]
+        else:
+            try:
+                values = sorted(observed)
+            except TypeError:
+                values = observed
+        if facet_order is not None:
+            if (not isinstance(facet_order, (list, tuple))
+                    or len(facet_order) != len(set(facet_order))):
+                raise ValueError(f"facet_order for {col!r} must be an ordered list of distinct values")
+            unknown = [v for v in facet_order if v not in observed]
+            omitted = [v for v in observed if v not in facet_order]
+            if unknown or omitted:
+                raise ValueError(
+                    f"facet_order for {col!r} must enumerate the observed "
+                    f"category values exactly; unknown={unknown!r}, omitted={omitted!r}")
+            return list(facet_order)
+        return values
+    if facet_order is not None:
+        raise ValueError(f"facet_order for binned dimension {col!r} is unsupported")
     
     bin_series = _safe_cut_series(df[col], bins=bins, quantiles=quantiles)
     
@@ -339,6 +363,116 @@ _CROSS_SURFACE_KWARGS = frozenset({
     'on_error', 'save_dir', 'save_format', 'verbose', 'dpi',
     'close_figures', 'entry_begin', 'entry_end',
 })
+
+# PHASE_13_93 Stage A: these are Figure/facet-coordinator controls, not
+# Matplotlib artist properties. They may travel via **kwargs through typed
+# draw doors, but must never reach an individual plot renderer.
+_ND_FACET_PRESENTATION_KWARGS = frozenset({
+    'facet_order', 'facet_labels', 'shared_xlabel', 'shared_ylabel',
+    'figure_margins', 'subplot_spacing',
+    'color_display', 'max_legend_categories',
+})
+
+def _plan_nd_scatter_color_display(df, *, color, marker, color_display,
+                                   max_legend_categories, cmap=None,
+                                   draw_kwargs=None):
+    """Plan a Figure-wide scatter color presentation from the selected rows.
+
+    Reuse PHASE_13_92's existing color and per-point marker evaluators rather
+    than independently interpreting df.eval expressions. The returned plan
+    applies unchanged to every N-D facet, including separate 3-D figures.
+    """
+    from matplotlib.colors import BoundaryNorm, ListedColormap
+    from .plots.scatter import _process_color, _resolve_marker_per_point
+
+    if color_display is None:
+        return None  # exact legacy rendering when not explicitly opted in
+    if color_display not in ('auto', 'legend', 'colorbar'):
+        raise ValueError("color_display must be 'auto', 'legend', 'colorbar', or None")
+    if (not isinstance(max_legend_categories, (int, np.integer))
+            or isinstance(max_legend_categories, (bool, np.bool_))
+            or max_legend_categories < 1):
+        raise ValueError('max_legend_categories must be a positive integer')
+    if color is None or not isinstance(color, str):
+        raise ValueError('color_display requires a named or expression-based color variable')
+
+    all_rows = np.ones(len(df), dtype=bool)
+    color_array, _, unsupported_categorical = _process_color(
+        df, color, cmap, all_rows, len(df))
+    # PHASE_13_92 does not support string/object categorical color with
+    # error bars: keep its fail-loud boundary rather than fabricate colors.
+    if unsupported_categorical or not isinstance(color_array, np.ndarray):
+        raise ValueError(
+            'color_display legend/auto requires an evaluated numeric or boolean '
+            'color array; string/object categorical scatter requires a separate '
+            'verified PHASE_13_92 color owner')
+    values = np.asarray(color_array, dtype=float)
+    valid = np.isfinite(values)
+    categories = np.unique(values[valid])
+    if len(categories) == 0:
+        raise ValueError('color_display found no finite color categories')
+    if color_display == 'colorbar':
+        return {'mode': 'colorbar'}
+
+    if color_display == 'auto' and len(categories) > max_legend_categories:
+        return {'mode': 'colorbar'}
+    if len(categories) > max_legend_categories:
+        raise ValueError(
+            f'color_display=legend has {len(categories)} categories, exceeding '
+            f'max_legend_categories={max_legend_categories}')
+    if draw_kwargs and any(key in draw_kwargs for key in ('norm', 'vmin', 'vmax')):
+        raise ValueError(
+            'color_display=legend cannot combine automatic category mapping '
+            'with explicit norm/vmin/vmax')
+
+    # The categorical legend can reflect per-point marker encoding only when
+    # the evaluated marker partition is equivalent to the color partition.
+    marker_values, scalar_marker = _resolve_marker_per_point(df, marker, all_rows)
+    if scalar_marker:
+        common_marker = marker_values if isinstance(marker_values, str) else 'o'
+        category_markers = [common_marker] * len(categories)
+    else:
+        markers = np.asarray(marker_values)[valid]
+        color_valid = values[valid]
+        category_markers = []
+        for category in categories:
+            present = np.unique(markers[color_valid == category])
+            if len(present) != 1:
+                raise ValueError(
+                    'color_display=legend: marker and color partitions are '
+                    'not equivalent (one color category has several markers)')
+            category_markers.append(str(present[0]))
+        if len(set(category_markers)) != len(category_markers):
+            raise ValueError(
+                'color_display=legend: marker and color partitions are not '
+                'equivalent (a marker belongs to multiple color categories)')
+
+    palette = plt.get_cmap(cmap or get_style_value('colors.palette', 'tab10'))
+    n = len(categories)
+    if cmap is None and getattr(palette, 'N', 0) >= n and n <= 10:
+        palette_rgba = [palette(i) for i in range(n)]
+    else:
+        palette_rgba = [palette(i / max(1, n - 1)) for i in range(n)]
+    # BoundaryNorm accepts irregular numeric categories and ensures identical
+    # numeric value -> identical RGBA even if a facet has just one category.
+    if n == 1:
+        delta = max(0.5, abs(float(categories[0])) * 0.001)
+        edges = np.array([categories[0] - delta, categories[0] + delta])
+    else:
+        cuts = (categories[:-1] + categories[1:]) / 2.0
+        edges = np.r_[categories[0] - (cuts[0] - categories[0]),
+                      cuts,
+                      categories[-1] + (categories[-1] - cuts[-1])]
+    return {
+        'mode': 'legend',
+        'values': categories.tolist(),
+        'markers': category_markers,
+        'rgba': palette_rgba,
+        'cmap': ListedColormap(palette_rgba),
+        'norm': BoundaryNorm(edges, ncolors=n),
+        'title': color if isinstance(color, str) else 'color',
+    }
+
 
 # dfdraw-semantic kwargs: parameters with dfdraw meaning (never matplotlib
 # pass-through). Used by the K-3 split: a semantic kwarg sent to a typed
@@ -1529,6 +1663,7 @@ class DFDraw:
         # guard sees the _VECTOR_SUPPRESS_KWARGS sentinels on the vector
         # route — all internal sentinels are known-by-definition).
         known.add('_suppress_layout')
+        known.update(_ND_FACET_PRESENTATION_KWARGS)
         known.update(getattr(cls, '_VECTOR_SUPPRESS_KWARGS', ()))
         # Inline-consumed kwargs (kwargs.get(...) reads, invisible to
         # signature introspection). Each entry cites its consumption site.
@@ -1558,6 +1693,13 @@ class DFDraw:
                 continue
             acc.add(_pname)
         acc.update(getattr(cls, f"_{method_name.upper()}_FORWARDED_NAMES", ()))
+        # Matplotlib scatter's Normalize is a real point-layer property.
+        # It travels by **kwargs into draw_scatter() (not a named public
+        # dfdraw normalization). Stage B reuses that existing owner.
+        if method_name == 'scatter':
+            acc.add('norm')
+        if method_name in ('draw', 'hist', 'profile', 'scatter', 'hist2d', 'hexbin'):
+            acc.update(_ND_FACET_PRESENTATION_KWARGS)
         cache[method_name] = frozenset(acc)
         return cache[method_name]
 
@@ -4097,6 +4239,16 @@ class DFDraw:
             - On 'vector' facet without list-valued y_expr
             - On 'quantiles' facet without quantile_mode='discrete'
         """
+        # Reject Figure-grid presentation options on scalar facet modes.
+        # They are never Matplotlib artist/style kwargs.
+        if not isinstance(facet_by, list):
+            unexpected = [key for key in _ND_FACET_PRESENTATION_KWARGS
+                          if key in plot_kwargs]
+            if unexpected:
+                raise ValueError(
+                    f"PHASE_13_93 options {sorted(unexpected)!r} require "
+                    "facet_by=[row_dimension, column_dimension]")
+
         # =====================================================================
         # Phase 13.41.DF v1.6 — N-D faceting entry point
         # =====================================================================
@@ -4134,8 +4286,80 @@ class DFDraw:
             # False unconditionally — user's auto_title=True was silently dropped.
             _user_auto_title = plot_kwargs.pop('auto_title', False)
             
+            # Phase 13.93 Stage A: consume Figure-only presentation controls
+            # before any per-cell renderer is invoked. In particular, these
+            # options must never leak through to ax.scatter/ax.hist.
+            _nd_options = {
+                key: plot_kwargs.pop(key, None)
+                for key in _ND_FACET_PRESENTATION_KWARGS
+            }
+            _order = _nd_options['facet_order']
+            if _order is not None:
+                if not isinstance(_order, dict) or any(
+                    key not in facet_list for key in _order
+                ):
+                    raise ValueError(
+                        f"facet_order must map names from facet_by={facet_list!r} "
+                        "to ordered category lists")
+                for dim, ordered in _order.items():
+                    dim_i = facet_list.index(dim)
+                    _resolve_facet_values(
+                        df, dim, bins_list[dim_i], quantiles_list[dim_i],
+                        facet_order=ordered)
+            if _nd_options['facet_labels'] not in (None, 'outer'):
+                raise ValueError("facet_labels must be 'outer' or None")
+            for _label_key in ('shared_xlabel', 'shared_ylabel'):
+                _label = _nd_options[_label_key]
+                if not (isinstance(_label, (bool, str)) or _label is None):
+                    raise ValueError(f"{_label_key} must be bool, str, or None")
+            _margins = _nd_options['figure_margins']
+            if _margins is not None:
+                if (not isinstance(_margins, (list, tuple)) or len(_margins) != 4
+                        or not all(isinstance(v, (int, float)) and np.isfinite(v)
+                                   for v in _margins)
+                        or not (0 <= _margins[0] < _margins[1] <= 1)
+                        or not (0 <= _margins[3] < _margins[2] <= 1)):
+                    raise ValueError("figure_margins must be [left, right, top, bottom] in [0,1]")
+            _spacing = _nd_options['subplot_spacing']
+            if _spacing is not None:
+                if (not isinstance(_spacing, (list, tuple)) or len(_spacing) != 2
+                        or not all(isinstance(v, (int, float)) and np.isfinite(v)
+                                   and v >= 0 for v in _spacing)):
+                    raise ValueError("subplot_spacing must be [wspace, hspace] >= 0")
+
+            # Stage B: the selected full-Figure domain owns categorical
+            # colors, even when individual facets contain just one class.
+            _display = _nd_options['color_display']
+            _maximum = _nd_options['max_legend_categories']
+            if _display is None and _maximum is not None:
+                raise ValueError('max_legend_categories requires color_display')
+            if _display is not None:
+                if plot_kind != 'scatter':
+                    raise ValueError('color_display/max_legend_categories require scatter')
+                if group_by is not None:
+                    # The grouped scatter renderer owns a separate group color
+                    # cycle; an independent color= legend would be untruthful.
+                    raise ValueError(
+                        'color_display with group_by scatter is unsupported: '
+                        'a Figure-global color-to-point owner is required')
+                _color_plan = _plan_nd_scatter_color_display(
+                    df, color=plot_kwargs.get('color'),
+                    marker=plot_kwargs.get('marker'),
+                    color_display=_display,
+                    max_legend_categories=8 if _maximum is None else _maximum,
+                    cmap=plot_kwargs.get('cmap'), draw_kwargs=plot_kwargs)
+                if _color_plan is not None:
+                    plot_kwargs['_nd_color_plan'] = _color_plan
+
             n_dims = len(facet_list)
             if n_dims == 1:
+                # The new Figure-grid controls have no 1-D list coordinator.
+                # Refuse rather than silently ignore explicit user settings.
+                if any(value is not None and value is not False
+                       for value in _nd_options.values()):
+                    raise ValueError(
+                        "PHASE_13_93 dense-facet presentation options require "
+                        "facet_by with two or three dimensions")
                 # List of length 1 — unwrap and fall through to 1D path below
                 facet_by = facet_list[0]
                 # Update plot_kwargs to also unwrap bins/quantiles to scalar/list
@@ -4158,7 +4382,7 @@ class DFDraw:
                     quantiles=quantiles, quantile_mode=quantile_mode,
                     _lock_x_range=None, _lock_y_range=None,
                     _user_auto_title=_user_auto_title,
-                    **plot_kwargs)
+                    **_nd_options, **plot_kwargs)
             elif n_dims == 3:
                 # 3D: loop over figID dimension, dispatch 2D per figID
                 plot_kwargs.pop('facet_by_bins', None)
@@ -4170,7 +4394,7 @@ class DFDraw:
                     title=title, group_by=group_by, top_k=top_k,
                     quantiles=quantiles, quantile_mode=quantile_mode,
                     _user_auto_title=_user_auto_title,
-                    **plot_kwargs)
+                    **_nd_options, **plot_kwargs)
         # =====================================================================
         # End Phase 13.41 N-D branch — existing 1D code follows unchanged
         # =====================================================================
@@ -4405,11 +4629,7 @@ class DFDraw:
                     key=_interval_sort_key
                 )
             else:
-                try:
-                    groups = sorted(df[facet_by].dropna().unique().tolist())
-                except TypeError:
-                    # Mixed/unsortable dtype — fall back to unsorted order
-                    groups = df[facet_by].dropna().unique().tolist()
+                groups = _resolve_facet_values(df, facet_by)
             if top_k is not None and len(groups) > top_k:
                 counts = df[facet_by].value_counts()
                 groups = counts.head(top_k).index.tolist()
@@ -5102,6 +5322,11 @@ class DFDraw:
         else:
             inner_expr = x_expr
         
+        # PHASE_13_93 Stage A: as in the 1-D PHASE_13_90 coordinator,
+        # the outer N-D Figure owns layout. No inner renderer may call
+        # tight_layout on this shared Figure.
+        plot_kwargs['_suppress_layout'] = True
+
         # Empty cell handling (CP2-2)
         if len(sub_df) == 0:
             ax_ij.text(0.5, 0.5, "(no data)",
@@ -5173,6 +5398,10 @@ class DFDraw:
                             share_x='all', share_y='all',
                             _lock_x_range=None, _lock_y_range=None,
                             _user_auto_title=False,
+                            facet_order=None, facet_labels=None,
+                            shared_xlabel=None, shared_ylabel=None,
+                            figure_margins=None, subplot_spacing=None,
+                            color_display=None, max_legend_categories=None,
                             title=None, group_by=None, top_k=None,
                             quantiles=None, quantile_mode='auto',
                             **plot_kwargs):
@@ -5182,6 +5411,19 @@ class DFDraw:
         (not user-facing; user's hist range / profile x_range come via plot_kwargs).
         Returns: (fig, axes_2d, stats_grid_dict)
         """
+        # The outer N-D coordinator computed this plan against the complete
+        # selected DataFrame, before filtering any row/column/figure facet.
+        # Consume it here; private plan objects must never reach ax.scatter.
+        color_plan = plot_kwargs.pop('_nd_color_plan', None)
+        if color_plan is not None:
+            plot_kwargs = dict(plot_kwargs)
+            if color_plan['mode'] == 'legend':
+                plot_kwargs.update(
+                    cmap=color_plan['cmap'], norm=color_plan['norm'],
+                    colorbar=False, _suppress_legend=True)
+            elif color_plan['mode'] == 'colorbar':
+                plot_kwargs['colorbar'] = True
+
         row_col = facet_list[0]
         col_col = facet_list[1]
         # PHASE_13_76_DF Bug B: classify each dimension ONCE against the full,
@@ -5191,6 +5433,13 @@ class DFDraw:
             df, row_col, bins_list[0], quantiles_list[0])
         col_bin_series, col_values = _classify_facet_dim(
             df, col_col, bins_list[1], quantiles_list[1])
+        # The dispatcher validated the complete user ordering before
+        # creating the Figure. Apply that ordering without recomputing bins.
+        if facet_order:
+            if row_col in facet_order:
+                row_values = [v for v in facet_order[row_col] if v in row_values]
+            if col_col in facet_order:
+                col_values = [v for v in facet_order[col_col] if v in col_values]
         
         n_rows = len(row_values)
         n_cols = len(col_values)
@@ -5237,12 +5486,15 @@ class DFDraw:
                     **inner_kwargs)
                 stats_grid[(row_v, col_v)] = stats_ij
                 
-                # Edge labels (top row = col headers; left col = row labels)
-                if i == 0:
-                    ax_ij.set_title(f"{col_col}={col_v}", fontsize=10)
-                if j == 0:
-                    cur_ylabel = ax_ij.get_ylabel()
-                    ax_ij.set_ylabel(f"{row_col}={row_v}\n{cur_ylabel}".rstrip())
+                # Legacy titles/ylabels remain byte-compatible by default.
+                # In opt-in outer mode, headings are Figure artists, not
+                # duplicated cell titles or scientific y-axis labels.
+                if facet_labels != 'outer':
+                    if i == 0:
+                        ax_ij.set_title(f"{col_col}={col_v}", fontsize=10)
+                    if j == 0:
+                        cur_ylabel = ax_ij.get_ylabel()
+                        ax_ij.set_ylabel(f"{row_col}={row_v}\n{cur_ylabel}".rstrip())
         
         if title:
             fig.suptitle(title, fontsize=12)
@@ -5259,7 +5511,54 @@ class DFDraw:
             fig.suptitle(
                 f"{_auto_expr}  [faceted by {facet_list[0]} × {facet_list[1]}]",
                 fontsize=11)
-        fig.tight_layout()
+        # PHASE_13_93 Stage A: a single Figure-level layout calculation,
+        # followed by explicit user overrides. Additional text is positioned
+        # from final Axes bounding boxes; it must not trigger another pass.
+        if (facet_labels == 'outer' or shared_xlabel or shared_ylabel
+                or (color_plan is not None and color_plan['mode'] == 'legend')):
+            fig.tight_layout(rect=(0.10, 0.07, 0.98, 0.91))
+        else:
+            fig.tight_layout()
+        if figure_margins is not None or subplot_spacing is not None:
+            adjustment = {}
+            if figure_margins is not None:
+                adjustment.update(zip(
+                    ('left', 'right', 'top', 'bottom'), figure_margins))
+            if subplot_spacing is not None:
+                adjustment.update(zip(('wspace', 'hspace'), subplot_spacing))
+            fig.subplots_adjust(**adjustment)
+
+        if facet_labels == 'outer':
+            for j, value in enumerate(col_values):
+                pos = axes[0, j].get_position()
+                fig.text((pos.x0 + pos.x1) / 2, pos.y1 + 0.012,
+                         str(value), ha='center', va='bottom', fontsize=10)
+        if facet_labels == 'outer' or shared_ylabel:
+            # Moving semantic ylabels to Figure level must not silently erase
+            # the row facet identity from left-edge panels. In explicit outer
+            # mode show just the value; otherwise preserve the dimension name.
+            for i, value in enumerate(row_values):
+                pos = axes[i, 0].get_position()
+                # Leave a gutter between numeric y ticks and row headings.
+                text = str(value) if facet_labels == 'outer' else f'{row_col}={value}'
+                fig.text(pos.x0 - 0.04, (pos.y0 + pos.y1) / 2,
+                         text, ha='right', va='center', fontsize=10)
+
+        if shared_xlabel:
+            label = (shared_xlabel if isinstance(shared_xlabel, str)
+                     else next((ax.get_xlabel() for ax in axes.flat
+                                if ax.get_xlabel()), str(x_expr or '')))
+            for ax in axes.flat:
+                ax.set_xlabel('')
+            fig.supxlabel(label)
+        if shared_ylabel:
+            # The legacy left-edge cell ylabel embeds 'row_dim=value\n'.
+            # Semantic Figure labels must never inherit that facet heading.
+            label = (shared_ylabel if isinstance(shared_ylabel, str)
+                     else (plot_kwargs.get('ylabel') or str(y_expr or '')))
+            for ax in axes.flat:
+                ax.set_ylabel('')
+            fig.supylabel(label, x=0.007)
 
         # ====================================================================
         # Phase 13.43.DF v1.2 §4.2.0 — Faceted fit aggregation (Option A).
@@ -5272,6 +5571,24 @@ class DFDraw:
         # only ADDS a convenience top-level key.
         # See PHASE_13_43_DF_v1_2_SummaryFit_Proposal.md §4.2.0 and F.56.
         # ====================================================================
+        if color_plan is not None and color_plan['mode'] == 'legend':
+            from matplotlib.lines import Line2D
+            proxies = [
+                Line2D([], [], linestyle='none', marker=m,
+                       markerfacecolor=rgba, markeredgecolor='black',
+                       markersize=8)
+                for m, rgba in zip(color_plan['markers'], color_plan['rgba'])
+            ]
+            # One Figure artist, not 40 per-panel legends or colorbars.
+            # This top gutter is above outer column headings when top <= .91.
+            fig.legend(
+                proxies,
+                [f"{color_plan['title']}={v:g}" for v in color_plan['values']],
+                loc='upper center', bbox_to_anchor=(0.5, 0.95),
+                ncol=min(len(proxies), 8), fontsize=9,
+                frameon=False,
+            )
+
         if any(isinstance(k, tuple) for k in stats_grid):
             aggregated_fits = {}
             for cell_key, cell_stats in stats_grid.items():
@@ -5301,8 +5618,9 @@ class DFDraw:
         Returns: (List[Figure], List[axes_2d], List[stats_grid])
         """
         figid_col = facet_list[2]
-        figid_values = _resolve_facet_values(df, figid_col,
-                                              bins_list[2], quantiles_list[2])
+        figid_values = _resolve_facet_values(
+            df, figid_col, bins_list[2], quantiles_list[2],
+            facet_order=(plot_kwargs.get('facet_order') or {}).get(figid_col))
         
         # CP1-2 v1.2 + CP2-C v1.4: compute global x/y ranges
         # using existing x_expr / y_expr named params (no plot_kwargs extraction)
@@ -6847,6 +7165,17 @@ class DFDraw:
         # clean error; genuinely unknown -> warning.
         if kwargs:
             self._kwarg_typo_guard(kwargs, method='scatter')
+        # Figure-level categorical legends currently belong to 2-D/3-D
+        # facets. Fail loudly on scalar use, never leak to ax.scatter().
+        if not (isinstance(facet_by, list) and len(facet_by) in (2, 3)):
+            if (kwargs.get('color_display') is not None
+                    or kwargs.get('max_legend_categories') is not None):
+                raise ValueError(
+                    'color_display/max_legend_categories require '
+                    'facet_by=[row_dimension, column_dimension] '
+                    '(optionally a third figure dimension)')
+            kwargs.pop('color_display', None)
+            kwargs.pop('max_legend_categories', None)
 
 
         # PHASE_13_86 Stage A: faceted scatter has no safe multi-branch
