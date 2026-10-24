@@ -2326,6 +2326,87 @@ FEATURES = [
         ],
     },
 
+    # ── PHASE_13_93_DF — opt-in dense N-D facet presentation (Stage A) ──
+    {
+        "id": "FACET.nd_dense_presentation",
+        "name": (
+            "N-dimensional facet figures use one layout owner per Figure, "
+            "preserve ordered pandas categorical coordinates and explicit facet_order, "
+            "provide outer row/column headings and figure-level semantic axis labels "
+            "independently of numerical axis sharing, and honor explicit margins/spacing "
+            "without scaling values or errors; unsupported inputs refuse and legacy "
+            "presentation remains compatible (PHASE_13_93 Stage A)"
+        ),
+        "category": "FACET",
+        "tests": [
+            'test_phase_13_93_stage_a_dense_facet_red.py::test_A_R1_2d_nd_facet_has_exactly_one_whole_figure_layout_pass',
+            'test_phase_13_93_stage_a_dense_facet_red.py::test_A_R2_3d_nd_facet_has_one_layout_pass_per_generated_figure',
+            'test_phase_13_93_stage_a_dense_facet_red.py::test_A_R3_ordered_categorical_rows_preserve_declared_order',
+            'test_phase_13_93_stage_a_dense_facet_red.py::test_A_R4_ordered_categorical_columns_preserve_declared_order',
+            'test_phase_13_93_stage_a_dense_facet_red.py::test_A_R5_explicit_facet_order_overrides_categorical_order',
+            'test_phase_13_93_stage_a_dense_facet_red.py::test_A_R5b_invalid_facet_order_refuses_clearly',
+            'test_phase_13_93_stage_a_dense_facet_red.py::test_A_R6_outer_column_headings_appear_once_each',
+            'test_phase_13_93_stage_a_dense_facet_red.py::test_A_R7_outer_row_headings_appear_once_each',
+            'test_phase_13_93_stage_a_dense_facet_red.py::test_A_R8_outer_mode_removes_outer_dimension_text_from_panels',
+            'test_phase_13_93_stage_a_dense_facet_red.py::test_A_R9_shared_xlabel_is_one_figure_semantic_label',
+            'test_phase_13_93_stage_a_dense_facet_red.py::test_A_R10_shared_ylabel_preserves_independent_limits_and_ticks',
+            'test_phase_13_93_stage_a_dense_facet_red.py::test_A_R11_explicit_figure_margins_survive_final_layout',
+            'test_phase_13_93_stage_a_dense_facet_red.py::test_A_R12_explicit_subplot_spacing_survives_final_layout',
+            'test_phase_13_93_stage_a_dense_facet_red.py::test_A_R13_legacy_2d_facet_presentation_unchanged_without_new_options',
+            'test_phase_13_93_stage_a_handover_regressions.py::test_A_H1_public_draw_retains_unscaled_scatter_errorbar_values',
+            'test_phase_13_93_stage_a_handover_regressions.py::test_A_H2_all_ND_plot_kinds_share_the_single_layout_owner[scatter-coefficient:region-extra0]',
+            'test_phase_13_93_stage_a_handover_regressions.py::test_A_H2_all_ND_plot_kinds_share_the_single_layout_owner[hist-coefficient-extra1]',
+            'test_phase_13_93_stage_a_handover_regressions.py::test_A_H2_all_ND_plot_kinds_share_the_single_layout_owner[profile-coefficient:region-extra2]',
+            'test_phase_13_93_stage_a_handover_regressions.py::test_A_H2_all_ND_plot_kinds_share_the_single_layout_owner[hist2d-coefficient:region-extra3]',
+            'test_phase_13_93_stage_a_handover_regressions.py::test_A_H3_3D_categorical_figure_order_and_outer_headings',
+            'test_phase_13_93_stage_a_handover_regressions.py::test_A_H4_invalid_facet_order_never_degrades_silently[bad0]',
+            'test_phase_13_93_stage_a_handover_regressions.py::test_A_H4_invalid_facet_order_never_degrades_silently[bad1]',
+            'test_phase_13_93_stage_a_handover_regressions.py::test_A_H4_invalid_facet_order_never_degrades_silently[bad2]',
+            'test_phase_13_93_stage_a_handover_regressions.py::test_A_H4_invalid_facet_order_never_degrades_silently[bad3]',
+            'test_phase_13_93_stage_a_handover_regressions.py::test_A_H5_scalar_facet_rejects_ND_only_presentation_options',
+            'test_phase_13_93_stage_a_handover_regressions.py::test_A_H6_shared_ylabel_without_outer_mode_keeps_row_identity',
+            'test_phase_13_93_stage_a_handover_regressions.py::test_A_H7_invalid_layout_parameters_raise_before_figure_allocation[figure_margins-value0]',
+            'test_phase_13_93_stage_a_handover_regressions.py::test_A_H7_invalid_layout_parameters_raise_before_figure_allocation[figure_margins-value1]',
+            'test_phase_13_93_stage_a_handover_regressions.py::test_A_H7_invalid_layout_parameters_raise_before_figure_allocation[subplot_spacing-value2]',
+        ],
+    },
+
+    # ── PHASE_13_93_DF — figure-wide categorical scatter display (Stage B) ──
+    {
+        "id": "SCATTER.figure_categorical_color_legend",
+        "name": (
+            "Opt-in N-D mapped numeric scatter colors yield one figure-level categorical "
+            "legend with stable category colors and equivalent markers across facets "
+            "and 3-D figure pages; keep point/error-bar geometry, legacy colorbars, "
+            "explicit colorbar choice and strict refusal boundaries (PHASE_13_93 Stage B)"
+        ),
+        "category": "SCATTER",
+        "tests": [
+            'test_phase_13_93_stage_b_color_display_red.py::test_b1_omitted_color_display_keeps_original_colorbars',
+            'test_phase_13_93_stage_b_color_display_red.py::test_b2_b3_binary_numeric_side_one_figure_legend[auto]',
+            'test_phase_13_93_stage_b_color_display_red.py::test_b2_b3_binary_numeric_side_one_figure_legend[legend]',
+            'test_phase_13_93_stage_b_color_display_red.py::test_b4_explicit_colorbar_is_not_silently_changed_to_legend',
+            'test_phase_13_93_stage_b_color_display_red.py::test_b5_same_side_same_rgba_in_all_facets_even_singleton',
+            'test_phase_13_93_stage_b_color_display_red.py::test_b6_no_repeated_axes_legend',
+            'test_phase_13_93_stage_b_color_display_red.py::test_b8_matching_marker_partition_produces_combined_legend',
+            'test_phase_13_93_stage_b_color_display_red.py::test_b8b_non_equivalent_marker_partition_refuses',
+            'test_phase_13_93_stage_b_color_display_red.py::test_b9_uncertainties_are_retained_with_two_marker_classes',
+            'test_phase_13_93_stage_b_color_display_red.py::test_b10_auto_threshold_controls_discrete_heuristic',
+            'test_phase_13_93_stage_b_color_display_red.py::test_b10b_explicit_legend_limit_refuses',
+            'test_phase_13_93_stage_b_color_display_red.py::test_b11_bad_mode_rejected_before_plotting',
+            'test_phase_13_93_stage_b_color_display_red.py::test_b12_invalid_threshold_rejected',
+            'test_phase_13_93_stage_b_color_display_red.py::test_b13_real_grid_40_cells_one_legend',
+            'test_phase_13_93_stage_b_color_display_red.py::test_b14_layout_still_one_owner',
+            'test_phase_13_93_stage_b_color_display_red.py::test_b15_max_legend_alone_does_not_silently_do_nothing',
+            'test_phase_13_93_stage_b_color_display_red.py::test_b16_string_color_with_errorbars_preserves_explicit_refusal',
+            'test_phase_13_93_stage_b_color_display_red.py::test_b17_three_dimensional_facets_keep_one_color_domain_across_figures',
+            'test_phase_13_93_stage_b_color_display_red.py::test_b18_numeric_color_expression_three_categories_with_one_legend',
+            'test_phase_13_93_stage_b_color_display_red.py::test_b19_grouped_color_owner_does_not_silently_fabricate_side_legend',
+            'test_phase_13_93_stage_b_color_display_red.py::test_b20_nonfaceted_explicit_none_is_legacy_compatible',
+            'test_phase_13_93_stage_b_color_display_red.py::test_b21_nonfaceted_legend_refuses_before_matplotlib',
+        ],
+    },
+
     # ── Phase 13.49.DF — meta-tests for the capability matrix itself ──
     {
         "id": "META.capability_matrix",
