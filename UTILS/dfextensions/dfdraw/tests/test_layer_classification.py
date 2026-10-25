@@ -894,6 +894,21 @@ TEST_LAYERS = {
     'test_phase_13_82_retained_state_red.py::test_t12_corrupt_payload_fractional_entries_refused': 'invariance',
     'test_phase_13_82_retained_state_red.py::test_t13_two_named_categorical_dimensions_form_sparse_product': 'invariance',
 
+    # PHASE_13_82_DF — exact retained-state merge / pooled-data oracle.
+    'test_phase_13_82_exact_merge_red.py::test_m1_weighted_histogram_merge_equals_direct_pooled_state': 'invariance',
+    'test_phase_13_82_exact_merge_red.py::test_m2_weighted_profile_merge_equals_direct_pooled_state': 'invariance',
+    'test_phase_13_82_exact_merge_red.py::test_m3_signed_weight_cancellation_across_partitions_stays_occupied': 'invariance',
+    'test_phase_13_82_exact_merge_red.py::test_m4_sparse_categorical_union_matches_direct_pooled_state': 'invariance',
+    'test_phase_13_82_exact_merge_red.py::test_m5_duplicate_partition_refused_including_nested_contributors': 'invariance',
+    'test_phase_13_82_exact_merge_red.py::test_m6_different_name_refused': 'invariance',
+    'test_phase_13_82_exact_merge_red.py::test_m7_different_binned_axis_refused_without_rebinning': 'invariance',
+    'test_phase_13_82_exact_merge_red.py::test_m8_statistic_kind_and_state_contract_mismatch_refused': 'invariance',
+    'test_phase_13_82_exact_merge_red.py::test_m9_semantic_source_definition_mismatch_refused': 'invariance',
+    'test_phase_13_82_exact_merge_red.py::test_m10_metadata_mismatch_refused_for_first_exact_merge_slice': 'invariance',
+    'test_phase_13_82_exact_merge_red.py::test_m11_requires_at_least_two_nodes_and_explicit_output_partition': 'invariance',
+    'test_phase_13_82_exact_merge_red.py::test_m12_merged_profile_finalization_matches_direct_pooled_raw_data': 'invariance',
+    'test_phase_13_82_exact_merge_red.py::test_m13_payload_roundtrip_states_merge_to_direct_pooled_truth': 'invariance',
+
 
     # PHASE_13_94_DF — N-D profile expression-vector composition.
     'test_phase_13_94_profile_vector_nd_facet_red.py::test_R1_two_branches_in_each_2d_facet_without_group[typed]': 'invariance',

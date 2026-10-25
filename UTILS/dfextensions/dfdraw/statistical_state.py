@@ -10,7 +10,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 import copy
 import json
-from typing import Any, Mapping
+from typing import Any, Mapping, Sequence
 
 import numpy as np
 import pandas as pd
@@ -190,6 +190,160 @@ class StatisticalNode:
         return cls(**value, state=frame)
 
 
+
+def _partition_ids_for_merge(node: 'StatisticalNode') -> list[str]:
+    """Return original contributing partitions, flattening prior exact merges."""
+    contributed = node.provenance.get('contributing_partition_ids')
+    if contributed is None:
+        return [node.provenance['partition_id']]
+    if (not isinstance(contributed, list) or not contributed
+            or any(not isinstance(v, str) or not v.strip() for v in contributed)
+            or len(set(contributed)) != len(contributed)):
+        raise ValueError('invalid contributing_partition_ids in merge provenance')
+    return list(contributed)
+
+
+def _contributing_provenance_for_merge(node: 'StatisticalNode') -> list[dict[str, Any]]:
+    """Preserve source-level provenance without nesting merge wrappers."""
+    contributed = node.provenance.get('contributing_provenance')
+    if contributed is None:
+        return [copy.deepcopy(node.provenance)]
+    if not isinstance(contributed, list) or any(not isinstance(v, dict) for v in contributed):
+        raise ValueError('invalid contributing_provenance in merge provenance')
+    return copy.deepcopy(contributed)
+
+
+def _axes_for_exact_merge(nodes: Sequence['StatisticalNode']) -> dict[str, Any]:
+    """Validate axis identity and union categorical domains in input order."""
+    first = nodes[0]
+    merged_axes = copy.deepcopy(first.axes)
+    for node in nodes[1:]:
+        # Physical binned axes are exact-merge compatible only when identical.
+        if node.axes['x_bin'] != first.axes['x_bin']:
+            raise ValueError('incompatible x_bin axis/source/edges for exact merge')
+        for dim in first.dimensions[1:]:
+            left = {k: v for k, v in first.axes[dim].items() if k != 'values'}
+            right = {k: v for k, v in node.axes[dim].items() if k != 'values'}
+            if left != right:
+                raise ValueError(f'incompatible categorical axis/source for exact merge: {dim}')
+            values = merged_axes[dim]['values']
+            seen = {json.dumps(v, sort_keys=True) for v in values}
+            for value in node.axes[dim]['values']:
+                key = json.dumps(value, sort_keys=True)
+                if key not in seen:
+                    values.append(copy.deepcopy(value))
+                    seen.add(key)
+            if len({type(v) for v in values}) > 1:
+                raise ValueError(f'incompatible category value types for exact merge: {dim}')
+    return merged_axes
+
+
+def _validate_exact_merge_compatibility(nodes: Sequence['StatisticalNode']) -> dict[str, Any]:
+    first = nodes[0]
+    for node in nodes:
+        if not isinstance(node, StatisticalNode):
+            raise TypeError('exact merge accepts StatisticalNode inputs only')
+        _validate_node(node)
+    for node in nodes[1:]:
+        if node.schema_version != first.schema_version:
+            raise ValueError('incompatible schema_version for exact merge')
+        if node.name != first.name:
+            raise ValueError('incompatible name for exact merge')
+        if node.statistic_kind != first.statistic_kind:
+            raise ValueError('incompatible statistic_kind for exact merge')
+        if node.dimensions != first.dimensions:
+            raise ValueError('incompatible dimensions for exact merge')
+        if node.state_schema != first.state_schema:
+            raise ValueError('incompatible state_schema for exact merge')
+        if node.semantic_roles != first.semantic_roles:
+            raise ValueError('incompatible semantic_roles for exact merge')
+        if node.semantic_description != first.semantic_description:
+            raise ValueError('incompatible semantic_description for exact merge')
+        # First bounded slice is deliberately strict.  Metadata relaxation needs
+        # an explicit policy because metadata can carry interpretation semantics.
+        if node.metadata != first.metadata:
+            raise ValueError('incompatible metadata for exact merge')
+    return _axes_for_exact_merge(nodes)
+
+
+def merge_exact(nodes: Sequence['StatisticalNode'], *, partition_id: str) -> 'StatisticalNode':
+    """Exactly pool compatible retained states by additive sufficient fields.
+
+    This is the first collapsed-partition merge slice.  It does not implement
+    partition-preserving mode, rebinning, derived aggregation, persistence, or
+    rendering.  The caller supplies a new stable ``partition_id`` for the
+    pooled object; all original partition identities/provenance remain recorded.
+    """
+    nodes = list(nodes)
+    if len(nodes) < 2:
+        raise ValueError('exact merge requires at least two StatisticalNode inputs')
+    if not isinstance(partition_id, str) or not partition_id.strip():
+        raise ValueError('partition_id must be a nonempty stable string')
+
+    merged_axes = _validate_exact_merge_compatibility(nodes)
+
+    contributing_ids: list[str] = []
+    contributing_provenance: list[dict[str, Any]] = []
+    seen_ids: set[str] = set()
+    for node in nodes:
+        ids = _partition_ids_for_merge(node)
+        overlap = seen_ids.intersection(ids)
+        if overlap:
+            raise ValueError(f'duplicate partition_id in exact merge: {sorted(overlap)!r}')
+        seen_ids.update(ids)
+        contributing_ids.extend(ids)
+        contributing_provenance.extend(_contributing_provenance_for_merge(node))
+    if partition_id in seen_ids:
+        raise ValueError('output partition_id must differ from contributing partition_id values')
+
+    first = nodes[0]
+    ncoord = len(first.dimensions)
+    accumulated: dict[tuple[Any, ...], list[Any]] = {}
+    for node in nodes:
+        for row in node.state.itertuples(index=False, name=None):
+            key = tuple(row[:ncoord])
+            values = row[ncoord:]
+            slot = accumulated.get(key)
+            if slot is None:
+                slot = [0] + [0.0] * (len(first.state_schema) - 1)
+                accumulated[key] = slot
+            slot[0] += int(values[0])
+            for i, value in enumerate(values[1:], start=1):
+                slot[i] += float(value)
+
+    # Deterministic sparse-row order follows physical bin then declared
+    # categorical-domain order, exactly as the builders do.
+    lookup = {
+        dim: {json.dumps(v, sort_keys=True): i
+              for i, v in enumerate(merged_axes[dim]['values'])}
+        for dim in first.dimensions[1:]
+    }
+    def _sort_key(key):
+        return (int(key[0]),) + tuple(
+            lookup[dim][json.dumps(key[i + 1], sort_keys=True)]
+            for i, dim in enumerate(first.dimensions[1:]))
+
+    rows = [list(key) + accumulated[key] for key in sorted(accumulated, key=_sort_key)]
+    frame = _typed_frame(rows, first.dimensions, first.state_schema)
+    provenance = {
+        'partition_id': partition_id,
+        'contributing_partition_ids': contributing_ids,
+        'contributing_provenance': contributing_provenance,
+    }
+    return StatisticalNode(
+        schema_version=first.schema_version,
+        name=first.name,
+        statistic_kind=first.statistic_kind,
+        dimensions=copy.deepcopy(first.dimensions),
+        axes=merged_axes,
+        semantic_roles=copy.deepcopy(first.semantic_roles),
+        state_schema=copy.deepcopy(first.state_schema),
+        state=frame,
+        semantic_description=copy.deepcopy(first.semantic_description),
+        metadata=copy.deepcopy(first.metadata),
+        provenance=provenance,
+    )
+
 def _build(kind, x, *, edges, name, partition_id, y=None, weights=None,
            categories=None, category_sources=None, x_source='x', y_source='y',
            weights_source=None, semantic_description=None, semantic_roles=None,
@@ -315,4 +469,4 @@ def build_profile_state(x, y, *, edges, name, partition_id, weights=None,
                   metadata=metadata, provenance=provenance)
 
 
-__all__ = ['StatisticalNode', 'build_histogram_state', 'build_profile_state']
+__all__ = ['StatisticalNode', 'build_histogram_state', 'build_profile_state', 'merge_exact']
