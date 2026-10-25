@@ -975,7 +975,8 @@ def draw_profile(
         elif auto_title:
             parts = parse_auto_title_parts(auto_title)
             td = build_auto_title(x_name, y_name, group_by=group_by,
-                                  selection=selection, weights=weights, parts=parts)
+                                  selection=selection, weights=weights,
+                                  parts=parts, quantiles=quantiles)
             apply_auto_title(ax, td)
     
     # Statistics box

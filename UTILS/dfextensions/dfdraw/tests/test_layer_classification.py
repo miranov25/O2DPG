@@ -921,4 +921,38 @@ TEST_LAYERS = {
     'test_phase_13_94_profile_vector_nd_facet_red.py::test_R18_explicit_group_color_override_remains_authoritative': 'invariance',
     'test_phase_13_94_profile_vector_nd_facet_red.py::test_R19_group_bins_without_group_column_fail_before_figure': 'invariance',
 
+
+    # PHASE_13_95_DF — strong independent numerical/semantic oracles.
+    'test_phase_13_95_group_scope_title_red.py::test_R1_public_signature_and_invalid_values': 'invariance',
+    'test_phase_13_95_group_scope_title_red.py::test_R2_auto_preserves_historical_1d_faceted_numbers': 'invariance',
+    'test_phase_13_95_group_scope_title_red.py::test_R3_explicit_global_1d_reuses_exact_physical_groups': 'invariance',
+    'test_phase_13_95_group_scope_title_red.py::test_R4_explicit_local_1d_matches_auto': 'invariance',
+    'test_phase_13_95_group_scope_title_red.py::test_R5_global_quantiles_in_1d': 'invariance',
+    'test_phase_13_95_group_scope_title_red.py::test_R6_global_missing_group_2d_has_stable_identity': 'invariance',
+    'test_phase_13_95_group_scope_title_red.py::test_R7_global_figure_legend_obeys_explicit_hide': 'visual_primitive',
+    'test_phase_13_95_group_scope_title_red.py::test_R8_facet_local_has_no_false_global_numeric_legend': 'visual_primitive',
+    'test_phase_13_95_group_scope_title_red.py::test_R9_13_94_auto_matches_omitted_policy': 'invariance',
+    'test_phase_13_95_group_scope_title_red.py::test_R10_13_94_explicit_facet_policy_changes_group_boundaries': 'invariance',
+    'test_phase_13_95_group_scope_title_red.py::test_R11_1d_quantiles_appear_once_in_auto_title': 'invariance',
+    'test_phase_13_95_group_scope_title_red.py::test_R12_title_false_and_explicit_title_precedence': 'invariance',
+    'test_phase_13_95_group_scope_title_red.py::test_R13_typed_draw_parity_for_explicit_global[typed]': 'invariance',
+    'test_phase_13_95_group_scope_title_red.py::test_R13_typed_draw_parity_for_explicit_global[draw]': 'invariance',
+    'test_phase_13_95_group_scope_title_red.py::test_R14_categorical_no_binning_no_numeric_changes': 'invariance',
+    'test_phase_13_95_group_scope_title_red.py::test_R15_single_global_cut_event': 'invariance',
+    'test_phase_13_95_group_scope_title_red.py::test_R16_selection_domain_global_bin_membership_independent_pandas': 'invariance',
+    'test_phase_13_95_group_scope_title_red.py::test_R17_single_dimension_list_is_equivalent_to_scalar_facet': 'invariance',
+    'test_phase_13_95_group_scope_title_red.py::test_R18_global_quantile_boundaries_derived_from_selection_not_raw_input': 'invariance',
+    'test_phase_13_95_group_scope_title_red.py::test_R19_more_than_two_quantiles_are_listed_not_misrepresented_as_range': 'invariance',
+    'test_phase_13_95_group_scope_title_red.py::test_R20_no_scope_widening_to_other_plot_families': 'invariance',
+    'test_phase_13_95_group_scope_title_red.py::test_R21_global_top_k_does_not_claim_unsupported_global_ranking': 'invariance',
+    'test_phase_13_95_group_scope_title_red.py::test_R22_2d_scalar_global_matches_selected_pandas_counts': 'invariance',
+
+    'test_phase_13_95_group_scope_title_red.py::test_R23_auto_vector_13_94_figure_legend_obeys_explicit_hide': 'invariance',
+    'test_phase_13_95_group_scope_title_red.py::test_R24_explicit_all_overrides_default_shared_global_legend': 'visual_primitive',
+    'test_phase_13_95_group_scope_title_red.py::test_R25_vector_1d_global_bins_match_full_selected_pandas_and_scalar[draw]': 'invariance',
+    'test_phase_13_95_group_scope_title_red.py::test_R25_vector_1d_global_bins_match_full_selected_pandas_and_scalar[typed]': 'invariance',
+    'test_phase_13_95_group_scope_title_red.py::test_R26_vector_1d_global_quantile_scope_reuses_selected_boundaries[draw]': 'invariance',
+    'test_phase_13_95_group_scope_title_red.py::test_R26_vector_1d_global_quantile_scope_reuses_selected_boundaries[typed]': 'invariance',
+    'test_phase_13_95_group_scope_title_red.py::test_R27_vector_1d_auto_and_facet_retain_legacy_local_semantics': 'invariance',
+
 }

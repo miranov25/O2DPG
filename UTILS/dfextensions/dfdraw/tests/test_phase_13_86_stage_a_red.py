@@ -446,6 +446,7 @@ _FACET_DISPOSITIONS = {
             "selection", "bins", "time_format", "range", "error", "stats", "title",
             "xlabel", "ylabel", "group_by", "ncols", "sharex", "sharey", "top_k",
             "return_data", "min_entries", "group_by_bins", "group_by_quantiles",
+            "group_by_scope",  # PHASE_13_95: typed profile -> facet policy owner
             "sort_groups", "weights", "auto_title", "stat_fields", "quantiles",
             "central", "quantile_mode", "quantile_style", "nan_policy",
             "facet_by", "facet_by_bins", "facet_by_quantiles",
@@ -552,7 +553,7 @@ _DRAW_TO_TYPED_DISPOSITIONS = {
     },
     "profile": {
         "FORWARDED": {
-            "selection", "group_by", "facet", "bins",
+            "selection", "group_by", "group_by_scope", "facet", "bins",
             "stats", "title", "ax", "sample", "save", "same",
             "nan_policy", "facet_by", "facet_by_bins",
             "facet_by_quantiles", "share_x", "share_y",
@@ -592,7 +593,9 @@ _DRAW_TO_TYPED_DISPOSITIONS = {
         "CONSUMED": set(),
         # profile2d heatmap semantics do not define line/marker styling.  draw()
         # currently drops these silently; RED-R5 requires a loud disposition.
-        "REFUSED": {"color", "marker"},
+        # Explicit scope is restricted to grouped 1-D profiles.  The
+        # profile2d draw-door refuses non-auto scope before allocating a Figure.
+        "REFUSED": {"color", "marker", "group_by_scope"},
     },
 }
 
@@ -837,6 +840,7 @@ class TestStageAStructuralBoundaryInventory:
         ("hist2d", "fit", "gauss"),
         ("profile2d", "color", "magenta"),
         ("profile2d", "marker", "s"),
+        ("profile2d", "group_by_scope", "global"),
     ])
     def test_A10g_draw_to_typed_refused_names_fail_loudly(self, owner, param, value):
         """RED-R5: REFUSED draw-door semantics cannot be silently discarded."""

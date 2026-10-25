@@ -33,6 +33,120 @@ from .plots._legend import _normalize_legend_spec, _apply_legend_mode
 
 _MISSING = object()
 
+
+def _scope_group_domain(df, group_by, bins=None, quantiles=None):
+    """Classify physical group intervals on the selected/sampled Figure domain.
+
+    Reuses the PHASE_13_94 pandas cut/qcut mathematics and interval-label
+    formatter; each facet subsequently filters these stable row identities.
+    Returns (frame, grouping column, ordered identities). No source mutation.
+    """
+    if bins is not None and quantiles is not None:
+        raise ValueError('group_by_bins and group_by_quantiles are exclusive')
+    if group_by is None:
+        raise ValueError('group_by_scope="global" requires group_by')
+    if bins is None and quantiles is None:
+        return df, group_by, sorted(map(str, df[group_by].dropna().unique()))
+    n = bins if bins is not None else quantiles
+    if isinstance(n, (bool, np.bool_)) or not isinstance(n, (int, np.integer)) or n < 1:
+        raise ValueError('group_by_bins/group_by_quantiles must be positive integer counts')
+    if df[group_by].dtype.kind not in 'biufmM':
+        raise ValueError('numeric group binning requires a numeric group_by')
+    values = df[group_by].astype(np.float32) if df[group_by].dtype == np.float16 else df[group_by]
+    classified = (pd.cut(values, bins=bins) if bins is not None else
+                  pd.qcut(values, q=quantiles, duplicates='drop'))
+    identities = [str(_format_interval_label(v)) for v in classified.cat.categories]
+    if len(identities) != len(set(identities)):
+        raise ValueError('group_by interval labels are not unique at display precision')
+    column = '__dfdraw_group_scope__'
+    while column in df.columns:
+        column += '_'
+    frame = df.copy()
+    frame[column] = classified.map(_format_interval_label)
+    return frame, column, identities
+
+
+def _stabilize_group_errorbars(ax, identities, explicit_color=None, explicit_marker=None):
+    """Align existing grouped profile artists by physical group identity."""
+    from matplotlib.container import ErrorbarContainer
+    palette = plt.colormaps.get_cmap(get_style_value('colors.palette', 'tab10'))
+    markers = get_style_value('markers.cycle',
+                              ['o', 's', '^', 'D', 'P', 'X', 'v', '<', '>', 'h'])
+    by_name = {name: i for i, name in enumerate(identities)}
+    for container in ax.containers:
+        if not isinstance(container, ErrorbarContainer):
+            continue
+        idx = by_name.get(str(container.get_label()))
+        if idx is None:
+            continue
+        color = explicit_color if explicit_color is not None else palette(idx % 10)
+        central, caps, bars = container.lines
+        if central is not None:
+            central.set_color(color)
+            central.set_markerfacecolor(color)
+            central.set_markeredgecolor(color)
+            if explicit_marker is None:
+                central.set_marker(markers[idx % len(markers)])
+        for artist in (*caps, *bars):
+            artist.set_color(color)
+
+
+def _scope_figure_legend(fig, axes, identities, *, explicit_color=None, with_title=False):
+    """One truthful Figure-level group legend, no duplicated panel legends."""
+    from matplotlib.legend import Legend
+    from matplotlib.lines import Line2D
+    palette = plt.colormaps.get_cmap(get_style_value('colors.palette', 'tab10'))
+    for ax in np.asarray(axes).flat:
+        for artist in tuple(ax.get_children()):
+            if isinstance(artist, Legend):
+                artist.remove()
+    handles = [Line2D([], [], color=(explicit_color if explicit_color is not None
+                                    else palette(i % 10)), linewidth=2)
+               for i, _ in enumerate(identities)]
+    if handles:
+        fig.legend(handles, identities, loc='upper center',
+                   bbox_to_anchor=(.5, .86 if with_title else .96),
+                   ncol=min(len(handles), 8),
+                   fontsize=9, frameon=False)
+
+
+def _apply_global_group_legend_override(fig, legend, show_legend):
+    """Honor explicit legend controls after a factored global-group render.
+
+    In particular, the pre-existing legend applier only removes Axes legends;
+    a 13.94/13.95 Figure legend must also respect legend=False. Explicit
+    all/first requests are restored from actual plotted artists, never from
+    fabricated category intervals.
+    """
+    spec = _normalize_legend_spec(legend, show_legend)
+    if spec is None or spec['mode'] == 'shared':
+        return
+    mode = spec['mode']
+    for artist in tuple(fig.legends):
+        artist.remove()
+    if mode == 'none':
+        from matplotlib.legend import Legend
+        for ax in fig.axes:
+            for artist in tuple(ax.get_children()):
+                if isinstance(artist, Legend):
+                    artist.remove()
+        return
+    if mode not in ('all', 'first'):
+        return
+    first_only = mode == 'first'
+    created = False
+    for ax in fig.axes:
+        if first_only and created:
+            break
+        handles, labels = ax.get_legend_handles_labels()
+        if not handles:
+            continue
+        ax.legend(handles, labels,
+                  **{key: value for key, value in spec.items()
+                     if key != 'mode' and value is not None})
+        created = True
+
+
 # =============================================================================
 # Phase 13.1.DF: PyArrow Detection
 # =============================================================================
@@ -1530,6 +1644,7 @@ class DFDraw:
         'top_k',  # included: profile.draw_profile accepts top_k as scalar-mode group filter
         'return_data', 'min_entries',
         'group_by_bins', 'group_by_quantiles', 'sort_groups',
+        'group_by_scope',
         'weights',
         'auto_title',
         'same',
@@ -4338,6 +4453,36 @@ class DFDraw:
             - On 'vector' facet without list-valued y_expr
             - On 'quantiles' facet without quantile_mode='discrete'
         """
+        # PHASE_13_95: effective policy depends only on established API route,
+        # never data values. Explicit global works on scalar 1-D/2-D profiles.
+        group_display_name = group_by
+        group_scope = plot_kwargs.pop('group_by_scope', 'auto')
+        if group_scope not in ('auto', 'global', 'facet'):
+            raise ValueError('invalid group_by_scope')
+        nd_vector = (plot_kind == 'profile' and isinstance(y_expr, list)
+                     and isinstance(facet_by, list) and len(facet_by) == 2)
+        global_scope = (plot_kind == 'profile' and
+                        (group_scope == 'global' or (group_scope == 'auto' and nd_vector)))
+        global_groups = None
+        if global_scope and group_by is None and (
+            plot_kwargs.get('group_by_bins') is not None or
+            plot_kwargs.get('group_by_quantiles') is not None
+        ):
+            raise ValueError('group_by_bins/group_by_quantiles require group_by')
+        if global_scope and group_by is not None:
+            group_bins = plot_kwargs.pop('group_by_bins', None)
+            group_quantiles = plot_kwargs.pop('group_by_quantiles', None)
+            df, group_by, global_groups = _scope_group_domain(
+                df, group_by, bins=group_bins, quantiles=group_quantiles)
+        if global_scope and isinstance(facet_by, list) and len(facet_by) == 2:
+            plot_kwargs['_nd94_group_identity'] = global_groups or []
+        if nd_vector and group_scope == 'facet':
+            plot_kwargs['_nd95_preserve_cell_legend'] = True
+        if global_scope and (not isinstance(facet_by, list) or len(facet_by) == 1):
+            # A 1-D facet has no N-D presentation owner; attach its global
+            # identity in the established 1-D coordinator after rendering.
+            plot_kwargs['_nd95_global_groups'] = global_groups or []
+
         # Reject Figure-grid presentation options on scalar facet modes.
         # They are never Matplotlib artist/style kwargs.
         if not isinstance(facet_by, list):
@@ -4453,34 +4598,9 @@ class DFDraw:
             # PHASE_13_94: bind physical group identity once on the
             # selected/sampled Figure domain. Do not modify scalar N-D paths.
             if plot_kind == 'profile' and isinstance(y_expr, list):
-                _gb = plot_kwargs.pop('group_by_bins', None)
-                _gq = plot_kwargs.pop('group_by_quantiles', None)
-                if _gb is not None and _gq is not None:
-                    raise ValueError('group_by_bins and group_by_quantiles are exclusive')
-                if (_gb is not None or _gq is not None) and group_by is None:
-                    raise ValueError('group_by_bins/group_by_quantiles require group_by')
-                if isinstance(_gb, bool) or isinstance(_gq, bool):
-                    raise ValueError('group_by_bins/group_by_quantiles must be integer counts')
-                if group_by is not None:
-                    if _gb is not None or _gq is not None:
-                        from .plots.profile import _format_interval_label as _nd94_group_label
-                        if df[group_by].dtype.kind not in 'biufmM':
-                            raise ValueError('numeric group binning requires a numeric group_by')
-                        _values = df[group_by].astype(np.float32) if df[group_by].dtype == np.float16 else df[group_by]
-                        classified = (pd.cut(_values, bins=_gb) if _gb is not None
-                                      else pd.qcut(_values, q=_gq, duplicates='drop'))
-                        _identity = [str(_nd94_group_label(v)) for v in classified.cat.categories]
-                        _group_col = '__dfdraw_nd94_group__'
-                        while _group_col in df.columns:
-                            _group_col += '_'
-                        df = df.copy()
-                        df[_group_col] = classified.map(_nd94_group_label)
-                        group_by = _group_col
-                    else:
-                        _identity = sorted((str(v) for v in df[group_by].dropna().unique()))
-                    plot_kwargs['_nd94_group_identity'] = _identity
-                else:
-                    plot_kwargs['_nd94_group_identity'] = []
+                # Group classification was resolved by the common Figure
+                # scope owner above. Under explicit facet scope, pass each
+                # cell its original group_by_bins/quantiles to resolve locally.
                 # One logical Figure has one channel assignment, even when
                 # missing groups change the contents of individual cells.
                 plot_kwargs['_nd94_channel_assignment'] = (
@@ -4549,6 +4669,7 @@ class DFDraw:
         # End Phase 13.41 N-D branch — existing 1D code follows unchanged
         # =====================================================================
         
+        global_1d_groups = plot_kwargs.pop('_nd95_global_groups', None)
         # ---- Validate facet_by ---------------------------------------------
         # Phase 13.31.DF v1.0 (AD-78): facet_by is a tagged union — either a
         # channel-name enum value (Phase 13.27 Commit 1 semantics, preserved)
@@ -5293,6 +5414,17 @@ class DFDraw:
             ax_i.set_title(f"{_facet_display_name}={group_value}")
             all_stats[str(group_value)] = stats
 
+        if global_1d_groups is not None:
+            for ax_cell in axes_flat[:n_groups]:
+                _stabilize_group_errorbars(
+                    ax_cell, global_1d_groups,
+                    explicit_color=plot_kwargs.get('color'),
+                    explicit_marker=plot_kwargs.get('marker'))
+            _scope_figure_legend(
+                fig, axes_flat[:n_groups], global_1d_groups,
+                explicit_color=plot_kwargs.get('color'),
+                with_title=bool(title or plot_kwargs.get('auto_title')))
+
         # ---- Figure-level title (suptitle) ---------------------------------
         if title:
             fig.suptitle(title, fontsize=get_style_value("axes.titlesize", 14) + 2)
@@ -5316,10 +5448,11 @@ class DFDraw:
                     td = build_auto_title(
                         x_expr or '',
                         str(y_expr) if isinstance(y_expr, str) else str(y_expr[0]),
-                        group_by=group_by if _facet_display_name != 'group_by' else None,
+                        group_by=group_display_name if _facet_display_name != 'group_by' else None,
                         selection=plot_kwargs.get('selection'),
                         weights=None,
                         parts=parts,
+                        quantiles=quantiles if plot_kind == 'profile' else None,
                     )
                     _title_fontsize = get_style_value("axes.titlesize", 14)
                     td = fit_auto_title_to_figure(
@@ -5343,7 +5476,11 @@ class DFDraw:
                 plt.subplots_adjust(top=_suptitle_top_for_title(_get_suptitle(fig) or None))
 
         plt.tight_layout()
-        if title:
+        if global_1d_groups is not None:
+            # Use the existing 1-D facet layout owner; reserve headroom for
+            # the common legend and optional Figure-level semantic title.
+            fig.subplots_adjust(top=0.74 if (title or _auto_title_val) else 0.84)
+        elif title:
             plt.subplots_adjust(top=_suptitle_top_for_title(_get_suptitle(fig) or None))
 
         # ---- Combined stats ------------------------------------------------
@@ -5477,6 +5614,7 @@ class DFDraw:
         
         # Figure-level channels are private execution state, not a plot kwarg.
         _nd94_resolved = plot_kwargs.pop('_nd94_channel_assignment', None)
+        _nd95_keep_cell_legend = plot_kwargs.pop('_nd95_preserve_cell_legend', False)
         # PHASE_13_93 Stage A: as in the 1-D PHASE_13_90 coordinator,
         # the outer N-D Figure owns layout. No inner renderer may call
         # tight_layout on this shared Figure.
@@ -5527,22 +5665,33 @@ class DFDraw:
                 auto_title=False,
                 **plot_kwargs)
             if isinstance(y_expr, list):
-                # The outer coordinator owns N-D titles and legends. The
-                # vector owner can leave both an axes.legend and a secondary
-                # ax.add_artist(Legend), so remove *all* per-cell legends.
+                # The Figure owns the semantic title. Under global scope it
+                # also owns the legend; facet-local scope needs one truthful
+                # merged local legend instead of two overlapping legends.
                 from matplotlib.legend import Legend
                 ax_ij.set_title('')
-                for _artist in tuple(ax_ij.get_children()):
-                    if isinstance(_artist, Legend):
-                        _artist.remove()
-                # The existing auto-title owner also leaves selection text
-                # above the Axes. Remove only that outer-title text; keep
-                # in-panel user annotations intact.
-                for _text in tuple(ax_ij.texts):
-                    if (_text.get_transform() == ax_ij.transAxes
-                            and _text.get_position()[1] >= 1.0):
-                        _text.remove()
-                # Existing vector owner retains its full ordered stats list.
+                local_legends = [artist for artist in tuple(ax_ij.get_children())
+                                 if isinstance(artist, Legend)]
+                if _nd95_keep_cell_legend:
+                    by_name = {}
+                    for legend in local_legends:
+                        handles = getattr(legend, 'legend_handles', None)
+                        if handles is None:
+                            handles = getattr(legend, 'legendHandles', ())
+                        for handle, label in zip(handles, legend.get_texts()):
+                            text = label.get_text()
+                            if text and text not in by_name:
+                                by_name[text] = handle
+                for legend in local_legends:
+                    legend.remove()
+                if _nd95_keep_cell_legend and by_name:
+                    ax_ij.legend(list(by_name.values()), list(by_name),
+                                 fontsize=7, ncol=2, frameon=False,
+                                 loc='upper left')
+                for label in tuple(ax_ij.texts):
+                    if (label.get_transform() == ax_ij.transAxes
+                            and label.get_position()[1] >= 1.0):
+                        label.remove()
             # range= sets bin range; also lock xlim for share_across_figures
             if _lock_x_range is not None and user_range is None and user_x_range is None:
                 ax_ij.set_xlim(_lock_x_range)
@@ -5591,6 +5740,7 @@ class DFDraw:
         color_plan = plot_kwargs.pop('_nd_color_plan', None)
         nd94_groups = plot_kwargs.pop('_nd94_group_identity', None)
         nd94_channels = plot_kwargs.pop('_nd94_channel_assignment', None)
+        nd95_keep_local = plot_kwargs.pop('_nd95_preserve_cell_legend', False)
         if color_plan is not None:
             plot_kwargs = dict(plot_kwargs)
             if color_plan['mode'] == 'legend':
@@ -5658,6 +5808,8 @@ class DFDraw:
                 
                 if nd94_channels is not None:
                     inner_kwargs['_nd94_channel_assignment'] = nd94_channels
+                if nd95_keep_local:
+                    inner_kwargs['_nd95_preserve_cell_legend'] = True
                 stats_ij = self._dispatch_inner_per_cell(
                     sub_df, x_expr, y_expr, plot_kind, ax_ij,
                     _lock_x_range, _lock_y_range,
@@ -5723,8 +5875,12 @@ class DFDraw:
                 _auto_expr = y_expr
             else:
                 _auto_expr = x_expr or 'data'
+            from .plots._auto_title import format_profile_quantile_semantics
+            _q_sem = (format_profile_quantile_semantics(quantiles)
+                      if plot_kind == 'profile' else None)
             fig.suptitle(
-                f"{_auto_expr}  [faceted by {facet_list[0]} × {facet_list[1]}]",
+                f"{_auto_expr}  [faceted by {facet_list[0]} × {facet_list[1]}]"
+                + (f"\n{_q_sem}" if _q_sem else ""),
                 fontsize=11)
         # PHASE_13_93 Stage A: a single Figure-level layout calculation,
         # followed by explicit user overrides. Additional text is positioned
@@ -5795,11 +5951,22 @@ class DFDraw:
         # See PHASE_13_43_DF_v1_2_SummaryFit_Proposal.md §4.2.0 and F.56.
         # ====================================================================
         if nd94_groups is not None:
+            if not isinstance(y_expr, list):
+                from matplotlib.legend import Legend
+                for ax in axes.flat:
+                    _stabilize_group_errorbars(
+                        ax, nd94_groups, explicit_color=plot_kwargs.get('color'),
+                        explicit_marker=plot_kwargs.get('marker'))
+                    for artist in tuple(ax.get_children()):
+                        if isinstance(artist, Legend):
+                            artist.remove()
             from matplotlib.lines import Line2D
             _palette = plt.colormaps.get_cmap(
                 get_style_value('colors.palette', 'tab10'))
             _cycles = get_style_value('channels.cycles.linestyle', ['-', '--', '-.', ':'])
-            if not nd94_groups:
+            if not isinstance(y_expr, list):
+                _vector_proxies = []
+            elif not nd94_groups:
                 # Without group_by, the vector owner uses colour rather than
                 # linestyle. Build legend proxies from the actual rendered
                 # central lines so the Figure legend remains truthful.
@@ -5828,9 +5995,9 @@ class DFDraw:
             ]
             legend_artist = fig.legend(
                 _vector_proxies + _group_proxies,
-                list(y_expr) + list(nd94_groups),
+                (list(y_expr) if isinstance(y_expr, list) else []) + list(nd94_groups),
                 loc='upper center', bbox_to_anchor=(0.5, 0.95),
-                ncol=min(len(y_expr) + len(nd94_groups), 8),
+                ncol=min(len(_vector_proxies) + len(_group_proxies), 8),
                 fontsize=9, frameon=False,
             )
         if color_plan is not None and color_plan['mode'] == 'legend':
@@ -6025,6 +6192,7 @@ class DFDraw:
         # _normalize_legend_spec at the inner dispatcher entry.
         legend: Optional[Union[bool, str, Dict]] = None,
         show_legend: Optional[bool] = None,
+        group_by_scope: str = "auto",  # PHASE_13_95 deterministic compatibility policy
         **kwargs
     ) -> DrawResult:
         """
@@ -6048,6 +6216,9 @@ class DFDraw:
             Column for marker style.
         group_by : str, optional
             Column for grouping (overlay or facet).
+        group_by_scope : str, default 'auto'
+            On faceted profiles, resolve automatic group intervals globally
+            or separately per facet; 'auto' preserves existing behavior.
         facet : bool, default False
             If True with group_by, create subplots instead of overlay.
         bins : int or list, optional
@@ -6091,6 +6262,16 @@ class DFDraw:
         # Phase 13.42.DF: AD-42 guard removed; 'fit=' is now the inline-fit
         # specification per the unified str/dict/callable/list grammar
         # (see plots/fits.py and PHASE_13_42_DF v1.4 §3).
+
+        # PHASE_13_95: explicit grouping scope belongs only to 1-D profiles.
+        # Check before the profile2d early delegate (and before figsize can
+        # allocate a Figure); that delegate otherwise silently drops this
+        # named draw() parameter. The default 'auto' retains old behavior.
+        if group_by_scope != 'auto' and (
+                type != 'profile'
+                or self._count_colons_outside_brackets(expr) == 2):
+            raise NotImplementedError(
+                'group_by_scope is only supported on grouped faceted profiles')
 
         # Handle figsize: create axes if not provided
         if figsize is not None and ax is None:
@@ -6294,6 +6475,7 @@ class DFDraw:
                     expr, selection=selection, bins=bins, stats=stats,
                     title=title, ax=ax, sample=sample, save=save,
                     group_by=group_by, same=same,
+                    group_by_scope=group_by_scope,
                     fit=fit, fit_textbox_kwargs=fit_textbox_kwargs,
                     summary_fit=summary_fit,
                     legend=legend, show_legend=show_legend,
@@ -6586,6 +6768,7 @@ class DFDraw:
                 group_by=group_by, facet=facet, same=same,
                 fit=fit, fit_textbox_kwargs=fit_textbox_kwargs,
                 summary_fit=summary_fit,
+                group_by_scope=group_by_scope,
                 # Phase 13.50 step 4: explicit forwarding (R-2 pattern)
                 legend=legend, show_legend=show_legend,
                 # Phase 13.51 R-2 extension (audit S-3): forward Phase 13.27-13.41 named params
@@ -8089,6 +8272,7 @@ class DFDraw:
         # Phase 13.50.DF step 4 — see draw() signature for full rationale.
         legend: Optional[Union[bool, str, Dict]] = None,
         show_legend: Optional[bool] = None,
+        group_by_scope: str = "auto",  # PHASE_13_95 deterministic compatibility policy
         **kwargs
     ) -> DrawResult:
         """
@@ -8143,6 +8327,13 @@ class DFDraw:
         group_by_quantiles : int, optional
             Number of equal-count quantile bins for float group_by column.
             Mutually exclusive with group_by_bins. Phase 13.12.DF F3.
+        group_by_scope : {'auto', 'global', 'facet'}, default 'auto'
+            For grouped faceted profiles, choose the domain used to define
+            numerical group bins/quantiles. 'global' classifies the complete
+            selected/sampled Figure domain before facets; 'facet' classifies
+            each cell independently. 'auto' preserves the established route:
+            historical scalar faceting is local, PHASE_13_94 expression-vector
+            by two-column N-D faceting is global.
         sort_groups : bool, default True
             If True, sort groups numerically/alphabetically in legend.
             Phase 13.12.DF F4.
@@ -8178,6 +8369,20 @@ class DFDraw:
         # clean error; genuinely unknown -> warning.
         if kwargs:
             self._kwarg_typo_guard(kwargs, method='profile')
+
+        if group_by_scope not in ('auto', 'global', 'facet'):
+            raise ValueError("group_by_scope must be 'auto', 'global', or 'facet'")
+        if group_by_scope != 'auto':
+            if group_by is None or facet_by is None or (
+                isinstance(facet_by, list) and len(facet_by) not in (1, 2)
+            ) or facet_by in ('vector', 'group_by', 'quantiles'):
+                raise NotImplementedError(
+                    'explicit group_by_scope requires a profile with group_by '
+                    'and one column facet or a two-column facet_by list')
+            if top_k is not None and group_by_scope == 'global':
+                raise NotImplementedError(
+                    'group_by_scope="global" with top_k is not supported; '
+                    'global top_k ranking must be resolved before faceting')
 
         # Phase 13.57.DF D4 (architect-ratified alias, kept forever): the
         # prefixed spelling quantiles_mode= is a synonym of quantile_mode=
@@ -8502,6 +8707,7 @@ class DFDraw:
                     bins=bins, x_range=range, error=error,
                     stats=stats, title=title, xlabel=xlabel, ylabel=ylabel,
                     group_by=group_by, top_k=top_k, ncols=ncols,
+                    group_by_scope=group_by_scope,
                     sharex=sharex, sharey=sharey,
                     return_data=return_data, min_entries=min_entries,
                     group_by_bins=group_by_bins, group_by_quantiles=group_by_quantiles,
@@ -8799,6 +9005,7 @@ class DFDraw:
                 bins=bins, x_range=range, error=error,
                 stats=stats, title=title, xlabel=xlabel, ylabel=ylabel,
                 group_by=group_by, top_k=top_k, ncols=ncols,
+                group_by_scope=group_by_scope,
                 sharex=sharex, sharey=sharey,
                 # Phase 13.12.DF
                 return_data=return_data, min_entries=min_entries,
@@ -8911,6 +9118,9 @@ class DFDraw:
         # (popped at this layer; NOT in _*_FORWARDED_NAMES). Normalizer
         # returns None for "no override", in which case applier no-ops.
         _apply_legend_mode(fig, _normalize_legend_spec(legend, show_legend))
+        if (group_by_scope == 'global' or
+                (group_by_scope == 'auto' and _nd94_vector_facet)):
+            _apply_global_group_legend_override(fig, legend, show_legend)
         return fig, axes, stats_dict
 
     # =========================================================================

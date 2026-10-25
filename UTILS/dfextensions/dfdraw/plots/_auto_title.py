@@ -108,8 +108,23 @@ def parse_auto_title_parts(auto_title):
     return set()
 
 
+def format_profile_quantile_semantics(quantiles):
+    """Concise, deterministic non-default profile-quantile metadata.
+
+    Two values denote a pair; three or more are listed explicitly to avoid
+    implying that every set of quantiles is one continuous interval.
+    """
+    if quantiles is None or len(quantiles) == 0:
+        return None
+    vals = [f"{float(q):.6g}" for q in quantiles]
+    if len(vals) == 2:
+        return f"q {vals[0]}–{vals[1]}"
+    return "q [" + ", ".join(vals) + "]"
+
+
 def build_auto_title(x, y=None, group_by=None, selection=None,
-                     weights=None, parts=("expr", "group", "sel")):
+                     weights=None, parts=("expr", "group", "sel"),
+                     quantiles=None):
     """Build automatic title dict from plot parameters.
 
     Returns dict with 'main' (str) and 'sub' (str or None).
@@ -154,6 +169,9 @@ def build_auto_title(x, y=None, group_by=None, selection=None,
         # belongs to the rendering target, where the figure geometry is known.
         sub = selection
 
+    q_semantics = format_profile_quantile_semantics(quantiles)
+    if q_semantics:
+        sub = f"{sub}; {q_semantics}" if sub else q_semantics
     return {"main": main, "sub": sub}
 
 

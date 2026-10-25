@@ -2494,4 +2494,51 @@ FEATURES = [
         ],
     },
 
+
+    # PHASE_13_95_DF — explicit global/facet scope and quantile titles.
+    {
+        "id": "PROFILE.group_by_scope",
+        "name": 'Public deterministic auto/global/facet group-by domain for 1-D and 2-D grouped profiles; selected-frame bins and quantiles, global physical identities, truthful legends and legacy compatibility (PHASE_13_95_DF)',
+        "category": 'PROFILE',
+        "tests": [
+            'test_phase_13_95_group_scope_title_red.py::test_R1_public_signature_and_invalid_values',
+            'test_phase_13_95_group_scope_title_red.py::test_R2_auto_preserves_historical_1d_faceted_numbers',
+            'test_phase_13_95_group_scope_title_red.py::test_R3_explicit_global_1d_reuses_exact_physical_groups',
+            'test_phase_13_95_group_scope_title_red.py::test_R4_explicit_local_1d_matches_auto',
+            'test_phase_13_95_group_scope_title_red.py::test_R5_global_quantiles_in_1d',
+            'test_phase_13_95_group_scope_title_red.py::test_R6_global_missing_group_2d_has_stable_identity',
+            'test_phase_13_95_group_scope_title_red.py::test_R7_global_figure_legend_obeys_explicit_hide',
+            'test_phase_13_95_group_scope_title_red.py::test_R8_facet_local_has_no_false_global_numeric_legend',
+            'test_phase_13_95_group_scope_title_red.py::test_R9_13_94_auto_matches_omitted_policy',
+            'test_phase_13_95_group_scope_title_red.py::test_R10_13_94_explicit_facet_policy_changes_group_boundaries',
+            'test_phase_13_95_group_scope_title_red.py::test_R13_typed_draw_parity_for_explicit_global[typed]',
+            'test_phase_13_95_group_scope_title_red.py::test_R13_typed_draw_parity_for_explicit_global[draw]',
+            'test_phase_13_95_group_scope_title_red.py::test_R14_categorical_no_binning_no_numeric_changes',
+            'test_phase_13_95_group_scope_title_red.py::test_R15_single_global_cut_event',
+            'test_phase_13_95_group_scope_title_red.py::test_R16_selection_domain_global_bin_membership_independent_pandas',
+            'test_phase_13_95_group_scope_title_red.py::test_R17_single_dimension_list_is_equivalent_to_scalar_facet',
+            'test_phase_13_95_group_scope_title_red.py::test_R18_global_quantile_boundaries_derived_from_selection_not_raw_input',
+            'test_phase_13_95_group_scope_title_red.py::test_R20_no_scope_widening_to_other_plot_families',
+            'test_phase_13_95_group_scope_title_red.py::test_R21_global_top_k_does_not_claim_unsupported_global_ranking',
+            'test_phase_13_95_group_scope_title_red.py::test_R22_2d_scalar_global_matches_selected_pandas_counts',
+            'test_phase_13_95_group_scope_title_red.py::test_R23_auto_vector_13_94_figure_legend_obeys_explicit_hide',
+            'test_phase_13_95_group_scope_title_red.py::test_R24_explicit_all_overrides_default_shared_global_legend',
+            'test_phase_13_95_group_scope_title_red.py::test_R25_vector_1d_global_bins_match_full_selected_pandas_and_scalar[draw]',
+            'test_phase_13_95_group_scope_title_red.py::test_R25_vector_1d_global_bins_match_full_selected_pandas_and_scalar[typed]',
+            'test_phase_13_95_group_scope_title_red.py::test_R26_vector_1d_global_quantile_scope_reuses_selected_boundaries[draw]',
+            'test_phase_13_95_group_scope_title_red.py::test_R26_vector_1d_global_quantile_scope_reuses_selected_boundaries[typed]',
+            'test_phase_13_95_group_scope_title_red.py::test_R27_vector_1d_auto_and_facet_retain_legacy_local_semantics',
+        ],
+    },
+    {
+        "id": "TITLE.profile_quantile_semantics",
+        "name": 'Automatic profile title reports non-default two-value and multi-value quantiles once, preserving explicit titles and auto_title=False (PHASE_13_95_DF)',
+        "category": 'TITLE',
+        "tests": [
+            'test_phase_13_95_group_scope_title_red.py::test_R11_1d_quantiles_appear_once_in_auto_title',
+            'test_phase_13_95_group_scope_title_red.py::test_R12_title_false_and_explicit_title_precedence',
+            'test_phase_13_95_group_scope_title_red.py::test_R19_more_than_two_quantiles_are_listed_not_misrepresented_as_range',
+        ],
+    },
+
 ]
