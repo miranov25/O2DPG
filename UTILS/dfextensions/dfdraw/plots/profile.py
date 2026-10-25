@@ -224,6 +224,8 @@ def draw_profile(
     time_format: Optional[str] = None,
     # Phase 13.42.DF: Inline fit specification (architect 2026-05-22).
     fit: Optional[Union[str, Dict, Callable, List]] = None,
+    # PHASE_13_96_DF Stage B: additive existing-statistics rendering selector.
+    stat_list: Optional[List[str]] = None,
     # PHASE_13_82_DF: optional recorder; None on every normal draw.
     _semantic_description=None,
     **kwargs
@@ -308,6 +310,11 @@ def draw_profile(
     selection : str, array, or None
         Selection string (used for auto-title display only).
         Non-string selections are silently skipped in the title.
+    stat_list : list[str] or None
+        Optional statistic-rendering vector. Reuses existing owners for
+        mean, median, std, sem, and quantiles. Quantiles require quantiles=[...].
+        Median with grouping or weights is not implemented. When provided,
+        explicit central= conflicts; stat_list=None preserves legacy drawing.
     **kwargs
         Additional arguments passed to plt.errorbar().
     
@@ -320,6 +327,39 @@ def draw_profile(
         with columns: x_center, x_low, x_high, y_mean, y_std, y_sem, count,
         sum_weights (if weights used), and 'group' if group_by is used.
     """
+    # PHASE_13_96_DF Stage C: independent statistic curves and existing
+    # median/quantile bundles. Vector/group/facet expansion follows later.
+    # Figure-global grouped facets pre-resolve one physical color ordering.
+    _stat_group_order = kwargs.pop('_stat_group_order', None)
+    # Validate before figure allocation, never silently drop stat_list.
+    if stat_list is not None:
+        if not isinstance(stat_list, (list, tuple)) or not stat_list:
+            raise ValueError("stat_list must be a non-empty list of statistic names")
+        if not all(isinstance(name, str) for name in stat_list):
+            raise ValueError("stat_list entries must be statistic names (strings)")
+        if len(set(stat_list)) != len(stat_list):
+            raise ValueError("stat_list must contain each statistic only once")
+        unknown = [name for name in stat_list if name not in ('mean', 'median', 'std', 'sem', 'quantiles')]
+        if unknown:
+            raise NotImplementedError(
+                f"unknown stat_list statistic(s): {unknown!r}. "
+                "Use mean, median, std, sem, or quantiles")
+        if central is not None:
+            raise ValueError("stat_list and explicit central= conflict; select statistics via stat_list")
+        if group_by is not None and any(name not in ('mean', 'std', 'sem') for name in stat_list):
+            raise NotImplementedError(
+                "stat_list grouped profiles support mean/std/sem only; "
+                "grouped median and quantiles are unsupported")
+        if 'median' in stat_list and weights is not None:
+            raise NotImplementedError(
+                "stat_list median with weights is unsupported: weighted median is not implemented")
+        if 'quantiles' in stat_list and quantiles is None:
+            raise ValueError("stat_list=['quantiles'] requires quantiles=[...] to select fractions")
+        if quantiles is not None and 'quantiles' not in stat_list:
+            raise ValueError("quantiles= requires 'quantiles' in stat_list when stat_list is provided")
+        if fit is not None:
+            raise NotImplementedError("stat_list with fit is not supported in Stage B")
+
     # Phase 13.12.DF F3: Validate mutual exclusion
     if group_by_bins is not None and group_by_quantiles is not None:
         raise ValueError("Cannot specify both group_by_bins and group_by_quantiles")
@@ -448,6 +488,14 @@ def draw_profile(
         # Weighted quantiles not supported in Phase A
         if weights is not None:
             raise NotImplementedError("weighted quantiles deferred to Phase B")
+        # An asymmetric quantile error-bar overlay needs a selected central
+        # statistic to anchor it; never silently invent a mean curve.
+        if (stat_list is not None and 'quantiles' in stat_list
+                and len(stat_list) > 1 and _resolved_quantile_mode == 'error_bars'
+                and not any(name in stat_list for name in ('mean', 'median'))):
+            raise NotImplementedError(
+                "stat_list quantile error_bars with other statistics requires "
+                "mean or median as an explicit central statistic")
     
     # Validate error="quantile" requires quantiles=
     if error == "quantile" and quantiles is None:
@@ -628,9 +676,13 @@ def draw_profile(
             quantile_pair=_quantile_pair,
             quantile_list=_quantile_list,
             quantile_style=quantile_style,
+            stat_list=stat_list,
+            _stat_group_order=_stat_group_order,
             **kwargs
         )
         stats_dict["grouped"] = True
+        if stat_list is not None:
+            stats_dict['statistic_curves'] = _per_group_stats
         # Phase 13.32.DF Sub-fix 2: surface quantile metadata + per-group stats
         # in the returned stats_dict per v1.2 §3.2 schema.
         if quantiles is not None:
@@ -715,7 +767,8 @@ def draw_profile(
         # Phase A: compute standard profile (needed for mean line + SEM/STD bars)
         _error_for_compute = error if error != "quantile" else "sem"
         bin_centers, bin_means, bin_errors, bin_counts, profile_df = _compute_profile(
-            x_data, y_data, bins, _used_xrange, _error_for_compute, return_data=return_data,
+            x_data, y_data, bins, _used_xrange, _error_for_compute,
+            return_data=(return_data or stat_list is not None),
             w_data=w_data  # Phase 13.12.DF v1.1
         )
         
@@ -742,8 +795,13 @@ def draw_profile(
         
         # Phase 13.25.DF: Compute per-bin median if needed
         _bin_medians = None
-        if central in ('median', 'both'):
-            _bin_medians = _compute_per_bin_median(x_data, y_data, bins, x_range)
+        if (central in ('median', 'both')
+                or (stat_list is not None and 'median' in stat_list)
+                or (stat_list is not None and quantiles is not None
+                    and any(abs(q - .5) < 1e-12 for q in quantiles))):
+            # PHASE_13_96_DF M-1: median must use precisely the same
+            # resolved x bins as mean/std/SEM (including autorange).
+            _bin_medians = _compute_per_bin_median(x_data, y_data, bins, _used_xrange)
         
         # Phase 13.25.DF: Determine central values for plotting
         if central == 'median':
@@ -751,8 +809,80 @@ def draw_profile(
         else:
             _central_values = bin_means  # 'mean', 'both', 'none' all use mean as primary
         
+        # PHASE_13_96_DF Stage C: one original profile calculation supplies
+        # mean/std/sem; median/quantiles reuse the existing per-bin owners.
+        # Statistic identity is retained without inspecting Matplotlib artists.
+        _stat_quantile_combo = (stat_list is not None and
+                                'quantiles' in stat_list and len(stat_list) > 1)
+        if stat_list is not None:
+            _stat_values = {
+                'mean': profile_df['y_mean'].to_numpy().copy(),
+                'std': profile_df['y_std'].to_numpy().copy(),
+                'sem': profile_df['y_sem'].to_numpy().copy(),
+            }
+            if _bin_medians is not None:
+                _stat_values['median'] = _bin_medians.copy()
+            if 'quantiles' in stat_list:
+                if _q_all is not None:
+                    _q_values = {q: value.copy() for q, value in _q_all.items()}
+                else:
+                    _q_values = {}
+                    if _quantile_pair is not None:
+                        lo, hi = _quantile_pair
+                        _q_values[lo] = _q_lower.copy()
+                        _q_values[hi] = _q_upper.copy()
+                    if quantiles is not None and any(abs(q-.5)<1e-12 for q in quantiles):
+                        _q_values[.5] = _bin_medians.copy()
+                _stat_values['quantiles'] = {
+                    'mode': _resolved_quantile_mode,
+                    'fractions': tuple(sorted(quantiles)),
+                    'values': {q: _q_values[q] for q in sorted(_q_values)},
+                }
+            stats_dict['statistic_curves'] = {
+                name: _stat_values[name] for name in stat_list
+            }
+            _stat_marker = {'mean': marker, 'median': 'D', 'std': '^', 'sem': 'v'}
+            _stat_linestyle = {'mean': linestyle, 'median': '--',
+                               'std': ':', 'sem': ':'}
+            for name in stat_list:
+                if name == 'quantiles':
+                    continue  # existing quantile renderer below owns this bundle
+                if name == 'mean':
+                    ax.errorbar(
+                        bin_centers[plot_mask], _stat_values[name][plot_mask],
+                        yerr=bin_errors[plot_mask], fmt=_stat_marker[name],
+                        color=color, markersize=markersize, capsize=capsize,
+                        linestyle=_stat_linestyle[name], linewidth=linewidth,
+                        label=name, **kwargs)
+                else:
+                    ax.plot(
+                        bin_centers[plot_mask], _stat_values[name][plot_mask],
+                        color=color, marker=_stat_marker[name],
+                        markersize=markersize,
+                        linestyle=_stat_linestyle[name], linewidth=linewidth,
+                        label=name, **kwargs)
+            if return_data:
+                profile_df['y_central'] = bin_means
+                stats_dict['profile_data'] = profile_df
+
         # Phase 13.25.DF: Render based on quantile_mode
-        if _resolved_quantile_mode == 'error_bars' and error == "quantile":
+        if _stat_quantile_combo and _resolved_quantile_mode == 'error_bars':
+            # Reuse the existing quantile pair and central statistic. Draw
+            # marker-free quantile geometry only: never duplicate the selected
+            # mean/median line or inherit its SEM uncertainty a second time.
+            _q_reference = (_stat_values['mean'] if 'mean' in stat_list
+                            else _stat_values['median'])
+            _q_center = _q_reference[plot_mask]
+            _q_err = np.array([
+                np.maximum(0, _q_center - _q_lower[plot_mask]),
+                np.maximum(0, _q_upper[plot_mask] - _q_center),
+            ])
+            ax.errorbar(
+                bin_centers[plot_mask], _q_center, yerr=_q_err,
+                fmt='none', color=color, linestyle='none',
+                capsize=get_style_value('quantile.error_bars.capsize', 3.0),
+                label='_nolegend_')
+        elif _resolved_quantile_mode == 'error_bars' and error == "quantile":
             # Quantile-derived asymmetric error bars (zero visual channel cost)
             _render_quantile_error_bars(
                 ax, bin_centers, _central_values, _q_lower, _q_upper,
@@ -793,7 +923,7 @@ def draw_profile(
                     ax, bin_centers, _q_lower, _q_upper, plot_mask, color,
                 )
             # Central line (unless central='none')
-            if central != 'none':
+            if central != 'none' and not _stat_quantile_combo:
                 ax.errorbar(
                     bin_centers[plot_mask], _central_values[plot_mask],
                     yerr=bin_errors[plot_mask],
@@ -806,7 +936,7 @@ def draw_profile(
             # bands. >=2 symmetric pairs (with or without 0.5). Central line
             # rendered when central != 'none'. Zero-cost mode (no channel
             # consumed). Max 3 nested bands (silent truncation, outermost 3).
-            if central != 'none':
+            if central != 'none' and not _stat_quantile_combo:
                 ax.errorbar(
                     bin_centers[plot_mask], _central_values[plot_mask],
                     yerr=bin_errors[plot_mask],
@@ -820,7 +950,7 @@ def draw_profile(
         elif _resolved_quantile_mode == 'discrete' and _q_all is not None:
             # Discrete mode: one line per quantile value — the general case.
             # Central line first (unless central='none')
-            if central != 'none':
+            if central != 'none' and not _stat_quantile_combo:
                 ax.errorbar(
                     bin_centers[plot_mask], _central_values[plot_mask],
                     yerr=bin_errors[plot_mask],
@@ -859,6 +989,9 @@ def draw_profile(
                 _qs_cycle = ['--', '-.', ':']
 
             for j, (q_val, q_per_bin) in enumerate(_q_all.items()):
+                if (_stat_quantile_combo and 'median' in stat_list
+                        and abs(q_val - .5) < 1e-12):
+                    continue  # the explicit median statistic owns q=0.5
                 q_label = f'q={q_val:.0%}' if abs(q_val - 0.5) > 1e-9 else 'median'
                 if _qs_kind == 'linestyle':
                     q_ls = _qs_cycle[j % len(_qs_cycle)]
@@ -897,7 +1030,7 @@ def draw_profile(
                             backgroundcolor='white',
                             ha='center', va='bottom',
                         )
-        else:
+        elif stat_list is None:
             # No quantiles — standard profile rendering (existing behavior)
             # Phase 13.51 §1.2.5 V-3 (audit S-2): use _central_values not bin_means.
             # _central_values is set at line 728: equals _bin_medians when
@@ -987,11 +1120,30 @@ def draw_profile(
     
     # Legend for grouped or discrete quantiles
     if not _suppress_legend:
-        if group_col is not None:
+        if group_col is not None and stat_list is not None:
+            from matplotlib.lines import Line2D
+            identities = list(stats_dict['statistic_curves'])
+            pal = plt.colormaps.get_cmap(get_style_value('colors.palette', 'tab10'))
+            group_handles = [Line2D([], [], color=(color if _ud_user_color is not None
+                                                   else pal(i % 10)), linewidth=2)
+                             for i, _ in enumerate(identities)]
+            style_handles = [Line2D([], [], color='black', marker={'mean': marker,
+                                'std': '^', 'sem': 'v'}[name], linestyle={'mean': '-',
+                                'std': ':', 'sem': ':'}[name]) for name in stat_list]
+            ax.legend(group_handles + style_handles,
+                      [str(g) for g in identities] + list(stat_list),
+                      loc=get_style_value('legend.loc', 'best'))
+        elif group_col is not None:
             ax.legend(loc=get_style_value("legend.loc", "best"))
         elif _resolved_quantile_mode == 'discrete' and quantiles is not None:
             ax.legend(loc=get_style_value("legend.loc", "best"),
                       fontsize=get_style_value("legend.fontsize", 9))
+        elif stat_list is not None:
+            # A quantile band has no labeled line by itself. Do not invent
+            # an empty legend (or emit Matplotlib's no-artists warning).
+            _handles, _labels = ax.get_legend_handles_labels()
+            if _handles:
+                ax.legend(loc=get_style_value("legend.loc", "best"))
     
     if not _suppress_layout:
         plt.tight_layout()
@@ -1182,6 +1334,8 @@ def _draw_profile_grouped(
     quantile_pair: Optional[tuple] = None,
     quantile_list: Optional[list] = None,
     quantile_style: Optional[str] = None,
+    stat_list: Optional[List[str]] = None,
+    _stat_group_order=None,
     # Phase 13.36.DF: user style overrides (BUG-013 fix).
     # None = "user did not pass" (matches matplotlib default-color semantics).
     # Non-None = apply uniformly to all groups, override the auto-cycle.
@@ -1275,7 +1429,7 @@ def _draw_profile_grouped(
     profile_data_list = [] if return_data else None
 
     # Phase 13.32.DF Sub-fix 2: per-group stats (only populated when quantiles is set)
-    per_group_stats = {} if quantiles is not None else None
+    per_group_stats = {} if quantiles is not None or stat_list is not None else None
 
     # Phase 13.32.DF Sub-fix 2: resolve grouped band alpha once
     _band_alpha_grouped = get_style_value("quantile.band.alpha_grouped", 0.15)
@@ -1319,7 +1473,8 @@ def _draw_profile_grouped(
             continue
 
         bin_centers, bin_means, bin_errors, bin_counts, profile_df = _compute_profile(
-            x_data, y_data, bins, x_range, error, return_data=return_data,
+            x_data, y_data, bins, x_range, error,
+            return_data=(return_data or stat_list is not None),
             w_data=w_data  # Phase 13.12.DF v1.1
         )
 
@@ -1341,7 +1496,10 @@ def _draw_profile_grouped(
 
         # Phase 13.36.DF: user color override > palette cycle.
         # None = "user did not pass" (matches matplotlib default-color semantics).
-        group_color = (palette(i % 10)
+        group_idx = (list(map(str, _stat_group_order)).index(str(group))
+                     if stat_list is not None and _stat_group_order is not None
+                     and str(group) in map(str, _stat_group_order) else i)
+        group_color = (palette(group_idx % 10)
                        if _user_color is None
                        else _user_color)
 
@@ -1355,6 +1513,35 @@ def _draw_profile_grouped(
                 f"Omit color= to use per-group colors (default behavior).",
                 UserWarning, stacklevel=4
             )
+
+        # PHASE_13_96 Stage E: reuse the ONE existing grouped computation.
+        # The statistic dimension changes rendering only, not grouping or
+        # the mean/std/SEM definitions. Keep group and statistic IDs separate.
+        if stat_list is not None:
+            _values = {
+                'mean': profile_df['y_mean'].to_numpy().copy(),
+                'std': profile_df['y_std'].to_numpy().copy(),
+                'sem': profile_df['y_sem'].to_numpy().copy(),
+            }
+            per_group_stats[group] = {name: _values[name] for name in stat_list}
+            _markers = {'mean': (_user_marker if _user_marker is not None else 'o'),
+                        'std': '^', 'sem': 'v'}
+            _linestyles = {'mean': (_user_linestyle if _user_linestyle is not None else '-'),
+                           'std': ':', 'sem': ':'}
+            for _stat in stat_list:
+                if _stat == 'mean':
+                    ax.errorbar(
+                        bin_centers[plot_mask], _values[_stat][plot_mask],
+                        yerr=bin_errors[plot_mask], fmt=_markers[_stat],
+                        color=group_color, linestyle=_linestyles[_stat],
+                        markersize=_user_markersize, label='_nolegend_')
+                else:
+                    ax.plot(
+                        bin_centers[plot_mask], _values[_stat][plot_mask],
+                        marker=_markers[_stat], color=group_color,
+                        linestyle=_linestyles[_stat],
+                        markersize=_user_markersize, label='_nolegend_')
+            continue
 
         # Phase 13.32.DF Sub-fix 2: per-group quantile rendering BEFORE the
         # central line so the central line stays visually on top.

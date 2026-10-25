@@ -466,6 +466,7 @@ _FACET_DISPOSITIONS = {
         },
         "REFUSED": {
             "same",          # explicit public facet_by + same=True guard
+            "stat_list",     # Stage B: facet composition reserved for Stage E
         },
         "KNOWN_SILENT_GAP": {"ax"},
     },
@@ -553,7 +554,7 @@ _DRAW_TO_TYPED_DISPOSITIONS = {
     },
     "profile": {
         "FORWARDED": {
-            "selection", "group_by", "group_by_scope", "facet", "bins",
+            "selection", "group_by", "group_by_scope", "stat_list", "facet", "bins",
             "stats", "title", "ax", "sample", "save", "same",
             "nan_policy", "facet_by", "facet_by_bins",
             "facet_by_quantiles", "share_x", "share_y",
@@ -595,7 +596,7 @@ _DRAW_TO_TYPED_DISPOSITIONS = {
         # currently drops these silently; RED-R5 requires a loud disposition.
         # Explicit scope is restricted to grouped 1-D profiles.  The
         # profile2d draw-door refuses non-auto scope before allocating a Figure.
-        "REFUSED": {"color", "marker", "group_by_scope"},
+        "REFUSED": {"color", "marker", "group_by_scope", "stat_list"},
     },
 }
 

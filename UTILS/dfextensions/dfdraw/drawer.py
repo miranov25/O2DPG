@@ -91,7 +91,17 @@ def _stabilize_group_errorbars(ax, identities, explicit_color=None, explicit_mar
             artist.set_color(color)
 
 
-def _scope_figure_legend(fig, axes, identities, *, explicit_color=None, with_title=False):
+def _statistic_legend_proxies(stat_list):
+    """Factored statistic identity, independent of Figure/group channels."""
+    from matplotlib.lines import Line2D
+    markers = {'mean': 'o', 'std': '^', 'sem': 'v'}
+    styles = {'mean': '-', 'std': ':', 'sem': ':'}
+    return [Line2D([], [], color='black', marker=markers[name],
+                   linestyle=styles[name]) for name in stat_list]
+
+
+def _scope_figure_legend(fig, axes, identities, *, explicit_color=None,
+                         with_title=False, stat_list=None):
     """One truthful Figure-level group legend, no duplicated panel legends."""
     from matplotlib.legend import Legend
     from matplotlib.lines import Line2D
@@ -103,8 +113,11 @@ def _scope_figure_legend(fig, axes, identities, *, explicit_color=None, with_tit
     handles = [Line2D([], [], color=(explicit_color if explicit_color is not None
                                     else palette(i % 10)), linewidth=2)
                for i, _ in enumerate(identities)]
+    if stat_list:
+        handles += _statistic_legend_proxies(stat_list)
+    labels = list(identities) + (list(stat_list) if stat_list else [])
     if handles:
-        fig.legend(handles, identities, loc='upper center',
+        fig.legend(handles, labels, loc='upper center',
                    bbox_to_anchor=(.5, .86 if with_title else .96),
                    ncol=min(len(handles), 8),
                    fontsize=9, frameon=False)
@@ -1649,6 +1662,7 @@ class DFDraw:
         'auto_title',
         'same',
         'stat_fields',  # Phase 13.18.DF: robust statistics groups
+        'stat_list',  # PHASE_13_96 Stage D: reuse existing vector branch owner
         'quantiles', 'central', 'quantile_mode',  # Phase 13.25.DF: quantile rendering
         'quantile_style',  # Phase 13.26.DF: channel-aware quantile rendering
         'nan_policy',  # Phase 13.28.DF: NaN/inf filter policy (AD-70)
@@ -2472,6 +2486,34 @@ class DFDraw:
         _assignment = _resolved['assignment']
         _has_quantile_channel = _resolved['has_quantile_channel']
 
+        # PHASE_13_96 Stage D: reserve marker identity for the independent
+        # statistic dimension. The existing vector/selection/weight resolver
+        # stays the sole owner of B; refuse a channel collision before the
+        # first curve is drawn, rather than silently replacing branch markers.
+        _stat_vector = kwargs.get('stat_list') if draw_method == self.profile else None
+        if _stat_vector is not None:
+            if (('median' in _stat_vector or 'quantiles' in _stat_vector)
+                    and (kwargs.get('weights') is not None or _w_active)):
+                raise NotImplementedError(
+                    "statistic vector with median or quantiles and weights "
+                    "is unsupported: weighted median/quantiles have no "
+                    "validated estimator; choose mean/std/sem")
+            if 'marker' in _assignment.values():
+                raise NotImplementedError(
+                    "statistic marker channel unavailable: existing vector "
+                    "branches already use marker. Reduce vector dimensions "
+                    "or render statistics in separate calls")
+            if _has_quantile_channel:
+                raise NotImplementedError(
+                    "statistic and discrete quantile channels exceed the "
+                    "current visual-channel capacity; use a quantile band "
+                    "or separate plots")
+            if kwargs.get('color') is not None and (
+                    len(y_list) > 1 or _sel_active or _w_active):
+                raise ValueError(
+                    "statistic vector requires distinct branch colors; "
+                    "omit explicit color= or plot branches separately")
+
         # Resolve scalar styles from the assignment.
         vector_style = _assignment.get('vector', vector_style or 'color')
         if group_by is not None:
@@ -2499,6 +2541,7 @@ class DFDraw:
             )
         
         stats_list = []
+        _stat_branch_visuals = []  # branch identity and factored legend
         per_curve_sanitize = []  # Phase 13.27.DF Commit 2 v1.2 §5.2.1
         fig, ax = None, None
 
@@ -2651,6 +2694,30 @@ class DFDraw:
             if group_by is not None:
                 iter_kwargs['group_by'] = group_by
 
+            if _stat_vector is not None:
+                # One branch color for all of its statistic curves. Reuse the
+                # resolved color owner (not the statistic index) so B × S does
+                # not reset its visual identity for each S member.
+                _color_owner = next((key for key in (
+                    'vector', 'selection_delta', 'weights_delta')
+                    if _assignment.get(key) == 'color'), 'vector')
+                _color_idx = {'vector': y_idx,
+                              'selection_delta': sel_idx or 0,
+                              'weights_delta': w_idx or 0}[_color_owner]
+                import matplotlib.pyplot as _plt
+                _palette = _plt.colormaps.get_cmap(
+                    get_style_value('colors.palette', 'tab10'))
+                iter_kwargs['color'] = _palette(_color_idx % 10)
+                iter_kwargs['_suppress_color_cycle'] = True
+                _stat_branch_visuals.append({
+                    'expression': expr, 'color': iter_kwargs['color'],
+                    'linestyle': iter_kwargs.get('linestyle', '-'),
+                    'selection_index': sel_idx,
+                    'weights_index': w_idx,
+                    'selection': (None if sel_idx is None else _selection_vector[sel_idx]),
+                    'weights': (None if w_idx is None else _weights_vector[w_idx]),
+                })
+
             # First iteration uses outer same; subsequent always same=True
             iter_kwargs['same'] = outer_same if i == 0 else True
 
@@ -2666,12 +2733,65 @@ class DFDraw:
             iter_kwargs['_suppress_layout'] = True
 
             fig, ax, stats = draw_method(expr, **iter_kwargs)
+            if _stat_vector is not None:
+                # Deterministic, programmatic (branch, statistic) identity;
+                # numeric arrays remain in stats['statistic_curves'].
+                stats['statistic_branch'] = {
+                    'index': i,
+                    'expression': expr,
+                    'expression_index': y_idx,
+                    'selection_index': sel_idx,
+                    'weights_index': w_idx,
+                    'selection': _stat_branch_visuals[-1]['selection'],
+                    'weights': _stat_branch_visuals[-1]['weights'],
+                }
             stats_list.append(stats)
 
             # Phase 13.27.DF Commit 2 v1.2 §5.2.1: aggregate per-curve sanitize stats
             if isinstance(stats, dict) and 'sanitize_stats' in stats:
                 per_curve_sanitize.append(stats['sanitize_stats'])
         
+        if _stat_vector is not None and ax is not None:
+            from matplotlib.lines import Line2D
+            # Two independent legend factors (B + S entries, never B × S).
+            # Artist labels remain statistic-owned for numerical inspection.
+            proxies, labels = [], []
+            for i, item in enumerate(_stat_branch_visuals):
+                tag = item['expression']
+                if item['selection'] is not None:
+                    _selection_tag = (str(_selection_labels[item['selection_index']])
+                        if _selection_labels is not None else item['selection'])
+                    tag += f" | selection={_selection_tag}"
+                if item['weights'] is not None:
+                    _weights_tag = (str(_weights_labels[item['weights_index']])
+                        if _weights_labels is not None else item['weights'])
+                    tag += f" | weights={_weights_tag}"
+                proxies.append(Line2D([0], [0], color=item['color'],
+                                       linestyle=item['linestyle']))
+                labels.append(tag)
+            _stat_markers = {'mean': kwargs.get('marker') or 'o', 'median': 'D',
+                             'std': '^', 'sem': 'v', 'quantiles': None}
+            for name in _stat_vector:
+                proxies.append(Line2D([0], [0], color='black',
+                    marker=_stat_markers[name], linestyle='-' if name=='quantiles' else 'None'))
+                labels.append(name)
+            _legend_spec = kwargs.get('legend')
+            _explicit_hide = (kwargs.get('show_legend') is False
+                              or _legend_spec is False
+                              or _legend_spec == 'none')
+            if _explicit_hide:
+                # The historical same=True overlay helper installs a
+                # legend during each branch, even though our local renderer
+                # suppressed legend. Respect explicit legend=False here.
+                old_legend = ax.get_legend()
+                if old_legend is not None:
+                    old_legend.remove()
+            else:
+                ax.legend(proxies, labels,
+                          loc=get_style_value('legend.loc', 'best'),
+                          fontsize=get_style_value('legend.fontsize', 9),
+                          title='Branches / Statistics')
+
         # Phase 13.16.DF FIX1 (B2): post-loop main-group legend dedup.
         # Underlying plot modules collected handles via ax.scatter/plot label= but
         # we suppressed their legend calls. Now build a deduplicated legend.
@@ -4474,6 +4594,9 @@ class DFDraw:
             group_quantiles = plot_kwargs.pop('group_by_quantiles', None)
             df, group_by, global_groups = _scope_group_domain(
                 df, group_by, bins=group_bins, quantiles=group_quantiles)
+        if global_scope and plot_kwargs.get('stat_list') is not None:
+            # Stable physical color identity across sparse facet cells.
+            plot_kwargs['_stat_group_order'] = global_groups or []
         if global_scope and isinstance(facet_by, list) and len(facet_by) == 2:
             plot_kwargs['_nd94_group_identity'] = global_groups or []
         if nd_vector and group_scope == 'facet':
@@ -5423,7 +5546,13 @@ class DFDraw:
             _scope_figure_legend(
                 fig, axes_flat[:n_groups], global_1d_groups,
                 explicit_color=plot_kwargs.get('color'),
-                with_title=bool(title or plot_kwargs.get('auto_title')))
+                with_title=bool(title or plot_kwargs.get('auto_title')),
+                stat_list=plot_kwargs.get('stat_list'))
+        elif (plot_kind == 'profile' and group_by is None
+              and plot_kwargs.get('stat_list') is not None):
+            _scope_figure_legend(fig, axes_flat[:n_groups], [],
+                with_title=bool(title or plot_kwargs.get('auto_title')),
+                stat_list=plot_kwargs['stat_list'])
 
         # ---- Figure-level title (suptitle) ---------------------------------
         if title:
@@ -5993,13 +6122,30 @@ class DFDraw:
                                     else _palette(i % 10)), linewidth=2)
                 for i in range(len(nd94_groups))
             ]
+            _stat_names = plot_kwargs.get('stat_list')
+            _stat_handles = (_statistic_legend_proxies(_stat_names)
+                             if _stat_names else [])
+            _legend_handles = _vector_proxies + _group_proxies + _stat_handles
+            _legend_names = ((list(y_expr) if isinstance(y_expr, list) else [])
+                             + list(nd94_groups) + (list(_stat_names) if _stat_names else []))
             legend_artist = fig.legend(
-                _vector_proxies + _group_proxies,
-                (list(y_expr) if isinstance(y_expr, list) else []) + list(nd94_groups),
+                _legend_handles, _legend_names,
                 loc='upper center', bbox_to_anchor=(0.5, 0.95),
-                ncol=min(len(_vector_proxies) + len(_group_proxies), 8),
+                ncol=min(len(_legend_handles), 8),
                 fontsize=9, frameon=False,
             )
+        if (nd94_groups is None and plot_kind == 'profile'
+                and group_by is None and plot_kwargs.get('stat_list') is not None):
+            from matplotlib.legend import Legend
+            for _cell_ax in axes.flat:
+                for _leg in tuple(_cell_ax.get_children()):
+                    if isinstance(_leg, Legend):
+                        _leg.remove()
+            _stat_names = plot_kwargs['stat_list']
+            legend_artist = fig.legend(
+                _statistic_legend_proxies(_stat_names), list(_stat_names),
+                loc='upper center', bbox_to_anchor=(0.5, .95),
+                ncol=min(len(_stat_names), 8), fontsize=9, frameon=False)
         if color_plan is not None and color_plan['mode'] == 'legend':
             from matplotlib.lines import Line2D
             proxies = [
@@ -6193,6 +6339,7 @@ class DFDraw:
         legend: Optional[Union[bool, str, Dict]] = None,
         show_legend: Optional[bool] = None,
         group_by_scope: str = "auto",  # PHASE_13_95 deterministic compatibility policy
+        stat_list: Optional[List[str]] = None,  # PHASE_13_96 existing statistic curves
         **kwargs
     ) -> DrawResult:
         """
@@ -6264,6 +6411,10 @@ class DFDraw:
         # (see plots/fits.py and PHASE_13_42_DF v1.4 §3).
 
         # PHASE_13_95: explicit grouping scope belongs only to 1-D profiles.
+        # PHASE_13_96 Stage B: stat_list belongs to 1-D profiles only.
+        if stat_list is not None and type != 'profile':
+            raise NotImplementedError("stat_list is only supported for type='profile'")
+
         # Check before the profile2d early delegate (and before figsize can
         # allocate a Figure); that delegate otherwise silently drops this
         # named draw() parameter. The default 'auto' retains old behavior.
@@ -6466,7 +6617,8 @@ class DFDraw:
                     **kwargs
                 )
             if type == "profile" and (
-                normalize is not None
+                stat_list is not None  # PHASE_13_96: typed profile owns B × S
+                or normalize is not None
                 or facet_by == "vector"
                 or _profile_ordinary_vector_facet
                 or isinstance(facet_by, list)
@@ -6476,6 +6628,7 @@ class DFDraw:
                     title=title, ax=ax, sample=sample, save=save,
                     group_by=group_by, same=same,
                     group_by_scope=group_by_scope,
+                    stat_list=stat_list,
                     fit=fit, fit_textbox_kwargs=fit_textbox_kwargs,
                     summary_fit=summary_fit,
                     legend=legend, show_legend=show_legend,
@@ -6769,6 +6922,7 @@ class DFDraw:
                 fit=fit, fit_textbox_kwargs=fit_textbox_kwargs,
                 summary_fit=summary_fit,
                 group_by_scope=group_by_scope,
+                stat_list=stat_list,
                 # Phase 13.50 step 4: explicit forwarding (R-2 pattern)
                 legend=legend, show_legend=show_legend,
                 # Phase 13.51 R-2 extension (audit S-3): forward Phase 13.27-13.41 named params
@@ -8273,6 +8427,7 @@ class DFDraw:
         legend: Optional[Union[bool, str, Dict]] = None,
         show_legend: Optional[bool] = None,
         group_by_scope: str = "auto",  # PHASE_13_95 deterministic compatibility policy
+        stat_list: Optional[List[str]] = None,  # PHASE_13_96 existing statistic curves
         **kwargs
     ) -> DrawResult:
         """
@@ -8333,7 +8488,9 @@ class DFDraw:
             selected/sampled Figure domain before facets; 'facet' classifies
             each cell independently. 'auto' preserves the established route:
             historical scalar faceting is local, PHASE_13_94 expression-vector
-            by two-column N-D faceting is global.
+            by two-column N-D faceting is global. With no facet, 'global'
+            and 'auto' use the same complete selected/sampled plot domain;
+            explicit 'facet' without a facet remains unsupported.
         sort_groups : bool, default True
             If True, sort groups numerically/alphabetically in legend.
             Phase 13.12.DF F4.
@@ -8367,18 +8524,61 @@ class DFDraw:
         # silently. Close-match -> error naming the proper parameter
         # (architect K-2 Option A); inapplicable dfdraw-semantic kwarg ->
         # clean error; genuinely unknown -> warning.
+        _stat_group_order = kwargs.pop('_stat_group_order', None)
         if kwargs:
             self._kwarg_typo_guard(kwargs, method='profile')
+        if _stat_group_order is not None:
+            kwargs['_stat_group_order'] = _stat_group_order
+
+        # PHASE_13_96 Stage B: deliberately bounded scalar profile surface.
+        # Vector/group/facet composition is scheduled for later phase units.
+        if stat_list is not None:
+            if self._count_colons_outside_brackets(expr) != 1:
+                raise NotImplementedError("stat_list only supports 1-D profiles ('y:x')")
+            if normalize is not None:
+                raise NotImplementedError(
+                    "stat_list with normalize is unsupported in PHASE_13_96")
+            if isinstance(facet_by, list) and len(facet_by) > 2:
+                raise NotImplementedError(
+                    "stat_list supports up to two facet dimensions in PHASE_13_96")
+            if group_by is not None and color is not None:
+                raise NotImplementedError(
+                    "stat_list grouped facets cannot use one explicit color "
+                    "for all groups; omit color= for stable group identity")
+            if group_by is not None and any(
+                    name not in ('mean', 'std', 'sem') for name in stat_list):
+                raise NotImplementedError(
+                    "stat_list grouped profiles support mean/std/sem only; "
+                    "grouped median and quantile statistics have no approved owner")
+            if (facet or facet_by is not None) and any(
+                    name not in ('mean', 'std', 'sem') for name in stat_list):
+                raise NotImplementedError(
+                    "stat_list faceted profiles support mean/std/sem only "
+                    "in PHASE_13_96 Stage E")
+            if (group_by is not None or facet or facet_by is not None) and (
+                    ('[' in str(expr) or
+                    selection_vector is not None and len(selection_vector) > 1 or
+                    weights_vector is not None and len(weights_vector) > 1)):
+                raise NotImplementedError(
+                    "stat_list with grouped/faceted vector branches exceeds "
+                    "the supported Stage E visual-channel contract")
 
         if group_by_scope not in ('auto', 'global', 'facet'):
             raise ValueError("group_by_scope must be 'auto', 'global', or 'facet'")
         if group_by_scope != 'auto':
-            if group_by is None or facet_by is None or (
+            # PHASE_13_96 Stage E Fix1: a single-panel grouped profile has
+            # exactly one domain. Explicit global is equivalent to auto there;
+            # do not reject it merely because there is no facet_by. No new
+            # classifier or renderer is needed (the grouped owner already
+            # operates on the complete selected/sampled input frame).
+            plain_global = (group_by_scope == 'global' and group_by is not None
+                            and facet_by is None and not facet)
+            if not plain_global and (group_by is None or facet_by is None or (
                 isinstance(facet_by, list) and len(facet_by) not in (1, 2)
-            ) or facet_by in ('vector', 'group_by', 'quantiles'):
+            ) or facet_by in ('vector', 'group_by', 'quantiles')):
                 raise NotImplementedError(
-                    'explicit group_by_scope requires a profile with group_by '
-                    'and one column facet or a two-column facet_by list')
+                    'explicit group_by_scope requires group_by and either '
+                    'a supported facet_by or a non-faceted global profile')
             if top_k is not None and group_by_scope == 'global':
                 raise NotImplementedError(
                     'group_by_scope="global" with top_k is not supported; '
@@ -8731,6 +8931,13 @@ class DFDraw:
             # FIX1 B1a: forward every named param via tuple + locals().get(name, _MISSING).
             # _MISSING distinguishes "caller didn't pass" from "caller passed None".
             vector_kwargs = dict(kwargs)
+            # Legend is a named parameter on the typed profile surface;
+            # preserve explicit suppression at the B × S legend owner.
+            if stat_list is not None:
+                if legend is not None:
+                    vector_kwargs['legend'] = legend
+                if show_legend is not None:
+                    vector_kwargs['show_legend'] = show_legend
             _local = locals()
             for name in self._PROFILE_FORWARDED_NAMES:
                 val = _local.get(name, _MISSING)
@@ -9015,6 +9222,7 @@ class DFDraw:
                 auto_title=auto_title, selection=selection,
                 # Phase 13.18.DF: robust statistics
                 stat_fields=stat_fields,
+                stat_list=stat_list,
                 # Phase 13.25.DF: quantile rendering
                 quantiles=quantiles, central=central, quantile_mode=quantile_mode,
                 # Phase 13.26.DF: channel quantile_style
@@ -9074,6 +9282,7 @@ class DFDraw:
                 auto_title=auto_title, selection=selection,
                 # Phase 13.18.DF: robust statistics
                 stat_fields=stat_fields,
+                stat_list=stat_list,
                 # Phase 13.25.DF: quantile rendering
                 quantiles=quantiles, central=central, quantile_mode=quantile_mode,
                 # Phase 13.28.DF: NaN/inf filter policy
