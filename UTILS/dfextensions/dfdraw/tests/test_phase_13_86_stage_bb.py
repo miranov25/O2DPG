@@ -256,14 +256,32 @@ def test_BB6_neighbor_hist_scatter_expression_vector_facet_refuse_loudly(
 
 
 @pytest.mark.parametrize("door", ["typed", "draw"])
-def test_BB7_profile_expression_vector_nd_facet_refuses_loudly(door):
+def test_BB7_profile_expression_vector_nd_facet_positive_contract(door):
+    """PHASE_13_94: the historical Stage B-b refusal is now a positive proof."""
     df = _truth_df().assign(facet2=np.tile(["L", "R"], len(_truth_df()) // 2))
     d = DFDraw(df)
-    with pytest.raises(NotImplementedError, match="list/N-D facet_by"):
-        if door == "draw":
-            d.draw(EXPR, type="profile", facet_by=["facet", "facet2"])
-        else:
-            d.profile(EXPR, facet_by=["facet", "facet2"])
+    opts = dict(facet_by=["facet", "facet2"], bins=4, range=XRANGE,
+                min_entries=1, return_data=True)
+    if door == "draw":
+        fig, axes, stats = d.draw(EXPR, type="profile", **opts)
+    else:
+        fig, axes, stats = d.profile(EXPR, **opts)
+    try:
+        assert axes.shape == (2, 2)
+        for facet in ("A", "B"):
+            for facet2 in ("L", "R"):
+                branches = stats[(facet, facet2)]
+                assert isinstance(branches, list) and len(branches) == 2
+                for branch, column in zip(branches, ("y0", "y1")):
+                    tab = branch["profile_data"].sort_values("x_center")
+                    truth = df[(df.facet == facet) & (df.facet2 == facet2)]
+                    assert int(tab["count"].sum()) == len(truth)
+                    assert np.allclose(tab["y_mean"].to_numpy(),
+                                       truth.groupby("x")[column].mean().to_numpy(),
+                                       rtol=0, atol=1e-12)
+        assert fig is axes[0, 0].figure
+    finally:
+        plt.close(fig)
 
 
 def test_BB8_public_same_true_neighbor_remains_invalid():

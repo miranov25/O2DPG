@@ -4450,6 +4450,57 @@ class DFDraw:
                 if _color_plan is not None:
                     plot_kwargs['_nd_color_plan'] = _color_plan
 
+            # PHASE_13_94: bind physical group identity once on the
+            # selected/sampled Figure domain. Do not modify scalar N-D paths.
+            if plot_kind == 'profile' and isinstance(y_expr, list):
+                _gb = plot_kwargs.pop('group_by_bins', None)
+                _gq = plot_kwargs.pop('group_by_quantiles', None)
+                if _gb is not None and _gq is not None:
+                    raise ValueError('group_by_bins and group_by_quantiles are exclusive')
+                if (_gb is not None or _gq is not None) and group_by is None:
+                    raise ValueError('group_by_bins/group_by_quantiles require group_by')
+                if isinstance(_gb, bool) or isinstance(_gq, bool):
+                    raise ValueError('group_by_bins/group_by_quantiles must be integer counts')
+                if group_by is not None:
+                    if _gb is not None or _gq is not None:
+                        from .plots.profile import _format_interval_label as _nd94_group_label
+                        if df[group_by].dtype.kind not in 'biufmM':
+                            raise ValueError('numeric group binning requires a numeric group_by')
+                        _values = df[group_by].astype(np.float32) if df[group_by].dtype == np.float16 else df[group_by]
+                        classified = (pd.cut(_values, bins=_gb) if _gb is not None
+                                      else pd.qcut(_values, q=_gq, duplicates='drop'))
+                        _identity = [str(_nd94_group_label(v)) for v in classified.cat.categories]
+                        _group_col = '__dfdraw_nd94_group__'
+                        while _group_col in df.columns:
+                            _group_col += '_'
+                        df = df.copy()
+                        df[_group_col] = classified.map(_nd94_group_label)
+                        group_by = _group_col
+                    else:
+                        _identity = sorted((str(v) for v in df[group_by].dropna().unique()))
+                    plot_kwargs['_nd94_group_identity'] = _identity
+                else:
+                    plot_kwargs['_nd94_group_identity'] = []
+                # One logical Figure has one channel assignment, even when
+                # missing groups change the contents of individual cells.
+                plot_kwargs['_nd94_channel_assignment'] = (
+                    self._resolve_vector_channel_assignment(
+                        n_vector=len(y_expr), group_by=group_by,
+                        group_style=plot_kwargs.get('group_style', 'color'),
+                        vector_style=plot_kwargs.get('vector_style'),
+                        quantiles=quantiles, quantile_mode=quantile_mode,
+                        quantile_style=plot_kwargs.get('quantile_style'),
+                    )
+                )
+                # New 13.94 path only: keep dense 3×5 reports readable
+                # without adding any public keyword or altering scalar facets.
+                if _nd_options['facet_labels'] is None:
+                    _nd_options['facet_labels'] = 'outer'
+                if _nd_options['shared_xlabel'] is None:
+                    _nd_options['shared_xlabel'] = True
+                if _nd_options['shared_ylabel'] is None:
+                    _nd_options['shared_ylabel'] = True
+
             n_dims = len(facet_list)
             if n_dims == 1:
                 # The new Figure-grid controls have no 1-D list coordinator.
@@ -5415,12 +5466,17 @@ class DFDraw:
         the figure level (suptitle) in _dispatch_2d_facet (Phase 13.41 FIX1 +
         FIX2 item 5: dead `_user_auto_title` param removed from this signature).
         """
-        # Build the y:x or just x expression for the inner call
-        if isinstance(y_expr, str) and y_expr:
+        # Reconstruct the intact expression-vector in a *profile-only*
+        # N-D cell. The normal scalar branch is untouched.
+        if plot_kind == 'profile' and isinstance(y_expr, list):
+            inner_expr = '[' + ','.join(map(str, y_expr)) + ']:' + str(x_expr)
+        elif isinstance(y_expr, str) and y_expr:
             inner_expr = f"{y_expr}:{x_expr}"
         else:
             inner_expr = x_expr
         
+        # Figure-level channels are private execution state, not a plot kwarg.
+        _nd94_resolved = plot_kwargs.pop('_nd94_channel_assignment', None)
         # PHASE_13_93 Stage A: as in the 1-D PHASE_13_90 coordinator,
         # the outer N-D Figure owns layout. No inner renderer may call
         # tight_layout on this shared Figure.
@@ -5434,8 +5490,10 @@ class DFDraw:
                        color='gray', fontsize=8)
             return {'n': 0, 'empty': True}
         
-        # Create per-cell DFDraw view; matplotlib will use its defaults
+        # Create per-cell DFDraw view; reuse Figure-level channel semantics.
         sub_adf = DFDraw(sub_df)
+        if _nd94_resolved is not None:
+            sub_adf._pending_channel_assignment = _nd94_resolved
         
         # Phase 13.41.DF v1.6: reconcile user-supplied range kwargs.
         # NOTE: BOTH DFDraw.hist AND DFDraw.profile use `range:` at the
@@ -5468,6 +5526,23 @@ class DFDraw:
                 range=effective_range,
                 auto_title=False,
                 **plot_kwargs)
+            if isinstance(y_expr, list):
+                # The outer coordinator owns N-D titles and legends. The
+                # vector owner can leave both an axes.legend and a secondary
+                # ax.add_artist(Legend), so remove *all* per-cell legends.
+                from matplotlib.legend import Legend
+                ax_ij.set_title('')
+                for _artist in tuple(ax_ij.get_children()):
+                    if isinstance(_artist, Legend):
+                        _artist.remove()
+                # The existing auto-title owner also leaves selection text
+                # above the Axes. Remove only that outer-title text; keep
+                # in-panel user annotations intact.
+                for _text in tuple(ax_ij.texts):
+                    if (_text.get_transform() == ax_ij.transAxes
+                            and _text.get_position()[1] >= 1.0):
+                        _text.remove()
+                # Existing vector owner retains its full ordered stats list.
             # range= sets bin range; also lock xlim for share_across_figures
             if _lock_x_range is not None and user_range is None and user_x_range is None:
                 ax_ij.set_xlim(_lock_x_range)
@@ -5514,6 +5589,8 @@ class DFDraw:
         # selected DataFrame, before filtering any row/column/figure facet.
         # Consume it here; private plan objects must never reach ax.scatter.
         color_plan = plot_kwargs.pop('_nd_color_plan', None)
+        nd94_groups = plot_kwargs.pop('_nd94_group_identity', None)
+        nd94_channels = plot_kwargs.pop('_nd94_channel_assignment', None)
         if color_plan is not None:
             plot_kwargs = dict(plot_kwargs)
             if color_plan['mode'] == 'legend':
@@ -5579,11 +5656,48 @@ class DFDraw:
                 if quantiles is not None:
                     inner_kwargs['quantiles'] = quantiles
                 
+                if nd94_channels is not None:
+                    inner_kwargs['_nd94_channel_assignment'] = nd94_channels
                 stats_ij = self._dispatch_inner_per_cell(
                     sub_df, x_expr, y_expr, plot_kind, ax_ij,
                     _lock_x_range, _lock_y_range,
                     **inner_kwargs)
                 stats_grid[(row_v, col_v)] = stats_ij
+                if nd94_groups is not None and group_by is not None:
+                    # Profile's legacy grouped renderer enumerates only
+                    # present groups. Recolour by the *global* group identity
+                    # instead, including panels missing a middle group.
+                    _palette = plt.colormaps.get_cmap(
+                        get_style_value('colors.palette', 'tab10'))
+                    _group_colors = {name: _palette(k % 10)
+                                     for k, name in enumerate(nd94_groups)}
+                    _markers = get_style_value('markers.cycle',
+                        ['o', 's', '^', 'D', 'P', 'X', 'v', '<', '>', 'h'])
+                    for container in ax_ij.containers:
+                        from matplotlib.container import ErrorbarContainer
+                        if not isinstance(container, ErrorbarContainer):
+                            continue
+                        _color = _group_colors.get(str(container.get_label()))
+                        if _color is None:
+                            continue
+                        _central, _caps, _bars = container.lines
+                        # Preserve the architect's explicit color override;
+                        # automatic colors alone are mapped to global group ID.
+                        if plot_kwargs.get('color') is not None:
+                            _color = plot_kwargs['color']
+                        if _central is not None:
+                            _central.set_color(_color)
+                            _central.set_markerfacecolor(_color)
+                            _central.set_markeredgecolor(_color)
+                            if (plot_kwargs.get('marker') is None
+                                    and plot_kwargs.get('vector_style') != 'marker'):
+                                _central.set_marker(_markers[
+                                    nd94_groups.index(str(container.get_label()))
+                                    % len(_markers)])
+                        for _cap in _caps:
+                            _cap.set_color(_color)
+                        for _bar in _bars:
+                            _bar.set_color(_color)
                 
                 # Legacy titles/ylabels remain byte-compatible by default.
                 # In opt-in outer mode, headings are Figure artists, not
@@ -5601,7 +5715,9 @@ class DFDraw:
             # Phase 13.41 FIX1 (Sonnet54 P2): in 2D facet mode, auto_title=True
             # sets a figure-level suptitle (cell titles are reserved for facet
             # labels). Title summarizes the plot expression + facet dimensions.
-            if isinstance(y_expr, str) and y_expr and x_expr:
+            if isinstance(y_expr, list):
+                _auto_expr = f"[{','.join(map(str, y_expr))}] vs {x_expr}"
+            elif isinstance(y_expr, str) and y_expr and x_expr:
                 _auto_expr = f"{y_expr} vs {x_expr}"
             elif isinstance(y_expr, str) and y_expr:
                 _auto_expr = y_expr
@@ -5614,6 +5730,7 @@ class DFDraw:
         # followed by explicit user overrides. Additional text is positioned
         # from final Axes bounding boxes; it must not trigger another pass.
         if (facet_labels == 'outer' or shared_xlabel or shared_ylabel
+                or nd94_groups is not None
                 or (color_plan is not None and color_plan['mode'] == 'legend')):
             fig.tight_layout(rect=(0.10, 0.07, 0.98, 0.91))
         else:
@@ -5677,6 +5794,45 @@ class DFDraw:
         # only ADDS a convenience top-level key.
         # See PHASE_13_43_DF_v1_2_SummaryFit_Proposal.md §4.2.0 and F.56.
         # ====================================================================
+        if nd94_groups is not None:
+            from matplotlib.lines import Line2D
+            _palette = plt.colormaps.get_cmap(
+                get_style_value('colors.palette', 'tab10'))
+            _cycles = get_style_value('channels.cycles.linestyle', ['-', '--', '-.', ':'])
+            if not nd94_groups:
+                # Without group_by, the vector owner uses colour rather than
+                # linestyle. Build legend proxies from the actual rendered
+                # central lines so the Figure legend remains truthful.
+                _first = next((ax for ax in axes.flat if ax.containers), None)
+                _centres = ([c.lines[0] for c in _first.containers]
+                            if _first is not None else [])
+                _vector_proxies = [
+                    Line2D([], [], color=_centres[i].get_color(),
+                           linestyle=_centres[i].get_linestyle(),
+                           marker=_centres[i].get_marker())
+                    if i < len(_centres) and _centres[i] is not None
+                    else Line2D([], [], color=f'C{i}')
+                    for i in range(len(y_expr))
+                ]
+            else:
+                _vector_proxies = [
+                    Line2D([], [], color='black',
+                           linestyle=_cycles[i % len(_cycles)])
+                    for i in range(len(y_expr))
+                ]
+            _group_proxies = [
+                Line2D([], [], color=(plot_kwargs.get('color')
+                                    if plot_kwargs.get('color') is not None
+                                    else _palette(i % 10)), linewidth=2)
+                for i in range(len(nd94_groups))
+            ]
+            legend_artist = fig.legend(
+                _vector_proxies + _group_proxies,
+                list(y_expr) + list(nd94_groups),
+                loc='upper center', bbox_to_anchor=(0.5, 0.95),
+                ncol=min(len(y_expr) + len(nd94_groups), 8),
+                fontsize=9, frameon=False,
+            )
         if color_plan is not None and color_plan['mode'] == 'legend':
             from matplotlib.lines import Line2D
             proxies = [
@@ -6132,6 +6288,7 @@ class DFDraw:
                 normalize is not None
                 or facet_by == "vector"
                 or _profile_ordinary_vector_facet
+                or isinstance(facet_by, list)
             ):
                 return self.profile(
                     expr, selection=selection, bins=bins, stats=stats,
@@ -6169,12 +6326,6 @@ class DFDraw:
                     f"expression-vector × facet_by is not supported for "
                     f"type={type!r} in PHASE_13_86 Stage B; profile is the "
                     f"supported vector-facet owner"
-                )
-            if isinstance(facet_by, list) and type == "profile":
-                raise NotImplementedError(
-                    "expression-vector × list/N-D facet_by is not supported "
-                    "in PHASE_13_86 Stage B; use one ordinary facet_by column "
-                    "or facet_by='vector'"
                 )
             if facet_by in ("group_by", "quantiles") and type == "profile":
                 raise NotImplementedError(
@@ -8250,16 +8401,25 @@ class DFDraw:
         # existing profile vector owner inside each filtered cell.
         _ordinary_expression_vector_facet = (
             _y_is_vector
-            and isinstance(facet_by, str)
-            and facet_by not in ('vector', 'group_by', 'quantiles')
+            and (isinstance(facet_by, list) or (
+                isinstance(facet_by, str)
+                and facet_by not in ('vector', 'group_by', 'quantiles')))
             and normalize is None
         )
-        if _y_is_vector and isinstance(facet_by, list):
-            raise NotImplementedError(
-                "profile expression-vector × list/N-D facet_by is not "
-                "supported in PHASE_13_86 Stage B; use one ordinary facet_by "
-                "column or facet_by='vector'"
-            )
+        # PHASE_13_94: only profile expression-vectors with a two-column
+        # N-D facet use the new per-cell vector owner. Do not accidentally
+        # admit vector normalize, extra selection/weight channels or embedding.
+        _nd94_vector_facet = _y_is_vector and isinstance(facet_by, list)
+        if _nd94_vector_facet:
+            if len(facet_by) != 2:
+                raise NotImplementedError(
+                    "profile expression-vector N-D facet supports exactly "
+                    "two facet columns in PHASE_13_94")
+            if (normalize is not None or selection_vector is not None
+                    or weights_vector is not None or ax is not None or same):
+                raise NotImplementedError(
+                    "profile expression-vector N-D facet does not support "
+                    "normalize, selection_vector, weights_vector, ax or same")
         if (_y_is_vector and facet_by in ('group_by', 'quantiles')
                 and normalize is None):
             raise NotImplementedError(

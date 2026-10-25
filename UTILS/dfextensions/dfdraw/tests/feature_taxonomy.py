@@ -2157,8 +2157,8 @@ FEATURES = [
             "test_phase_13_86_stage_bb.py::test_BB6_neighbor_hist_scatter_expression_vector_facet_refuse_loudly[hist-[y0,y1]-typed]",
             "test_phase_13_86_stage_bb.py::test_BB6_neighbor_hist_scatter_expression_vector_facet_refuse_loudly[scatter-[y0,y1]:x-draw]",
             "test_phase_13_86_stage_bb.py::test_BB6_neighbor_hist_scatter_expression_vector_facet_refuse_loudly[scatter-[y0,y1]:x-typed]",
-            "test_phase_13_86_stage_bb.py::test_BB7_profile_expression_vector_nd_facet_refuses_loudly[draw]",
-            "test_phase_13_86_stage_bb.py::test_BB7_profile_expression_vector_nd_facet_refuses_loudly[typed]",
+            "test_phase_13_86_stage_bb.py::test_BB7_profile_expression_vector_nd_facet_positive_contract[draw]",
+            "test_phase_13_86_stage_bb.py::test_BB7_profile_expression_vector_nd_facet_positive_contract[typed]",
             "test_phase_13_86_stage_bb.py::test_BB8_public_same_true_neighbor_remains_invalid",
             "test_phase_13_86_stage_bb.py::test_BB9_expression_vector_channel_identity_is_stable_across_facets",
         ],
@@ -2451,6 +2451,46 @@ FEATURES = [
             'test_phase_13_82_retained_state_red.py::test_t8_logical_payload_round_trip_with_metadata',
             'test_phase_13_82_retained_state_red.py::test_t10_nonfinite_weight_and_profile_value_not_accumulated',
             'test_phase_13_82_retained_state_red.py::test_t12_corrupt_payload_fractional_entries_refused',
+        ],
+    },
+
+
+    # ── PHASE_13_94_DF — profile expression-vector × 2D N-D facet ──
+    {
+        "id": "PROFILE.expression_vector_nd_facet",
+        "name": (
+            "Profile expression-vectors compose with N-D facet partitions and "
+            "group overlays, global selected-frame group bins, stable physical "
+            "group/vector identity and one Figure-level legend; preserve "
+            "independent scalar numerical oracle and neighboring refusals "
+            "(PHASE_13_94_DF)"
+        ),
+        "category": "PROFILE",
+        "tests": [
+            'test_phase_13_94_profile_vector_nd_facet_red.py::test_R1_two_branches_in_each_2d_facet_without_group[typed]',
+            'test_phase_13_94_profile_vector_nd_facet_red.py::test_R1_two_branches_in_each_2d_facet_without_group[draw]',
+            'test_phase_13_94_profile_vector_nd_facet_red.py::test_R2_computed_vector_residuals_equal_materialized_truth',
+            'test_phase_13_94_profile_vector_nd_facet_red.py::test_R3_numeric_3x5_facet_classification_matches_global_pandas_membership',
+            'test_phase_13_94_profile_vector_nd_facet_red.py::test_R4_categorical_group_composes_2_vectors_times_3_groups',
+            'test_phase_13_94_profile_vector_nd_facet_red.py::test_R5_global_group_bins_maintain_physical_identity_across_cells',
+            'test_phase_13_94_profile_vector_nd_facet_red.py::test_R6_group_quantile_boundaries_resolved_globally',
+            'test_phase_13_94_profile_vector_nd_facet_red.py::test_R7_vector_group_identity_and_single_figure_legend',
+            'test_phase_13_94_profile_vector_nd_facet_red.py::test_R8_strong_numeric_decomposition_with_selection_and_all_coordinates',
+            'test_phase_13_94_profile_vector_nd_facet_red.py::test_R9_missing_facet_cell_preserves_empty_cell_schema',
+            'test_phase_13_94_profile_vector_nd_facet_red.py::test_R10_forwarding_nondefault_min_entries_50_masks_short_profiles',
+            'test_phase_13_94_profile_vector_nd_facet_red.py::test_R11_typed_and_public_draw_nested_stats_equivalent',
+            'test_phase_13_94_profile_vector_nd_facet_red.py::test_R12_existing_one_dimensional_profile_vector_facet_still_works',
+            'test_phase_13_94_profile_vector_nd_facet_red.py::test_R13_neighbor_hist_scatter_nd_vector_still_refuse_loudly[hist-[y0,y1]]',
+            'test_phase_13_94_profile_vector_nd_facet_red.py::test_R13_neighbor_hist_scatter_nd_vector_still_refuse_loudly[scatter-[y0,y1]:x]',
+            'test_phase_13_94_profile_vector_nd_facet_red.py::test_R14_existing_scalar_nd_facet_is_not_changed_by_new_global_policy',
+            'test_phase_13_94_profile_vector_nd_facet_red.py::test_R15_missing_intermediate_group_keeps_global_color_marker_and_label',
+            'test_phase_13_94_profile_vector_nd_facet_red.py::test_R16_new_nd_vector_profile_neighbor_refuses_before_creating_figure[restricted0]',
+            'test_phase_13_94_profile_vector_nd_facet_red.py::test_R16_new_nd_vector_profile_neighbor_refuses_before_creating_figure[restricted1]',
+            'test_phase_13_94_profile_vector_nd_facet_red.py::test_R16_new_nd_vector_profile_neighbor_refuses_before_creating_figure[restricted2]',
+            'test_phase_13_94_profile_vector_nd_facet_red.py::test_R16_new_nd_vector_profile_neighbor_refuses_before_creating_figure[restricted3]',
+            'test_phase_13_94_profile_vector_nd_facet_red.py::test_R17_figure_channel_assignment_is_resolved_once',
+            'test_phase_13_94_profile_vector_nd_facet_red.py::test_R18_explicit_group_color_override_remains_authoritative',
+            'test_phase_13_94_profile_vector_nd_facet_red.py::test_R19_group_bins_without_group_column_fail_before_figure',
         ],
     },
 
