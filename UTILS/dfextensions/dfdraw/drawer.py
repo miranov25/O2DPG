@@ -6031,23 +6031,42 @@ class DFDraw:
         if title:
             fig.suptitle(title, fontsize=12)
         elif _user_auto_title:
-            # Phase 13.41 FIX1 (Sonnet54 P2): in 2D facet mode, auto_title=True
-            # sets a figure-level suptitle (cell titles are reserved for facet
-            # labels). Title summarizes the plot expression + facet dimensions.
+            # PHASE_13_96 pre-closure presentation fix: 2-D facets must use
+            # the same semantic selection subtitle + Figure-width fitting as
+            # the established auto-title owners. Keep this coordinator's
+            # expression/facet main line, but delegate selection/quantile
+            # subtitle semantics to the shared helper.
             if isinstance(y_expr, list):
                 _auto_expr = f"[{','.join(map(str, y_expr))}] vs {x_expr}"
+                _auto_y = f"[{','.join(map(str, y_expr))}]"
             elif isinstance(y_expr, str) and y_expr and x_expr:
                 _auto_expr = f"{y_expr} vs {x_expr}"
+                _auto_y = y_expr
             elif isinstance(y_expr, str) and y_expr:
                 _auto_expr = y_expr
+                _auto_y = y_expr
             else:
                 _auto_expr = x_expr or 'data'
-            from .plots._auto_title import format_profile_quantile_semantics
-            _q_sem = (format_profile_quantile_semantics(quantiles)
-                      if plot_kind == 'profile' else None)
-            fig.suptitle(
+                _auto_y = None
+            from .plots._auto_title import (
+                parse_auto_title_parts, build_auto_title,
+                fit_auto_title_to_figure,
+            )
+            _parts = parse_auto_title_parts(_user_auto_title)
+            _td = build_auto_title(
+                x_expr or '', _auto_y, group_by=None,
+                selection=plot_kwargs.get('selection'), weights=None,
+                parts=_parts,
+                quantiles=(quantiles if plot_kind == 'profile' else None),
+            )
+            _td['main'] = (
                 f"{_auto_expr}  [faceted by {facet_list[0]} × {facet_list[1]}]"
-                + (f"\n{_q_sem}" if _q_sem else ""),
+            )
+            _td = fit_auto_title_to_figure(fig, _td, sub_fontsize=11)
+            _main = _td.get('main', '')
+            _sub = _td.get('sub')
+            fig.suptitle(
+                f"{_main}\n{_sub}" if _sub else _main,
                 fontsize=11)
         # PHASE_13_93 Stage A: a single Figure-level layout calculation,
         # followed by explicit user overrides. Additional text is positioned
@@ -6152,7 +6171,11 @@ class DFDraw:
                     for i in range(len(y_expr))
                 ]
             else:
-                if plot_kwargs.get('vector_style') == 'marker':
+                if (_stagef_singleton_std_nd
+                        and plot_kwargs.get('vector_style') == 'marker'):
+                    # Stage F only: expression identity is marker. Do not
+                    # leak this proxy change into the historical stat_list=None
+                    # grouped N-D vector path.
                     _vector_proxies = [
                         Line2D([], [], color='black',
                                marker=_marker_cycles[i % len(_marker_cycles)],
@@ -6160,6 +6183,9 @@ class DFDraw:
                         for i in range(len(y_expr))
                     ]
                 else:
+                    # Historical grouped N-D vector legend contract: expression
+                    # proxies use the established linestyle cycle, even when a
+                    # caller requested vector_style='marker'.
                     _vector_proxies = [
                         Line2D([], [], color='black',
                                linestyle=_cycles[i % len(_cycles)])
@@ -6178,11 +6204,18 @@ class DFDraw:
             _stat_handles = ([] if _stagef_singleton_std_nd else
                              (_statistic_legend_proxies(_stat_names)
                               if _stat_names else []))
-            _legend_handles = _group_proxies + _vector_proxies + _stat_handles
-            _legend_names = (list(nd94_groups)
-                             + (list(y_expr) if isinstance(y_expr, list) else [])
-                             + ([] if _stagef_singleton_std_nd else
-                                (list(_stat_names) if _stat_names else [])))
+            if _stagef_singleton_std_nd:
+                # Stage F factored legend contract: physical group colors first,
+                # then expression markers; singleton std consumes no channel.
+                _legend_handles = _group_proxies + _vector_proxies
+                _legend_names = (list(nd94_groups)
+                                 + (list(y_expr) if isinstance(y_expr, list) else []))
+            else:
+                # Preserve the pre-Stage-F grouped N-D vector presentation.
+                _legend_handles = _vector_proxies + _group_proxies + _stat_handles
+                _legend_names = ((list(y_expr) if isinstance(y_expr, list) else [])
+                                 + list(nd94_groups)
+                                 + (list(_stat_names) if _stat_names else []))
             legend_artist = fig.legend(
                 _legend_handles, _legend_names,
                 loc='upper center', bbox_to_anchor=(0.5, 0.95),
