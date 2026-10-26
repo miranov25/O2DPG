@@ -2673,4 +2673,30 @@ FEATURES = [
             "test_phase_13_96_stage_e_group_facet_red.py::test_E18_nonfaceted_scope_refusal_boundaries_before_figure_allocation",
         ],
     },
+
+    {
+        "id": "PROFILE.stat_list_vector_groupfacet_single_std",
+        "name": "Two expression profile branches compose with five Figure-global groups, 2-D facets and singleton std using group colors, expression markers, factored Figure legend and independent NumPy/pandas truth (PHASE_13_96 Stage F)",
+        "category": "PROFILE",
+        "tests": [
+            "test_phase_13_96_stage_f_vector_groupfacet_single_std_red.py::test_F01_exact_stagef_query_renders_through_both_public_doors",
+            "test_phase_13_96_stage_f_vector_groupfacet_single_std_red.py::test_F02_every_occupied_expression_group_facet_xbin_matches_pandas_numpy_truth",
+            "test_phase_13_96_stage_f_vector_groupfacet_single_std_red.py::test_F03_sparse_groups_and_min_entries_do_not_invent_rendered_curves_or_points",
+            "test_phase_13_96_stage_f_vector_groupfacet_single_std_red.py::test_F04_global_group_colors_stay_physical_through_sparse_middle_group",
+            "test_phase_13_96_stage_f_vector_groupfacet_single_std_red.py::test_F05_two_expression_markers_own_identity_and_all_curves_are_marker_only_std",
+            "test_phase_13_96_stage_f_vector_groupfacet_single_std_red.py::test_F06_one_factored_figure_legend_truthful_and_nonoverlapping",
+            "test_phase_13_96_stage_f_vector_groupfacet_single_std_red.py::test_F07_public_result_shape_remains_facet_keyed_with_ordered_expression_branches",
+            "test_phase_13_96_stage_f_vector_groupfacet_single_std_red.py::test_F08_stat_list_none_preserves_existing_nd_vector_group_facet_route",
+            "test_phase_13_96_stage_f_vector_groupfacet_single_std_red.py::test_F09_unsupported_neighboring_combinations_refuse_before_figure_allocation[override0]",
+            "test_phase_13_96_stage_f_vector_groupfacet_single_std_red.py::test_F09_unsupported_neighboring_combinations_refuse_before_figure_allocation[override1]",
+            "test_phase_13_96_stage_f_vector_groupfacet_single_std_red.py::test_F09_unsupported_neighboring_combinations_refuse_before_figure_allocation[override2]",
+            "test_phase_13_96_stage_f_vector_groupfacet_single_std_red.py::test_F09_unsupported_neighboring_combinations_refuse_before_figure_allocation[override3]",
+            "test_phase_13_96_stage_f_vector_groupfacet_single_std_red.py::test_F09_unsupported_neighboring_combinations_refuse_before_figure_allocation[override4]",
+            "test_phase_13_96_stage_f_vector_groupfacet_single_std_red.py::test_F09_unsupported_neighboring_combinations_refuse_before_figure_allocation[override5]",
+            "test_phase_13_96_stage_f_vector_groupfacet_single_std_red.py::test_F09_unsupported_neighboring_combinations_refuse_before_figure_allocation[override6]",
+            "test_phase_13_96_stage_f_vector_groupfacet_single_std_red.py::test_F09b_private_stagef_coordinator_token_is_not_a_public_escape_hatch",
+            "test_phase_13_96_stage_f_vector_groupfacet_single_std_red.py::test_F10_global_group_resolution_and_figure_layout_have_single_owners",
+        ],
+    },
+
 ]

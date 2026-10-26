@@ -32,6 +32,10 @@ from .plots._legend import _normalize_legend_spec, _apply_legend_mode
 # =============================================================================
 
 _MISSING = object()
+# PHASE_13_96 Stage F: unforgeable-in-normal-use internal coordinator token.
+# Public callers that try to pass the private kwarg with a boolean/value are
+# rejected; only dfdraw-owned dispatch may carry this exact object inward.
+_STAGEF_SINGLETON_STD_TOKEN = object()
 
 
 def _scope_group_domain(df, group_by, bins=None, quantiles=None):
@@ -2412,6 +2416,10 @@ class DFDraw:
         _weights_categorical   = kwargs.pop('weights_categorical',   False)
         _vector_compose    = kwargs.pop('vector_compose',    'inner')
         _delta_facet       = kwargs.pop('delta_facet',       None)
+        _stagef_token = kwargs.pop('_stagef_singleton_std_nd', None)
+        if _stagef_token is not None and _stagef_token is not _STAGEF_SINGLETON_STD_TOKEN:
+            raise TypeError("_stagef_singleton_std_nd is an internal dfdraw parameter")
+        _stagef_singleton_std_nd = (_stagef_token is _STAGEF_SINGLETON_STD_TOKEN)
 
         # NB: scatter() emits UserWarning + drops weights_vector at its method
         # entry (proposal §5.5). By the time we get here in scatter's vector
@@ -2498,21 +2506,29 @@ class DFDraw:
                     "statistic vector with median or quantiles and weights "
                     "is unsupported: weighted median/quantiles have no "
                     "validated estimator; choose mean/std/sem")
-            if 'marker' in _assignment.values():
-                raise NotImplementedError(
-                    "statistic marker channel unavailable: existing vector "
-                    "branches already use marker. Reduce vector dimensions "
-                    "or render statistics in separate calls")
-            if _has_quantile_channel:
-                raise NotImplementedError(
-                    "statistic and discrete quantile channels exceed the "
-                    "current visual-channel capacity; use a quantile band "
-                    "or separate plots")
-            if kwargs.get('color') is not None and (
-                    len(y_list) > 1 or _sel_active or _w_active):
-                raise ValueError(
-                    "statistic vector requires distinct branch colors; "
-                    "omit explicit color= or plot branches separately")
+            if _stagef_singleton_std_nd:
+                if list(_stat_vector) != ['std']:
+                    raise NotImplementedError(
+                        "PHASE_13_96 Stage F private route supports only stat_list=['std']")
+                if _has_quantile_channel:
+                    raise NotImplementedError(
+                        "PHASE_13_96 Stage F does not compose discrete quantile channels")
+            else:
+                if 'marker' in _assignment.values():
+                    raise NotImplementedError(
+                        "statistic marker channel unavailable: existing vector "
+                        "branches already use marker. Reduce vector dimensions "
+                        "or render statistics in separate calls")
+                if _has_quantile_channel:
+                    raise NotImplementedError(
+                        "statistic and discrete quantile channels exceed the "
+                        "current visual-channel capacity; use a quantile band "
+                        "or separate plots")
+                if kwargs.get('color') is not None and (
+                        len(y_list) > 1 or _sel_active or _w_active):
+                    raise ValueError(
+                        "statistic vector requires distinct branch colors; "
+                        "omit explicit color= or plot branches separately")
 
         # Resolve scalar styles from the assignment.
         vector_style = _assignment.get('vector', vector_style or 'color')
@@ -2695,28 +2711,45 @@ class DFDraw:
                 iter_kwargs['group_by'] = group_by
 
             if _stat_vector is not None:
-                # One branch color for all of its statistic curves. Reuse the
-                # resolved color owner (not the statistic index) so B × S does
-                # not reset its visual identity for each S member.
-                _color_owner = next((key for key in (
-                    'vector', 'selection_delta', 'weights_delta')
-                    if _assignment.get(key) == 'color'), 'vector')
-                _color_idx = {'vector': y_idx,
-                              'selection_delta': sel_idx or 0,
-                              'weights_delta': w_idx or 0}[_color_owner]
-                import matplotlib.pyplot as _plt
-                _palette = _plt.colormaps.get_cmap(
-                    get_style_value('colors.palette', 'tab10'))
-                iter_kwargs['color'] = _palette(_color_idx % 10)
-                iter_kwargs['_suppress_color_cycle'] = True
-                _stat_branch_visuals.append({
-                    'expression': expr, 'color': iter_kwargs['color'],
-                    'linestyle': iter_kwargs.get('linestyle', '-'),
-                    'selection_index': sel_idx,
-                    'weights_index': w_idx,
-                    'selection': (None if sel_idx is None else _selection_vector[sel_idx]),
-                    'weights': (None if w_idx is None else _weights_vector[w_idx]),
-                })
+                if _stagef_singleton_std_nd:
+                    # Stage F singleton std consumes no visual channel. Group
+                    # color remains owned by the globally classified group and
+                    # the two expression branches keep their vector markers.
+                    iter_kwargs['_suppress_color_cycle'] = True
+                    _stat_branch_visuals.append({
+                        'expression': expr, 'color': 'black',
+                        'marker': iter_kwargs.get('marker'),
+                        'linestyle': iter_kwargs.get('linestyle', 'none'),
+                        'selection_index': sel_idx,
+                        'weights_index': w_idx,
+                        'selection': (None if sel_idx is None else _selection_vector[sel_idx]),
+                        'weights': (None if w_idx is None else _weights_vector[w_idx]),
+                    })
+                    iter_kwargs['_stagef_singleton_std_nd'] = _STAGEF_SINGLETON_STD_TOKEN
+                else:
+                    # One branch color for all of its statistic curves. Reuse the
+                    # resolved color owner (not the statistic index) so B × S does
+                    # not reset its visual identity for each S member.
+                    _color_owner = next((key for key in (
+                        'vector', 'selection_delta', 'weights_delta')
+                        if _assignment.get(key) == 'color'), 'vector')
+                    _color_idx = {'vector': y_idx,
+                                  'selection_delta': sel_idx or 0,
+                                  'weights_delta': w_idx or 0}[_color_owner]
+                    import matplotlib.pyplot as _plt
+                    _palette = _plt.colormaps.get_cmap(
+                        get_style_value('colors.palette', 'tab10'))
+                    iter_kwargs['color'] = _palette(_color_idx % 10)
+                    iter_kwargs['_suppress_color_cycle'] = True
+                    _stat_branch_visuals.append({
+                        'expression': expr, 'color': iter_kwargs['color'],
+                        'marker': iter_kwargs.get('marker'),
+                        'linestyle': iter_kwargs.get('linestyle', '-'),
+                        'selection_index': sel_idx,
+                        'weights_index': w_idx,
+                        'selection': (None if sel_idx is None else _selection_vector[sel_idx]),
+                        'weights': (None if w_idx is None else _weights_vector[w_idx]),
+                    })
 
             # First iteration uses outer same; subsequent always same=True
             iter_kwargs['same'] = outer_same if i == 0 else True
@@ -2766,15 +2799,20 @@ class DFDraw:
                     _weights_tag = (str(_weights_labels[item['weights_index']])
                         if _weights_labels is not None else item['weights'])
                     tag += f" | weights={_weights_tag}"
-                proxies.append(Line2D([0], [0], color=item['color'],
-                                       linestyle=item['linestyle']))
+                if _stagef_singleton_std_nd:
+                    proxies.append(Line2D([0], [0], color='black',
+                                           marker=item.get('marker'), linestyle='None'))
+                else:
+                    proxies.append(Line2D([0], [0], color=item['color'],
+                                           linestyle=item['linestyle']))
                 labels.append(tag)
-            _stat_markers = {'mean': kwargs.get('marker') or 'o', 'median': 'D',
-                             'std': '^', 'sem': 'v', 'quantiles': None}
-            for name in _stat_vector:
-                proxies.append(Line2D([0], [0], color='black',
-                    marker=_stat_markers[name], linestyle='-' if name=='quantiles' else 'None'))
-                labels.append(name)
+            if not _stagef_singleton_std_nd:
+                _stat_markers = {'mean': kwargs.get('marker') or 'o', 'median': 'D',
+                                 'std': '^', 'sem': 'v', 'quantiles': None}
+                for name in _stat_vector:
+                    proxies.append(Line2D([0], [0], color='black',
+                        marker=_stat_markers[name], linestyle='-' if name=='quantiles' else 'None'))
+                    labels.append(name)
             _legend_spec = kwargs.get('legend')
             _explicit_hide = (kwargs.get('show_legend') is False
                               or _legend_spec is False
@@ -6093,6 +6131,9 @@ class DFDraw:
             _palette = plt.colormaps.get_cmap(
                 get_style_value('colors.palette', 'tab10'))
             _cycles = get_style_value('channels.cycles.linestyle', ['-', '--', '-.', ':'])
+            _marker_cycles = get_style_value(
+                'channels.cycles.marker', ['o', 's', '^', 'D', 'P', 'X', 'v', '<', '>', 'h'])
+            _stagef_singleton_std_nd = (plot_kwargs.get('_stagef_singleton_std_nd') is _STAGEF_SINGLETON_STD_TOKEN)
             if not isinstance(y_expr, list):
                 _vector_proxies = []
             elif not nd94_groups:
@@ -6111,11 +6152,19 @@ class DFDraw:
                     for i in range(len(y_expr))
                 ]
             else:
-                _vector_proxies = [
-                    Line2D([], [], color='black',
-                           linestyle=_cycles[i % len(_cycles)])
-                    for i in range(len(y_expr))
-                ]
+                if plot_kwargs.get('vector_style') == 'marker':
+                    _vector_proxies = [
+                        Line2D([], [], color='black',
+                               marker=_marker_cycles[i % len(_marker_cycles)],
+                               linestyle='None')
+                        for i in range(len(y_expr))
+                    ]
+                else:
+                    _vector_proxies = [
+                        Line2D([], [], color='black',
+                               linestyle=_cycles[i % len(_cycles)])
+                        for i in range(len(y_expr))
+                    ]
             _group_proxies = [
                 Line2D([], [], color=(plot_kwargs.get('color')
                                     if plot_kwargs.get('color') is not None
@@ -6123,11 +6172,17 @@ class DFDraw:
                 for i in range(len(nd94_groups))
             ]
             _stat_names = plot_kwargs.get('stat_list')
-            _stat_handles = (_statistic_legend_proxies(_stat_names)
-                             if _stat_names else [])
-            _legend_handles = _vector_proxies + _group_proxies + _stat_handles
-            _legend_names = ((list(y_expr) if isinstance(y_expr, list) else [])
-                             + list(nd94_groups) + (list(_stat_names) if _stat_names else []))
+            # Stage F singleton std is descriptive metadata, not a third visual
+            # identity dimension. Keep the Figure legend factored as five group
+            # colors + two expression markers.
+            _stat_handles = ([] if _stagef_singleton_std_nd else
+                             (_statistic_legend_proxies(_stat_names)
+                              if _stat_names else []))
+            _legend_handles = _group_proxies + _vector_proxies + _stat_handles
+            _legend_names = (list(nd94_groups)
+                             + (list(y_expr) if isinstance(y_expr, list) else [])
+                             + ([] if _stagef_singleton_std_nd else
+                                (list(_stat_names) if _stat_names else [])))
             legend_artist = fig.legend(
                 _legend_handles, _legend_names,
                 loc='upper center', bbox_to_anchor=(0.5, 0.95),
@@ -8525,6 +8580,14 @@ class DFDraw:
         # (architect K-2 Option A); inapplicable dfdraw-semantic kwarg ->
         # clean error; genuinely unknown -> warning.
         _stat_group_order = kwargs.pop('_stat_group_order', None)
+        # PHASE_13_96 Stage F: private coordinator sentinel. It is created only
+        # by the validated two-expression × global-group × 2-D-facet route and
+        # is consumed by the per-cell vector/statistic owners. It is never a
+        # public API parameter.
+        _stagef_token = kwargs.pop('_stagef_singleton_std_nd', None)
+        if _stagef_token is not None and _stagef_token is not _STAGEF_SINGLETON_STD_TOKEN:
+            raise TypeError("_stagef_singleton_std_nd is an internal dfdraw parameter")
+        _stagef_singleton_std_nd = (_stagef_token is _STAGEF_SINGLETON_STD_TOKEN)
         if kwargs:
             self._kwarg_typo_guard(kwargs, method='profile')
         if _stat_group_order is not None:
@@ -8555,13 +8618,42 @@ class DFDraw:
                 raise NotImplementedError(
                     "stat_list faceted profiles support mean/std/sem only "
                     "in PHASE_13_96 Stage E")
-            if (group_by is not None or facet or facet_by is not None) and (
+            _parsed_y, _parsed_x = self._parse_expr(expr)
+            _stagef_public = (
+                isinstance(_parsed_y, list) and len(_parsed_y) == 2
+                and isinstance(_parsed_x, list) and len(set(_parsed_x)) == 1
+                and list(stat_list) == ['std']
+                and group_by is not None
+                and group_by_bins == 5 and group_by_quantiles is None
+                and group_by_scope == 'global'
+                and isinstance(facet_by, list) and len(facet_by) == 2
+                and list(facet_by_bins or []) == [3, 5]
+                and not facet
+                and weights is None
+                and not (selection_vector is not None and len(selection_vector) > 1)
+                and not (weights_vector is not None and len(weights_vector) > 1)
+                and normalize is None and fit is None
+                and color is None and marker is None
+                and kwargs.get('group_style', 'color') == 'color'
+                and kwargs.get('vector_style') == 'marker'
+                and str(kwargs.get('linestyle', '')).lower() == 'none'
+            )
+            if ((group_by is not None or facet or facet_by is not None) and (
                     ('[' in str(expr) or
                     selection_vector is not None and len(selection_vector) > 1 or
-                    weights_vector is not None and len(weights_vector) > 1)):
+                    weights_vector is not None and len(weights_vector) > 1))
+                    and not (_stagef_singleton_std_nd or _stagef_public)):
                 raise NotImplementedError(
                     "stat_list with grouped/faceted vector branches exceeds "
                     "the supported Stage E visual-channel contract")
+            if _stagef_public:
+                # Carry the approved exception inward. The N-D coordinator
+                # remains the owner of facets/global groups; per-cell profile()
+                # calls may not broaden this exception on their own.
+                _stagef_singleton_std_nd = True
+
+        if _stagef_singleton_std_nd:
+            kwargs['_stagef_singleton_std_nd'] = _STAGEF_SINGLETON_STD_TOKEN
 
         if group_by_scope not in ('auto', 'global', 'facet'):
             raise ValueError("group_by_scope must be 'auto', 'global', or 'facet'")

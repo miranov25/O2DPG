@@ -331,6 +331,7 @@ def draw_profile(
     # median/quantile bundles. Vector/group/facet expansion follows later.
     # Figure-global grouped facets pre-resolve one physical color ordering.
     _stat_group_order = kwargs.pop('_stat_group_order', None)
+    _stagef_singleton_std_nd = kwargs.pop('_stagef_singleton_std_nd', False)
     # Validate before figure allocation, never silently drop stat_list.
     if stat_list is not None:
         if not isinstance(stat_list, (list, tuple)) or not stat_list:
@@ -678,6 +679,7 @@ def draw_profile(
             quantile_style=quantile_style,
             stat_list=stat_list,
             _stat_group_order=_stat_group_order,
+            _stagef_singleton_std_nd=_stagef_singleton_std_nd,
             **kwargs
         )
         stats_dict["grouped"] = True
@@ -1336,6 +1338,7 @@ def _draw_profile_grouped(
     quantile_style: Optional[str] = None,
     stat_list: Optional[List[str]] = None,
     _stat_group_order=None,
+    _stagef_singleton_std_nd: bool = False,
     # Phase 13.36.DF: user style overrides (BUG-013 fix).
     # None = "user did not pass" (matches matplotlib default-color semantics).
     # Non-None = apply uniformly to all groups, override the auto-cycle.
@@ -1525,9 +1528,13 @@ def _draw_profile_grouped(
             }
             per_group_stats[group] = {name: _values[name] for name in stat_list}
             _markers = {'mean': (_user_marker if _user_marker is not None else 'o'),
-                        'std': '^', 'sem': 'v'}
+                        'std': ((_user_marker if _user_marker is not None else 'o')
+                                if _stagef_singleton_std_nd else '^'),
+                        'sem': 'v'}
             _linestyles = {'mean': (_user_linestyle if _user_linestyle is not None else '-'),
-                           'std': ':', 'sem': ':'}
+                           'std': ((_user_linestyle if _user_linestyle is not None else 'none')
+                                   if _stagef_singleton_std_nd else ':'),
+                           'sem': ':'}
             for _stat in stat_list:
                 if _stat == 'mean':
                     ax.errorbar(
