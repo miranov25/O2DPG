@@ -18,6 +18,10 @@ from .style import get_style, get_style_value
 # plots/profile.py has no top-level dependency on drawer.py (it imports DFDraw
 # inside draw_profile() only).
 from .plots.profile import _format_interval_label, _interval_sort_key
+from .plots._facet_label_format import (
+    normalize_facet_label_format, validate_facet_label_dimensions,
+    facet_label_format_is_legacy, format_facet_dimension,
+)
 
 # Phase 13.50.DF step 4 — legend polymorphism normalizer + applier.
 # Both legend= and show_legend= are Pattern A (popped at top-level dispatcher
@@ -36,6 +40,8 @@ _MISSING = object()
 # Public callers that try to pass the private kwarg with a boolean/value are
 # rejected; only dfdraw-owned dispatch may carry this exact object inward.
 _STAGEF_SINGLETON_STD_TOKEN = object()
+# PHASE_13_97_DF: distinguish omitted public option from explicit None.
+_FACET_LABEL_FORMAT_UNSET = object()
 
 
 def _scope_group_domain(df, group_by, bins=None, quantiles=None):
@@ -1674,6 +1680,7 @@ class DFDraw:
         'facet_by_bins', 'facet_by_quantiles',  # Phase 13.32.DF Sub-fix 3 (AD-79)
         # Phase 13.41.DF v1.6 + FIX1: N-D faceting axis-sharing controls
         'share_x', 'share_y', 'share_across_figures',
+        'facet_label_format',  # PHASE_13_97_DF: 2-D display-only interval labels
         # Phase 13.27.DF Commit 2 (Phase D): selection/weights vectors + per-curve label management
         'selection_vector', 'weights_vector',
         'selection_labels', 'weights_labels',
@@ -4553,6 +4560,7 @@ class DFDraw:
         share_x: str = 'all',                # 'all' | 'row' | 'col' | 'none'
         share_y: str = 'all',                # same
         share_across_figures: bool = True,   # 3D only
+        facet_label_format=_FACET_LABEL_FORMAT_UNSET,  # PHASE_13_97_DF
         **plot_kwargs
     ) -> Tuple[plt.Figure, np.ndarray, Union[Dict[str, Any], List[Dict[str, Any]]]]:
         """
@@ -4643,6 +4651,16 @@ class DFDraw:
             # A 1-D facet has no N-D presentation owner; attach its global
             # identity in the established 1-D coordinator after rendering.
             plot_kwargs['_nd95_global_groups'] = global_groups or []
+
+        # PHASE_13_97_DF: formatting is a 2-D Figure display control.  Explicit
+        # legacy is harmless on historical scalar/1-D paths; explicit non-legacy
+        # requests must fail rather than leak to an artist or be silently ignored.
+        if not isinstance(facet_by, list) and facet_label_format is not _FACET_LABEL_FORMAT_UNSET:
+            _flf_scalar_spec = normalize_facet_label_format(facet_label_format)
+            if not facet_label_format_is_legacy(_flf_scalar_spec):
+                raise ValueError(
+                    "facet_label_format non-legacy formatting requires exactly "
+                    "two facet dimensions")
 
         # Reject Figure-grid presentation options on scalar facet modes.
         # They are never Matplotlib artist/style kwargs.
@@ -4783,6 +4801,25 @@ class DFDraw:
                     _nd_options['shared_ylabel'] = True
 
             n_dims = len(facet_list)
+            # PHASE_13_97_DF v0.2: only a 2-D Figure consumes style/default
+            # formatting.  Omitted controls do not activate unsupported 1-D/3-D
+            # paths even when a global style requests compact labels.
+            _facet_label_spec = None
+            if n_dims == 2:
+                _facet_label_raw = (
+                    get_style_value('facet.label_format', None)
+                    if facet_label_format is _FACET_LABEL_FORMAT_UNSET
+                    else facet_label_format
+                )
+                _facet_label_spec = normalize_facet_label_format(_facet_label_raw)
+                validate_facet_label_dimensions(_facet_label_spec, facet_list)
+            elif facet_label_format is not _FACET_LABEL_FORMAT_UNSET:
+                _facet_label_explicit = normalize_facet_label_format(facet_label_format)
+                validate_facet_label_dimensions(_facet_label_explicit, facet_list)
+                if not facet_label_format_is_legacy(_facet_label_explicit):
+                    raise ValueError(
+                        "facet_label_format non-legacy formatting requires "
+                        "exactly two facet dimensions")
             if n_dims == 1:
                 # The new Figure-grid controls have no 1-D list coordinator.
                 # Refuse rather than silently ignore explicit user settings.
@@ -4813,6 +4850,7 @@ class DFDraw:
                     quantiles=quantiles, quantile_mode=quantile_mode,
                     _lock_x_range=None, _lock_y_range=None,
                     _user_auto_title=_user_auto_title,
+                    facet_label_format=_facet_label_spec,
                     **_nd_options, **plot_kwargs)
             elif n_dims == 3:
                 # 3D: loop over figID dimension, dispatch 2D per figID
@@ -5892,6 +5930,7 @@ class DFDraw:
                             shared_xlabel=None, shared_ylabel=None,
                             figure_margins=None, subplot_spacing=None,
                             color_display=None, max_legend_categories=None,
+                            facet_label_format=None,
                             title=None, group_by=None, top_k=None,
                             quantiles=None, quantile_mode='auto',
                             **plot_kwargs):
@@ -5934,6 +5973,17 @@ class DFDraw:
             if col_col in facet_order:
                 col_values = [v for v in facet_order[col_col] if v in col_values]
         
+        # PHASE_13_97_DF: build display labels once from the complete
+        # dimension classifications.  Raw Interval objects remain authoritative
+        # for masks, stats keys and returned result identity.  Collision errors
+        # therefore happen before Figure allocation.
+        _facet_label_spec = (facet_label_format or
+                             {"format": "legacy", "by": {}})
+        row_display_values = format_facet_dimension(
+            row_values, row_col, _facet_label_spec)
+        col_display_values = format_facet_dimension(
+            col_values, col_col, _facet_label_spec)
+
         n_rows = len(row_values)
         n_cols = len(col_values)
         
@@ -6023,10 +6073,10 @@ class DFDraw:
                 # duplicated cell titles or scientific y-axis labels.
                 if facet_labels != 'outer':
                     if i == 0:
-                        ax_ij.set_title(f"{col_col}={col_v}", fontsize=10)
+                        ax_ij.set_title(f"{col_col}={col_display_values[j]}", fontsize=10)
                     if j == 0:
                         cur_ylabel = ax_ij.get_ylabel()
-                        ax_ij.set_ylabel(f"{row_col}={row_v}\n{cur_ylabel}".rstrip())
+                        ax_ij.set_ylabel(f"{row_col}={row_display_values[i]}\n{cur_ylabel}".rstrip())
         
         if title:
             fig.suptitle(title, fontsize=12)
@@ -6096,7 +6146,7 @@ class DFDraw:
                 pos = axes[0, j].get_position()
                 column_headings.append(fig.text(
                     (pos.x0 + pos.x1) / 2, pos.y1 + 0.012,
-                    str(value), ha='center', va='bottom', fontsize=10))
+                    col_display_values[j], ha='center', va='bottom', fontsize=10))
         if facet_labels == 'outer' or shared_ylabel:
             # Moving semantic ylabels to Figure level must not silently erase
             # the row facet identity from left-edge panels. In explicit outer
@@ -6104,7 +6154,8 @@ class DFDraw:
             for i, value in enumerate(row_values):
                 pos = axes[i, 0].get_position()
                 # Leave a gutter between numeric y ticks and row headings.
-                text = str(value) if facet_labels == 'outer' else f'{row_col}={value}'
+                text = (row_display_values[i] if facet_labels == 'outer'
+                        else f'{row_col}={row_display_values[i]}')
                 row_headings.append(fig.text(
                     pos.x0 - 0.04, (pos.y0 + pos.y1) / 2,
                     text, ha='right', va='center', fontsize=10))
@@ -6380,6 +6431,7 @@ class DFDraw:
         facet_by: Optional[Union[str, List[str]]] = None,
         facet_by_bins: Optional[Union[int, List[Optional[int]]]] = None,
         facet_by_quantiles: Optional[Union[int, List]] = None,
+        facet_label_format: Any = _FACET_LABEL_FORMAT_UNSET,  # PHASE_13_97_DF
         # Phase 13.41.DF v1.6 + FIX1: N-D faceting axis-sharing controls
         share_x: str = 'all',
         share_y: str = 'all',
@@ -6512,6 +6564,16 @@ class DFDraw:
             raise NotImplementedError(
                 'group_by_scope is only supported on grouped faceted profiles')
 
+        # PHASE_13_97_DF Stage A is a profile 2-D facet presentation
+        # control. Explicit legacy is harmless elsewhere; explicit non-legacy
+        # must fail before any Figure allocation instead of being ignored.
+        if type != 'profile' and facet_label_format is not _FACET_LABEL_FORMAT_UNSET:
+            _draw_flf_spec = normalize_facet_label_format(facet_label_format)
+            if not facet_label_format_is_legacy(_draw_flf_spec):
+                raise NotImplementedError(
+                    "facet_label_format Stage A supports type='profile' with "
+                    "exactly two facet dimensions")
+
         # Handle figsize: create axes if not provided
         if figsize is not None and ax is None:
             import matplotlib.pyplot as plt
@@ -6538,6 +6600,11 @@ class DFDraw:
                 type = "profile2d"
 
         if type == "profile2d":
+            if facet_label_format is not _FACET_LABEL_FORMAT_UNSET:
+                _p2_flf_spec = normalize_facet_label_format(facet_label_format)
+                if not facet_label_format_is_legacy(_p2_flf_spec):
+                    raise NotImplementedError(
+                        "facet_label_format Stage A does not support profile2d")
             # PHASE_13_86 Stage A / RED-R5: draw() exposes color/marker as
             # named params, but the profile2d heatmap owner has no line/marker
             # semantics for them.  Do not silently discard explicit user intent.
@@ -6723,6 +6790,7 @@ class DFDraw:
                     normalize=normalize, normalize_layout=normalize_layout,
                     facet_by=facet_by, facet_by_bins=facet_by_bins,
                     facet_by_quantiles=facet_by_quantiles,
+                    facet_label_format=facet_label_format,
                     share_x=share_x, share_y=share_y,
                     share_across_figures=share_across_figures,
                     selection_vector=selection_vector,
@@ -7017,6 +7085,7 @@ class DFDraw:
                 normalize=normalize, normalize_layout=normalize_layout,
                 facet_by=facet_by, facet_by_bins=facet_by_bins,
                 facet_by_quantiles=facet_by_quantiles,
+                facet_label_format=facet_label_format,
                 share_x=share_x, share_y=share_y,
                 share_across_figures=share_across_figures,
                 selection_vector=selection_vector,
@@ -7501,7 +7570,9 @@ class DFDraw:
             _local = locals()
             for name in self._HIST_FORWARDED_NAMES:
                 val = _local.get(name, _MISSING)
-                if val is not _MISSING and val is not None:
+                if val is not _MISSING and (val is not None or name == 'facet_label_format'):
+                    # PHASE_13_97: explicit facet_label_format=None forces
+                    # legacy and must not collapse into omission/style inheritance.
                     # FIX1: auto_title=False is signature default, not user choice.
                     if name == 'auto_title' and val is False:
                         continue
@@ -8464,6 +8535,7 @@ class DFDraw:
         # Phase 13.32.DF Sub-fix 3 (AD-79): symmetric binning on facet_by axis
         facet_by_bins: Optional[Union[int, List[Optional[int]]]] = None,
         facet_by_quantiles: Optional[Union[int, List]] = None,
+        facet_label_format: Any = _FACET_LABEL_FORMAT_UNSET,  # PHASE_13_97_DF
         # Phase 13.41.DF v1.6 + FIX1: N-D faceting axis-sharing controls
         share_x: str = 'all',
         share_y: str = 'all',
@@ -9033,6 +9105,7 @@ class DFDraw:
                     stats=stats, title=title, xlabel=xlabel, ylabel=ylabel,
                     group_by=group_by, top_k=top_k, ncols=ncols,
                     group_by_scope=group_by_scope,
+                    facet_label_format=facet_label_format,
                     sharex=sharex, sharey=sharey,
                     return_data=return_data, min_entries=min_entries,
                     group_by_bins=group_by_bins, group_by_quantiles=group_by_quantiles,
@@ -9338,6 +9411,7 @@ class DFDraw:
                 stats=stats, title=title, xlabel=xlabel, ylabel=ylabel,
                 group_by=group_by, top_k=top_k, ncols=ncols,
                 group_by_scope=group_by_scope,
+                facet_label_format=facet_label_format,
                 sharex=sharex, sharey=sharey,
                 # Phase 13.12.DF
                 return_data=return_data, min_entries=min_entries,

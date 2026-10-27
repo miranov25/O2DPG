@@ -449,7 +449,7 @@ _FACET_DISPOSITIONS = {
             "group_by_scope",  # PHASE_13_95: typed profile -> facet policy owner
             "sort_groups", "weights", "auto_title", "stat_fields", "quantiles",
             "central", "quantile_mode", "quantile_style", "nan_policy",
-            "facet_by", "facet_by_bins", "facet_by_quantiles",
+            "facet_by", "facet_by_bins", "facet_by_quantiles", "facet_label_format",
             "share_x", "share_y", "share_across_figures",
             "selection_vector", "weights_vector", "selection_labels", "weights_labels",
             "selection_categorical", "weights_categorical", "vector_compose", "delta_facet",
@@ -557,7 +557,7 @@ _DRAW_TO_TYPED_DISPOSITIONS = {
             "selection", "group_by", "group_by_scope", "stat_list", "facet", "bins",
             "stats", "title", "ax", "sample", "save", "same",
             "nan_policy", "facet_by", "facet_by_bins",
-            "facet_by_quantiles", "share_x", "share_y",
+            "facet_by_quantiles", "facet_label_format", "share_x", "share_y",
             "share_across_figures", "selection_vector", "weights_vector",
             "selection_labels", "weights_labels", "selection_categorical",
             "weights_categorical", "vector_compose", "delta_facet",
@@ -591,7 +591,12 @@ _DRAW_TO_TYPED_DISPOSITIONS = {
             "normalize", "normalize_layout", "fit", "fit_textbox_kwargs",
             "summary_fit", "legend", "show_legend",
         },
-        "CONSUMED": set(),
+        "CONSUMED": {
+            # PHASE_13_97 Stage A: draw(type="profile2d") owns the scope guard.
+            # Explicit nonlegacy formatting is refused before delegation;
+            # omitted/legacy formatting needs no forwarding to profile().
+            "facet_label_format",
+        },
         # profile2d heatmap semantics do not define line/marker styling.  draw()
         # currently drops these silently; RED-R5 requires a loud disposition.
         # Explicit scope is restricted to grouped 1-D profiles.  The

@@ -107,6 +107,10 @@ DEFAULT_STYLE: Dict[str, Any] = {
     "auto_title": False,
     "auto_title.fontsize": 10,
     "auto_title.sel_fontsize": 8,
+    # PHASE_13_97_DF Stage A: 2-D numeric facet interval display policy.
+    # None is the factory legacy value; omission of the public parameter may
+    # inherit a non-None active style, while explicit None forces legacy.
+    "facet.label_format": None,
     
     # Colors & markers
     "colors.palette": "tab10",
