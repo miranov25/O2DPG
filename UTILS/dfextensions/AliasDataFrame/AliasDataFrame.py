@@ -17636,7 +17636,7 @@ function collapseDepth(maxD) {{
         dtype_map = {col: target_dtype for col in matching_cols}
         self.convert_dtypes(dtype_map)
     def describe_lazy(self, max_items=40, show_available=True, show_loaded=True,
-                      show_subframes=True, as_dict=False):
+                      show_subframes=True, as_dict=False, pattern=None):
         """
         PHASE_13_71_ADF: user-facing diagnostic for lazy AliasDataFrame state.
 
@@ -17704,6 +17704,7 @@ function collapseDepth(maxD) {{
             return info
 
         def _emit(label, names):
+            names = [n for n in names if pattern is None or re.search(pattern, n)]
             shown = names[:max_items]
             print(f"  {label}:")
             print("    " + (", ".join(shown) if shown else "(none)"))

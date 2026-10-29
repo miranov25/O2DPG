@@ -122,3 +122,24 @@ def test_LAZYDESC_7_as_dict_form(tmp_path):
     # eager frame -> lazy False
     e = AliasDataFrame(pd.DataFrame({"x": [1]})).describe_lazy(as_dict=True)
     assert e["lazy"] is False
+
+# ---- T-LAZYDESC-8: pattern filters displayed names only; no load side effects ----
+@pytest.mark.invariance
+def test_LAZYDESC_8_pattern_filters_display_only(tmp_path, capsys):
+    adf = AliasDataFrame.read_tree_lazy(_make_main(tmp_path), tree_name="tree")
+    before_cols = list(adf.df.columns)
+    before_loaded = set(getattr(adf._lazy_reader, "loaded_branches", set()))
+
+    adf.describe_lazy(show_loaded=False, show_available=True, pattern=r"^[cd]$")
+    out = capsys.readouterr().out
+
+    section = out.split("Available but not loaded:", 1)[1]
+    assert "c" in section and "d" in section
+    assert "a" not in section and "b" not in section and "e" not in section
+    assert "Available branches: 6" in out  # headline count remains the real state
+
+    after_cols = list(adf.df.columns)
+    after_loaded = set(getattr(adf._lazy_reader, "loaded_branches", set()))
+    assert before_cols == after_cols
+    assert before_loaded == after_loaded
+
