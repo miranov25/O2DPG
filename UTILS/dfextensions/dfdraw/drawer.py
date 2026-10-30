@@ -4630,6 +4630,7 @@ class DFDraw:
         global_scope = (plot_kind == 'profile' and
                         (group_scope == 'global' or (group_scope == 'auto' and nd_vector)))
         global_groups = None
+        _nd98_group_is_binned = False
         if global_scope and group_by is None and (
             plot_kwargs.get('group_by_bins') is not None or
             plot_kwargs.get('group_by_quantiles') is not None
@@ -4638,6 +4639,8 @@ class DFDraw:
         if global_scope and group_by is not None:
             group_bins = plot_kwargs.pop('group_by_bins', None)
             group_quantiles = plot_kwargs.pop('group_by_quantiles', None)
+            _nd98_group_is_binned = (group_bins is not None or
+                                     group_quantiles is not None)
             df, group_by, global_groups = _scope_group_domain(
                 df, group_by, bins=group_bins, quantiles=group_quantiles)
         if global_scope and plot_kwargs.get('stat_list') is not None:
@@ -4848,6 +4851,11 @@ class DFDraw:
                     plot_kind, share_x=share_x, share_y=share_y,
                     title=title, group_by=group_by, top_k=top_k,
                     quantiles=quantiles, quantile_mode=quantile_mode,
+                    # Keep the physical grouping coordinate distinct from the
+                    # private column used to store globally classified bins.
+                    _nd98_group_display_name=(
+                        group_display_name if global_scope else None),
+                    _nd98_group_is_binned=_nd98_group_is_binned,
                     _lock_x_range=None, _lock_y_range=None,
                     _user_auto_title=_user_auto_title,
                     facet_label_format=_facet_label_spec,
@@ -5864,10 +5872,16 @@ class DFDraw:
         elif plot_kind == 'profile':
             # DFDraw.profile also uses range= (it remaps to x_range internally
             # when calling draw_profile — see drawer.py:329/404/420/436)
+            # PHASE_13_98 AT-P1: A vector's signature-default False gets
+            # dropped by profile() forwarding, and _draw_vector then restores
+            # True. The empty mode is an explicit internal *hard off*: unlike
+            # False, it survives vector forwarding and does not inherit an
+            # active global auto_title style. Only the outer Figure owns titles.
+            inner_auto_title = '' if isinstance(y_expr, list) else False
             _, _, stats_ij = sub_adf.profile(
                 inner_expr, ax=ax_ij,
                 range=effective_range,
-                auto_title=False,
+                auto_title=inner_auto_title,
                 **plot_kwargs)
             if isinstance(y_expr, list):
                 # The Figure owns the semantic title. Under global scope it
@@ -5933,6 +5947,8 @@ class DFDraw:
                             facet_label_format=None,
                             title=None, group_by=None, top_k=None,
                             quantiles=None, quantile_mode='auto',
+                            _nd98_group_display_name=None,
+                            _nd98_group_is_binned=False,
                             **plot_kwargs):
         """2D row × col grid faceting. Phase 13.41.DF v1.6 §4.
         
@@ -6273,6 +6289,16 @@ class DFDraw:
                 ncol=min(len(_legend_handles), 8),
                 fontsize=9, frameon=False,
             )
+            if _nd98_group_display_name is not None and nd94_groups:
+                # PHASE_13_98 AT-P2: give the Figure-global color legend
+                # the original physical group name, not the temporary
+                # __dfdraw_group_scope__ column. Keep automatic/user titles
+                # untouched and avoid duplicating the label in every cell.
+                kind = 'bins' if _nd98_group_is_binned else 'groups'
+                legend_artist.set_title(
+                    f"Colors: {_nd98_group_display_name} "
+                    f"({len(nd94_groups)} global {kind})",
+                    prop={'size': 8})
         if (nd94_groups is None and plot_kind == 'profile'
                 and group_by is None and plot_kwargs.get('stat_list') is not None):
             from matplotlib.legend import Legend
