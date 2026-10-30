@@ -120,10 +120,19 @@ def test_A_H4_invalid_facet_order_never_degrades_silently(bad):
                                  facet_by=['row', 'col'], facet_order=bad)
 
 
-def test_A_H5_scalar_facet_rejects_ND_only_presentation_options():
-    with pytest.raises(ValueError, match='require'):
+def test_A_H5_scalar_facet_accepts_shared_presentation_but_refuses_nd_only_controls():
+    # PHASE_13_99 deliberately widens the old 13.93 scalar-facet guard:
+    # outer presentation headings now work on 1-D facets too.
+    fig, axes, _ = DFDraw(_table()).scatter(
+        'coefficient:region', facet_by='row', facet_labels='outer')
+    try:
+        assert all(not ax.get_title() for ax in axes)
+        assert len(fig.texts) >= 2
+    finally:
+        plt.close(fig)
+    with pytest.raises(ValueError, match='multi-dimensional'):
         DFDraw(_table()).scatter('coefficient:region', facet_by='row',
-                                 facet_labels='outer')
+                                 facet_order={'row': ['Rate', 'Base']})
 
 
 def test_A_H6_shared_ylabel_without_outer_mode_keeps_row_identity():

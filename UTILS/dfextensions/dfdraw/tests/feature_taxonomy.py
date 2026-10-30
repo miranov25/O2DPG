@@ -2366,7 +2366,7 @@ FEATURES = [
             'test_phase_13_93_stage_a_handover_regressions.py::test_A_H4_invalid_facet_order_never_degrades_silently[bad1]',
             'test_phase_13_93_stage_a_handover_regressions.py::test_A_H4_invalid_facet_order_never_degrades_silently[bad2]',
             'test_phase_13_93_stage_a_handover_regressions.py::test_A_H4_invalid_facet_order_never_degrades_silently[bad3]',
-            'test_phase_13_93_stage_a_handover_regressions.py::test_A_H5_scalar_facet_rejects_ND_only_presentation_options',
+            'test_phase_13_93_stage_a_handover_regressions.py::test_A_H5_scalar_facet_accepts_shared_presentation_but_refuses_nd_only_controls',
             'test_phase_13_93_stage_a_handover_regressions.py::test_A_H6_shared_ylabel_without_outer_mode_keeps_row_identity',
             'test_phase_13_93_stage_a_handover_regressions.py::test_A_H7_invalid_layout_parameters_raise_before_figure_allocation[figure_margins-value0]',
             'test_phase_13_93_stage_a_handover_regressions.py::test_A_H7_invalid_layout_parameters_raise_before_figure_allocation[figure_margins-value1]',
