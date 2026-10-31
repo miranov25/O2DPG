@@ -680,6 +680,7 @@ def draw_profile(
             stat_list=stat_list,
             _stat_group_order=_stat_group_order,
             _stagef_singleton_std_nd=_stagef_singleton_std_nd,
+            _facet_presentation=bool(_facet_mode),
             **kwargs
         )
         stats_dict["grouped"] = True
@@ -1339,6 +1340,7 @@ def _draw_profile_grouped(
     stat_list: Optional[List[str]] = None,
     _stat_group_order=None,
     _stagef_singleton_std_nd: bool = False,
+    _facet_presentation: bool = False,  # PHASE_13_99: internal only
     # Phase 13.36.DF: user style overrides (BUG-013 fix).
     # None = "user did not pass" (matches matplotlib default-color semantics).
     # Non-None = apply uniformly to all groups, override the auto-cycle.
@@ -1578,18 +1580,35 @@ def _draw_profile_grouped(
                 _q_all = _compute_per_bin_all_quantiles(
                     x_data, y_data, bins, x_range, quantile_list,
                 )
+                # PHASE_13_99: this grouped renderer already knows the
+                # complete (expression, group, quantile) identity. Preserve
+                # it on the actual Line2D before Matplotlib discards semantic
+                # labels (_childN). The Figure composer must not guess from
+                # an anonymous artist's label or its position in a cell.
+                # When the resolved quantile channel is linestyle, each
+                # quantile also needs a distinct *visible* linestyle; the
+                # historical all-'--' mapping was visually ambiguous.
+                _quantile_linestyles = get_style_value(
+                    'channels.cycles.linestyle', ['-', '--', '-.', ':'])
+                _quantile_linestyles = [ls for ls in _quantile_linestyles
+                                         if ls not in ('-', 'solid')]
                 for j, (q_val, q_per_bin) in enumerate(_q_all.items()):
-                    # Per Sonet50 v1.2 P2-1: legend entry shows just the group
-                    # label (not "Group A q=10%") to avoid implying only one
-                    # quantile is shown. One legend entry per group via j==0 guard.
                     legend_label = str(group) if j == 0 else None
-                    ax.plot(
+                    _q_linestyle = '--'
+                    if (_facet_presentation and quantile_style in (None, 'linestyle')
+                            and _quantile_linestyles):
+                        _q_linestyle = _quantile_linestyles[j % len(_quantile_linestyles)]
+                    _q_line, = ax.plot(
                         bin_centers[plot_mask], q_per_bin[plot_mask],
                         color=group_color,
-                        linestyle='--',
+                        linestyle=_q_linestyle,
                         linewidth=linewidth * 0.7,
                         label=legend_label,
                     )
+                    _q_line._dfdraw_facet_semantic = {
+                        'kind': 'quantile', 'expression': str(y),
+                        'group': str(group), 'quantile': float(q_val),
+                    }
                 per_group_stats[group]['quantiles_per_bin'] = _q_all
 
         # Central line (mean or median) — always rendered last so it sits on top
@@ -1604,7 +1623,7 @@ def _draw_profile_grouped(
         # the existing flow (user explicit OR style default "-").
         if _ls_cycle is not None:
             _per_group_ls = _ls_cycle[i % len(_ls_cycle)]
-            ax.errorbar(
+            _centre_artist = ax.errorbar(
                 bin_centers[plot_mask], bin_means[plot_mask], yerr=bin_errors[plot_mask],
                 fmt=group_marker,
                 color=group_color,
@@ -1616,7 +1635,7 @@ def _draw_profile_grouped(
                 **profile_kwargs
             )
         else:
-            ax.errorbar(
+            _centre_artist = ax.errorbar(
                 bin_centers[plot_mask], bin_means[plot_mask], yerr=bin_errors[plot_mask],
                 fmt=group_marker,
                 color=group_color,
@@ -1628,6 +1647,14 @@ def _draw_profile_grouped(
                        else str(group)),
                 **profile_kwargs
             )
+        # Explicit vector-expression identity is carried by the actual
+        # rendered central marker/line, independent of group legend labels.
+        _centre_line = _centre_artist.lines[0]
+        if _centre_line is not None:
+            _centre_line._dfdraw_facet_semantic = {
+                'kind': 'expression', 'expression': str(y),
+                'group': str(group),
+            }
 
     return profile_data_list, per_group_stats
 

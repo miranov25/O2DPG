@@ -164,9 +164,17 @@ def _compose_facet_semantic_legend(fig, axes, *, expressions=(),
 
     # Actual rendered handles from *all* panels, not the first available cell.
     rendered = []
+    # The grouped profile renderer owns authoritative semantic identifiers.
+    # In group×vector×quantile mode the public labels identify only groups;
+    # quantile Lines are '_childN' and cannot be reconstructed from text.
+    semantic_lines = []
     for ax in axes:
         handles, labels = ax.get_legend_handles_labels()
         rendered.extend((h, str(l)) for h, l in zip(handles, labels))
+        for line in ax.lines:
+            semantic = getattr(line, '_dfdraw_facet_semantic', None)
+            if isinstance(semantic, dict):
+                semantic_lines.append((line, semantic))
 
     # De-duplicate by semantic identity, not by artist count.  For vector
     # expressions, the low-level profile labels are often '<expr> vs <x>'.
@@ -178,7 +186,13 @@ def _compose_facet_semantic_legend(fig, axes, *, expressions=(),
         # The existing 2-D coordinator's factored vector proxy may encode
         # expression by marker (while the line color denotes group). Prefer
         # that Figure-global assignment rather than a first-cell group color.
-        found = next(((h, name) for h, label in base if label == name), None)
+        # Prefer a real grouped central line over an approximated 2-D
+        # historical proxy; its marker/linestyle is the actual channel style.
+        found = next(((h, name) for h, semantic in semantic_lines
+                      if semantic.get('kind') == 'expression'
+                      and semantic.get('expression') == name), None)
+        if found is None:
+            found = next(((h, name) for h, label in base if label == name), None)
         if found is None:
             found = next(((h, name) for h, label in rendered
                           if label == name or label.startswith(name + ' vs ')), None)
@@ -197,7 +211,14 @@ def _compose_facet_semantic_legend(fig, axes, *, expressions=(),
         for q in quantiles:
             q = float(q)
             label = 'median' if abs(q - .5) < 1e-12 else f'q={q:.0%}'
-            source = [h for h, candidate in rendered if candidate == label]
+            # Authoritative grouped-quantile identity takes priority over
+            # anonymous Matplotlib labels. No quantile proxy is invented:
+            # every handle below is an actual Line2D drawn by profile.py.
+            grouped_source = [h for h, semantic in semantic_lines
+                              if semantic.get('kind') == 'quantile'
+                              and abs(semantic.get('quantile', -1.) - q) < 1e-12]
+            source = (grouped_source or
+                      [h for h, candidate in rendered if candidate == label])
             if source and label not in used:
                 # A vector quantile's color can differ between its expression
                 # branches. Represent both *actual* rendered styles under
@@ -216,8 +237,13 @@ def _compose_facet_semantic_legend(fig, axes, *, expressions=(),
                         unique.append(handle)
                     if len(unique) >= max(1, len(expressions)):
                         break
-                handle = (tuple(unique) if len(unique) > 1
-                          else unique[0] if unique else source[0])
+                # Group color is independently encoded by the existing
+                # group proxies. For grouped quantiles choose one *real*
+                # representative q line; combining different group colors
+                # in one q legend glyph would conflate the factored channels.
+                handle = (grouped_source[0] if grouped_source else
+                          tuple(unique) if len(unique) > 1 else
+                          unique[0] if unique else source[0])
                 chosen.append((handle, label))
                 used.add(label)
     if not chosen:
@@ -640,6 +666,7 @@ def _position_nd_figure_decorations(fig, axes_grid, *,
                                     row_headings=(), column_headings=(),
                                     panel_headings=(), shared_xlabel=None, shared_ylabel=None,
                                     legend=None, suptitle=None,
+                                    preserve_legend_placement=False,
                                     padding_pt=4.0):
     """Place dfdraw-owned Figure annotations within the user's Axes geometry.
 
@@ -699,6 +726,16 @@ def _position_nd_figure_decorations(fig, axes_grid, *,
         # All row headings share one right-aligned horizontal guide.
         shift_x(heading, left_edge - gap - bbox(heading).x1)
     if row_headings:
+        # PHASE_13_99 FP13: a long physical interval can exceed the left
+        # gutter at the user's fixed subplot margins. Preserve every digit and
+        # the exact interval endpoints: wrap at the existing comma instead of
+        # clipping the row heading or silently changing Axes geometry/fonts.
+        # Only activate this fallback if the original heading is out of bounds.
+        if any(bbox(h).x0 < gap for h in row_headings):
+            for heading in row_headings:
+                text = heading.get_text()
+                if ', ' in text and '\n' not in text:
+                    heading.set_text(text.replace(', ', ',\n', 1))
         left_edge = min(bbox(h).x0 for h in row_headings)
     if shared_ylabel is not None:
         shift_x(shared_ylabel, left_edge - gap - bbox(shared_ylabel).x1)
@@ -720,14 +757,17 @@ def _position_nd_figure_decorations(fig, axes_grid, *,
         shift_y(shared_xlabel, bottom_edge - gap - bbox(shared_xlabel).y1)
 
     if legend is not None:
-        # Figure legend uses a different transform/anchor interface than Text.
-        # Set its lower edge above every column heading; never alter the Axes.
-        current = bbox(legend)
-        anchor = legend.get_bbox_to_anchor().transformed(fig.transFigure.inverted())
-        legend.set_bbox_to_anchor(
-            (anchor.x0, anchor.y0 + (top_edge + gap - current.y0) / height),
-            transform=fig.transFigure)
-        top_edge = bbox(legend).y1
+        # An explicit loc/bbox_to_anchor is caller-owned. Do not reposition it
+        # after the composer has constructed the Figure legend: doing so
+        # violated FP06 for both scalar and N-D facet paths. Automatic legends
+        # still use this one-shot decoration stacker as before.
+        if not preserve_legend_placement:
+            current = bbox(legend)
+            anchor = legend.get_bbox_to_anchor().transformed(fig.transFigure.inverted())
+            legend.set_bbox_to_anchor(
+                (anchor.x0, anchor.y0 + (top_edge + gap - current.y0) / height),
+                transform=fig.transFigure)
+        top_edge = max(top_edge, bbox(legend).y1)
 
     if suptitle is not None:
         if bbox(suptitle).y0 < top_edge + gap:
@@ -4816,6 +4856,16 @@ class DFDraw:
         # controls with N-D facets. Scatter-only options and facet_order remain
         # outside this bounded 1-D implementation.
         _facet_legend_spec = plot_kwargs.pop('_facet_legend_spec', None)
+        # FP10: Figure dimensions are an outer facet-coordinator option.
+        # Accept the established draw(figsize=...) entry without allocating
+        # a throwaway Axes, and consume it before any per-cell renderer.
+        _requested_figsize = plot_kwargs.pop('figsize', None)
+        if _requested_figsize is not None and (
+                not isinstance(_requested_figsize, (tuple, list))
+                or len(_requested_figsize) != 2
+                or not all(isinstance(v, (int, float)) and np.isfinite(v)
+                           and v > 0 for v in _requested_figsize)):
+            raise ValueError('figsize must be a pair of positive finite numbers')
         _one_dim_options = {}
         if not isinstance(facet_by, list):
             for key in _ND_FACET_PRESENTATION_KWARGS:
@@ -4973,6 +5023,8 @@ class DFDraw:
                     _nd_options['shared_ylabel'] = True
 
             n_dims = len(facet_list)
+            if n_dims == 3 and _requested_figsize is not None:
+                raise ValueError('figsize for three-dimensional faceting is not supported')
             # PHASE_13_97_DF v0.2: only a 2-D Figure consumes style/default
             # formatting.  Omitted controls do not activate unsupported 1-D/3-D
             # paths even when a global style requests compact labels.
@@ -5030,6 +5082,7 @@ class DFDraw:
                     _user_auto_title=_user_auto_title,
                     facet_label_format=_facet_label_spec,
                     _facet_legend_spec=_facet_legend_spec,
+                    figsize=_requested_figsize,
                     **_nd_options, **plot_kwargs)
             elif n_dims == 3:
                 # 3D: loop over figID dimension, dispatch 2D per figID
@@ -5314,7 +5367,9 @@ class DFDraw:
             ncols = min(3, n_groups)
         nrows = int(np.ceil(n_groups / ncols))
         base_size = get_style_value("figure.figsize", (8, 6))
-        figsize = (base_size[0] / 1.5 * ncols, base_size[1] / 1.5 * nrows)
+        figsize = (tuple(_requested_figsize) if _requested_figsize is not None
+                   else (base_size[0] / 1.5 * ncols,
+                         base_size[1] / 1.5 * nrows))
 
         # ----------------------------------------------------------------
         # Phase 13.50.DF step 5 — summary_fit.placement GridSpec pre-planning
@@ -5922,7 +5977,10 @@ class DFDraw:
                     fig, axes, panel_headings=panel_headings,
                     shared_xlabel=shared_x_artist,
                     shared_ylabel=shared_y_artist,
-                    legend=positioned_legend, suptitle=fig._suptitle)
+                    legend=positioned_legend, suptitle=fig._suptitle,
+                    preserve_legend_placement=bool(
+                        _facet_legend_spec and
+                        _facet_legend_spec.get('bbox_to_anchor') is not None))
         else:
             plt.tight_layout()
             if global_1d_groups is not None:
@@ -6066,6 +6124,11 @@ class DFDraw:
         # the outer N-D Figure owns layout. No inner renderer may call
         # tight_layout on this shared Figure.
         plot_kwargs['_suppress_layout'] = True
+        if plot_kind == 'profile':
+            # Existing internal facet-mode signal reaches the grouped
+            # profile renderer; unlike _suppress_layout, it is not active
+            # for ordinary same-axes vector overlays.
+            plot_kwargs['_facet_mode'] = True
 
         # Empty cell handling (CP2-2)
         if len(sub_df) == 0:
@@ -6179,6 +6242,7 @@ class DFDraw:
                             figure_margins=None, subplot_spacing=None,
                             color_display=None, max_legend_categories=None,
                             facet_label_format=None, _facet_legend_spec=None,
+                            figsize=None,
                             title=None, group_by=None, top_k=None,
                             quantiles=None, quantile_mode='auto',
                             _nd98_group_display_name=None,
@@ -6238,7 +6302,7 @@ class DFDraw:
         n_cols = len(col_values)
         
         # Build figure with axis sharing
-        figsize = (4 * n_cols, 3 * n_rows)
+        figsize = tuple(figsize) if figsize is not None else (4 * n_cols, 3 * n_rows)
         fig, axes = plt.subplots(
             n_rows, n_cols,
             figsize=figsize,
@@ -6585,7 +6649,12 @@ class DFDraw:
                 shared_xlabel=shared_xlabel_artist,
                 shared_ylabel=shared_ylabel_artist,
                 legend=legend_artist,
-                suptitle=fig._suptitle)
+                suptitle=fig._suptitle,
+                preserve_legend_placement=bool(
+                    _facet_legend_spec and
+                    _facet_legend_spec.get('mode') == 'shared' and
+                    (_facet_legend_spec.get('loc') is not None or
+                     _facet_legend_spec.get('bbox_to_anchor') is not None)))
 
         if any(isinstance(k, tuple) for k in stats_grid):
             aggregated_fits = {}
@@ -6845,8 +6914,9 @@ class DFDraw:
                     "facet_label_format Stage A supports type='profile' with "
                     "exactly two facet dimensions")
 
-        # Handle figsize: create axes if not provided
-        if figsize is not None and ax is None:
+        # Handle figsize only when not faceting: a faceted Figure owns its
+        # dimensions and creates all Axes inside the facet coordinator.
+        if figsize is not None and ax is None and facet_by is None:
             import matplotlib.pyplot as plt
             fig, ax = plt.subplots(figsize=figsize)
 
@@ -7074,6 +7144,8 @@ class DFDraw:
                     delta_facet=delta_facet,
                     nan_policy=nan_policy,
                     color=color, marker=marker,
+                    **({'figsize': figsize} if facet_by is not None
+                       and figsize is not None else {}),
                     **kwargs
                 )
 
