@@ -38,3 +38,6 @@ files_dfdraw/
 
 # install_by_md5 rollback copies
 *.bak.*
+
+# Generated Capability Matrix HTML — do not track in Git
+/docs/CAPABILITY_MATRIX.html
