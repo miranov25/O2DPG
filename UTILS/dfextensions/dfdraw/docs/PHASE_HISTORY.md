@@ -3403,3 +3403,48 @@ All APIs subject to change based on user feedback and integration testing with:
 
 **Document Status:** Updated through Phase 13.57.DF (commit `7e5ead01`, tag `PHASE_13_57_DF_END`, 2026-06-12; gate 1164/0/2; Verified 64 → 70 via Phase 13.57 taxonomy registration + 12 reclassifications). Rolling tag `PHASE_BEGIN_dfdraw` → `7e5ead01`. **Previous "Updated through Phase 13.54.DF", "Updated through Phase 13.52.DF v1.5.1", "Updated through Phase 13.50.DF FIX2", "Updated through Phase 13.46.DF FIX1", "Updated through Phase 13.42.DF FIX1", and "Updated through Phase 13.39.DF v1.2" baselines preserved verbatim above for audit traceability per architect's append-only directive.**
 **Next Update:** ADF follow-up phase (remove E-3/E-4 guards + F-E shim; T7/T7b re-points; route-uniformity materialization); Phase 13.53 (faceted overlays); FX-1 (grouped renderer central=) + FX-2 (title= on 3-colon route); dfextensions_INTERFACE_PRINCIPLES.md generalization to GBregression + RDataFrameDSL.
+
+## PHASE_13_100_DF - Final closure decisions (2026-10-31)
+
+Status: implementation approved; final acceptance before END.
+
+### D-1: X-bin ownership — Architect accepted
+
+For paired X/Y expression-vector profiles with ordinary facets,
+resolve each branch's X range once over its selected Figure-level
+domain and reuse its bin edges across all facet cells.
+
+Preserve the historical per-facet automatic ranges for scalar and
+shared-X profiles. No harmonization of these legacy semantics is
+commissioned in PHASE_13_100_DF.
+
+### D-2: Inherited inverse broadcasting — Architect accepted
+
+The existing scalar-Y/vector-X expression form y:[x0,x1] may also
+operate through ordinary facets, producing (y:x0) and (y:x1).
+This inherited behavior is accepted; a focused numerical
+scalar-equivalence regression remains future test maintenance.
+
+### Implementation and validation
+
+Source commit: 196fc161
+Capability Matrix commit: 8b8b2445
+Generated-HTML untracking commit: 7e0425f7
+
+Canonical regression: 1811 passed, 0 failed, 2 skipped.
+Real ADF acceptance: 132 numerical array comparisons; max difference 0.
+Shared-axis verification: 4/4 plot pages PASS.
+
+Capability Matrix: 190 features, 104 Verified, 84 Smoke-only,
+0 Broken, 2 Planned; 688 invariance tests.
+
+Scope: ordinary 1-D facets; no new profile/statistical algorithms;
+N-D paired facets and PHASE_13_82 executor migration remain outside
+this phase.
+
+PHASE_13_99 carryover items F-7 (legacy figsize behavior),
+L-1 (legend colour convention), and post-v5 FAST evidence custody
+remain separate historical follow-ups, not newly resolved here.
+
+Independent PRECOMMIT approval: GPT26 consolidated review.
+Conditional END approval: Opuse5_6:draw, 2026-10-31.
