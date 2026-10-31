@@ -135,6 +135,7 @@ def _scope_figure_legend(fig, axes, identities, *, explicit_color=None,
 
 
 def _compose_facet_semantic_legend(fig, axes, *, expressions=(),
+                                   paired_x_exprs=None,
                                    quantiles=None, legend_spec=None,
                                    existing=None):
     """PHASE_13_99: one Figure legend composer for 1-D and 2-D facets.
@@ -181,8 +182,12 @@ def _compose_facet_semantic_legend(fig, axes, *, expressions=(),
     # Their actual handles determine the color/marker; no fabricated proxies.
     chosen = []
     used = set()
-    for expr in expressions:
+    for branch_i, expr in enumerate(expressions):
         name = str(expr)
+        # PHASE_13_100: label the actual paired X/Y branch, without changing
+        # the y-expression identity used to find the rendered source artist.
+        display_name = (f'{name} vs {paired_x_exprs[branch_i]}'
+                        if paired_x_exprs is not None else name)
         # The existing 2-D coordinator's factored vector proxy may encode
         # expression by marker (while the line color denotes group). Prefer
         # that Figure-global assignment rather than a first-cell group color.
@@ -197,8 +202,9 @@ def _compose_facet_semantic_legend(fig, axes, *, expressions=(),
             found = next(((h, name) for h, label in rendered
                           if label == name or label.startswith(name + ' vs ')), None)
         if found and name not in used:
-            chosen.append(found)
+            chosen.append((found[0], display_name))
             used.add(name)
+            used.add(display_name)
     for handle, label in base:
         if label not in used:
             chosen.append((handle, label))
@@ -2750,6 +2756,18 @@ class DFDraw:
                 f"Choose different channels from {self._VALID_STYLE_CHANNELS}."
             )
         
+        # PHASE_13_100: Figure-level pair bin ranges, resolved before
+        # partitioning into ordinary facet cells. Private one-shot state on
+        # the per-cell drawer avoids widening the public profile() signature.
+        _paired_x_ranges = getattr(self, '_pending_pairwise_x_ranges', None)
+        _paired_x_strategies = getattr(self, '_pending_pairwise_x_strategies', None)
+        if _paired_x_ranges is not None:
+            self._pending_pairwise_x_ranges = None
+            self._pending_pairwise_x_strategies = None
+            if (len(_paired_x_ranges) != len(y_list)
+                    or _paired_x_strategies is None
+                    or len(_paired_x_strategies) != len(y_list)):
+                raise RuntimeError('paired X range metadata must match vector branches')
         stats_list = []
         _stat_branch_visuals = []  # branch identity and factored legend
         per_curve_sanitize = []  # Phase 13.27.DF Commit 2 v1.2 §5.2.1
@@ -2777,6 +2795,8 @@ class DFDraw:
             x = x_list[y_idx]
             expr = f"{y}:{x}" if x is not None else y
             iter_kwargs = dict(kwargs)
+            if _paired_x_ranges is not None:
+                iter_kwargs['range'] = _paired_x_ranges[y_idx]
 
             # Phase 13.42.DF FIX1 (D5/R2): vector fit pairing. v1.0 passed the
             # full fit list to each Y-channel iteration ⇒ compound-broadcast
@@ -2960,6 +2980,11 @@ class DFDraw:
             iter_kwargs['_suppress_layout'] = True
 
             fig, ax, stats = draw_method(expr, **iter_kwargs)
+            if _paired_x_strategies is not None and isinstance(stats, dict):
+                # Preserve the truthful user-requested autorange strategy.
+                # The scalar renderer receives the pre-resolved (lo, hi)
+                # and would otherwise report it as an 'explicit' range.
+                stats['autorange_strategy'] = _paired_x_strategies[y_idx]
             if _stat_vector is not None:
                 # Deterministic, programmatic (branch, statistic) identity;
                 # numeric arrays remain in stats['statistic_curves'].
@@ -4894,6 +4919,58 @@ class DFDraw:
                                for v in spacing)):
                 raise ValueError('subplot_spacing must be [wspace, hspace] >= 0')
 
+        # PHASE_13_100: ordinary-facet pairwise X/Y vectors own separate
+        # Figure-level X ranges, computed on the selected/sampled data before
+        # any facet partitions. The scalar renderer keeps its existing
+        # estimator and binning implementation inside each cell.
+        _paired_x_ranges = None
+        _paired_x_strategies = None
+        if (plot_kind == 'profile' and isinstance(y_expr, list)
+                and isinstance(x_expr, list)):
+            if len(x_expr) != len(y_expr):
+                raise ValueError('paired X/Y vectors require equal lengths')
+            if not isinstance(facet_by, str) or facet_by in (
+                    'vector', 'group_by', 'quantiles'):
+                raise NotImplementedError(
+                    'paired X/Y profile vectors currently support ordinary '
+                    'single-column facets only')
+            if plot_kwargs.get('selection_vector') is not None or plot_kwargs.get('weights_vector') is not None:
+                raise NotImplementedError(
+                    'paired X/Y ordinary facets with selection_vector or '
+                    'weights_vector require a separate validated composition')
+            if plot_kwargs.get('time_format') is not None:
+                raise NotImplementedError(
+                    'paired X/Y ordinary facets with time_format are not yet validated')
+            from .plots._autorange import resolve_range_1d
+            from .plots.profile import _eval_weights
+            weights_spec = plot_kwargs.get('weights')
+            finite_weights = None
+            if weights_spec is not None:
+                finite_weights = np.isfinite(_eval_weights(df, weights_spec))
+            _paired_x_ranges = []
+            _paired_x_strategies = []
+            for _x, _y in zip(x_expr, y_expr):
+                x_values = df[_x].to_numpy(dtype=float)
+                y_values = df[_y].to_numpy(dtype=float)
+                valid = np.isfinite(x_values) & np.isfinite(y_values)
+                if finite_weights is not None:
+                    valid &= finite_weights
+                if valid.any():
+                    used_range, used_strategy = resolve_range_1d(
+                        plot_kwargs.get('x_range'), x_values[valid],
+                        style_strategy=get_style_value('autorange.strategy', 'hybrid'),
+                        style_k_robust=get_style_value('autorange.k_robust', 4.0),
+                        style_k_outlier=get_style_value('autorange.k_outlier', 1.5),
+                        style_percentile=get_style_value('autorange.percentile', (1., 99.)))
+                else:
+                    used_range = (0., 1.)
+                    _requested = plot_kwargs.get('x_range')
+                    used_strategy = ('explicit' if isinstance(_requested, (tuple, list))
+                                     else _requested if _requested not in (None, 'auto')
+                                     else get_style_value('autorange.strategy', 'hybrid'))
+                _paired_x_ranges.append(used_range)
+                _paired_x_strategies.append(used_strategy)
+
         # =====================================================================
         # Phase 13.41.DF v1.6 — N-D faceting entry point
         # =====================================================================
@@ -5735,14 +5812,21 @@ class DFDraw:
                         _cell_draw._pending_channel_assignment = (
                             _facet_resolved_channels
                         )
+                        if _paired_x_ranges is not None:
+                            _cell_draw._pending_pairwise_x_ranges = _paired_x_ranges
+                            _cell_draw._pending_pairwise_x_strategies = _paired_x_strategies
                         _cell_y_expr = (
                             "[" + ",".join(str(_y) for _y in subplot_y) + "]"
                             if isinstance(subplot_y, list)
                             else str(subplot_y)
                         )
+                        _cell_x_expr = (
+                            '[' + ','.join(str(_x) for _x in x_expr) + ']'
+                            if isinstance(x_expr, list) else x_expr
+                        )
                         _cell_expr = (
-                            f"{_cell_y_expr}:{x_expr}"
-                            if x_expr is not None else _cell_y_expr
+                            f"{_cell_y_expr}:{_cell_x_expr}"
+                            if _cell_x_expr is not None else _cell_y_expr
                         )
                         _, _, stats = _cell_draw.profile(
                             _cell_expr,
@@ -5939,6 +6023,7 @@ class DFDraw:
             legend_artist = _compose_facet_semantic_legend(
                 fig, axes_flat[:n_groups],
                 expressions=(y_expr if isinstance(y_expr, list) else ()),
+                paired_x_exprs=x_expr if isinstance(x_expr, list) else None,
                 quantiles=(quantiles if plot_kind == 'profile' else None),
                 legend_spec=_facet_legend_spec)
             shared_x = _one_dim_options.get('shared_xlabel')
@@ -9692,11 +9777,9 @@ class DFDraw:
             facet_by, facet_by_bins, facet_by_quantiles, df
         )
         
-        # Evaluate expressions if needed.  Stage B-b permits a list-valued
-        # y expression to reach this ordinary-facet path.  Vector x is not a
-        # supported facet dimension: the bracket grammar used here broadcasts
-        # one x expression across all y components, so all parsed x entries
-        # must be identical before lowering to the scalar facet coordinate.
+        # Evaluate each expression on the selected/sampled outer frame.
+        # PHASE_13_100 permits positional X/Y pairs only for ordinary facets;
+        # other vector/facet combinations retain their established guards.
         if isinstance(y_expr, list):
             for _y_component in y_expr:
                 if _y_component not in df.columns:
@@ -9708,13 +9791,21 @@ class DFDraw:
 
         if isinstance(x_expr, list):
             _x_unique = list(dict.fromkeys(x_expr))
-            if len(_x_unique) != 1:
+            if len(_x_unique) == 1:
+                x_expr = _x_unique[0]  # preserve pre-13.100 shared-X behavior
+            elif not (isinstance(y_expr, list)
+                      and isinstance(facet_by, str)
+                      and facet_by not in ('vector', 'group_by', 'quantiles')
+                      and normalize is None):
                 raise NotImplementedError(
-                    "profile expression-vector × ordinary facet requires one "
-                    "shared x expression in PHASE_13_86 Stage B"
-                )
-            x_expr = _x_unique[0]
-        if x_expr not in df.columns:
+                    'paired X/Y vector profiles require an ordinary facet column')
+            else:
+                for _x_component in _x_unique:
+                    if _x_component not in df.columns:
+                        df = df.assign(**{
+                            _x_component: self._eval_column(_x_component, df=df)
+                        })
+        if isinstance(x_expr, str) and x_expr not in df.columns:
             df = df.assign(**{
                 x_expr: self._eval_column(x_expr, df=df)
             })
@@ -9722,7 +9813,9 @@ class DFDraw:
         # Apply duck-typed label lookup if not explicitly set.  For vector y,
         # the inner vector owner constructs the semantic y label after branch
         # composition; do not ask the scalar label resolver to hash a list.
-        if xlabel is None:
+        if xlabel is None and isinstance(x_expr, list):
+            xlabel = '[' + ', '.join(str(_x) for _x in x_expr) + ']'
+        elif xlabel is None:
             duck_label = self._get_label(x_expr)
             if duck_label is not None:
                 xlabel = duck_label
