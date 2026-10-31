@@ -63,18 +63,18 @@ footer { color: var(--muted); font-size: 0.85em; margin-top: 3em; border-top: 1p
 </head>
 <body>
 <h1>Capability Matrix — dfdraw</h1>
-<p class="meta">Generated: <span class="mono">2026-07-06 18:26 UTC</span> · Phase: <span class="mono">PHASE_13_57_DF_END</span></p>
+<p class="meta">Generated: <span class="mono">2026-10-31 08:29 UTC</span> · Phase: <span class="mono">PHASE_13_99_DF_END</span></p>
 <section class="summary">
 <h2>Summary</h2>
 <table>
-<tr><th>✅ Verified</th><td class="n">71</td><td class="n">46%</td></tr>
-<tr><th>☑️ Smoke-only</th><td class="n">81</td><td class="n">53%</td></tr>
+<tr><th>✅ Verified</th><td class="n">104</td><td class="n">55%</td></tr>
+<tr><th>☑️ Smoke-only</th><td class="n">84</td><td class="n">44%</td></tr>
 <tr><th>🧨 Broken</th><td class="n">0</td><td class="n">0%</td></tr>
-<tr><th>📋 Planned</th><td class="n">1</td><td class="n">1%</td></tr>
-<tr><th>Total features</th><td class="n"><strong>153</strong></td><td></td></tr>
-<tr><th>Total proof tests</th><td class="n"><strong>719</strong></td><td></td></tr>
-<tr><th>Invariance tests</th><td class="n"><strong>387</strong></td><td></td></tr>
-<tr><th>Visual tests</th><td class="n"><strong>34</strong></td><td></td></tr>
+<tr><th>📋 Planned</th><td class="n">2</td><td class="n">1%</td></tr>
+<tr><th>Total features</th><td class="n"><strong>190</strong></td><td></td></tr>
+<tr><th>Total proof tests</th><td class="n"><strong>1177</strong></td><td></td></tr>
+<tr><th>Invariance tests</th><td class="n"><strong>688</strong></td><td></td></tr>
+<tr><th>Visual tests</th><td class="n"><strong>76</strong></td><td></td></tr>
 </table>
 </section>
 <section class="filters">
@@ -124,7 +124,7 @@ footer { color: var(--muted); font-size: 0.85em; margin-top: 3em; border-top: 1p
 <tr><th></th><th>Status</th><th>Feature</th><th class='n'>Tests</th><th class='n'>Pass</th><th class='n'>Fail</th><th class='n'>Inv</th><th class='n'>Visual</th></tr>
 </thead><tbody>
 <tr class="category-row"><td colspan="8">ADF</td></tr>
-<tr id="feature-ADF.axis_titles" class="feature-row" data-status="Smoke-only" data-visual="no" data-category="ADF"><td><span class="expand-toggle">▶</span></td><td>☑️</td><td><strong class="mono">ADF.axis_titles</strong> — Duck-typed axis titles from AliasDataFrame</td><td class="n">5</td><td class="n">5</td><td class="n">0</td><td class="n">0</td><td class="n"></td></tr>
+<tr id="feature-ADF.axis_titles" class="feature-row" data-status="Verified" data-visual="no" data-category="ADF"><td><span class="expand-toggle">▶</span></td><td>✅</td><td><strong class="mono">ADF.axis_titles</strong> — Duck-typed axis titles from AliasDataFrame, including per-component labels in vector profile facets</td><td class="n">9</td><td class="n">9</td><td class="n">0</td><td class="n">4</td><td class="n"></td></tr>
 <tr class="tests-row" hidden><td colspan="8">
 <div class="tests-panel">
 <ul>
@@ -133,6 +133,10 @@ footer { color: var(--muted); font-size: 0.85em; margin-top: 3em; border-top: 1p
 <li><span class="layer-marker">☑</span><code>test_adf_integration.py::TestGetLabelMethod::test_get_label_with_title</code><span class="outcome passed">passed</span></li>
 <li><span class="layer-marker">☑</span><code>test_adf_integration.py::TestGetLabelMethod::test_get_label_without_title</code><span class="outcome passed">passed</span></li>
 <li><span class="layer-marker">☑</span><code>test_adf_integration.py::TestDFDrawDataSourceStorage::test_data_source_stored</code><span class="outcome passed">passed</span></li>
+<li><span class="layer-marker">✓</span><code>test_phase_13_86_stage_bd.py::test_BD1_vector_facets_use_per_component_axis_title_metadata[draw]</code><span class="outcome passed">passed</span></li>
+<li><span class="layer-marker">✓</span><code>test_phase_13_86_stage_bd.py::test_BD1_vector_facets_use_per_component_axis_title_metadata[typed]</code><span class="outcome passed">passed</span></li>
+<li><span class="layer-marker">✓</span><code>test_phase_13_86_stage_bd.py::test_BD2_explicit_ylabel_still_wins_over_metadata</code><span class="outcome passed">passed</span></li>
+<li><span class="layer-marker">✓</span><code>test_phase_13_86_stage_bd.py::test_BD3_scalar_reference_behavior_unchanged</code><span class="outcome passed">passed</span></li>
 </ul>
 </div></td></tr>
 <tr class="category-row"><td colspan="8">ANNOT</td></tr>
@@ -574,6 +578,69 @@ footer { color: var(--muted); font-size: 0.85em; margin-top: 3em; border-top: 1p
 <li><span class="layer-marker">☑</span><code>test_phase_13_57_df_fixes.py::TestFEPromotion::test_profile_2var_unchanged</code><span class="outcome passed">passed</span></li>
 </ul>
 </div></td></tr>
+<tr id="feature-DISPATCH.facet_owner_contract" class="feature-row" data-status="Verified" data-visual="yes" data-category="DISPATCH"><td><span class="expand-toggle">▶</span></td><td>✅</td><td><strong class="mono">DISPATCH.facet_owner_contract</strong> — Explicit draw→typed→facet ownership contract: forwarded/consumed/refused parameters preserve semantics or fail loudly (Stage A) <span class="eye-badge">👁</span></td><td class="n">57</td><td class="n">57</td><td class="n">0</td><td class="n">50</td><td class="n">7</td></tr>
+<tr class="tests-row" hidden><td colspan="8">
+<div class="tests-panel">
+<ul>
+<li><span class="layer-marker">👁</span><code>test_phase_13_86_stage_a_red.py::TestStageAPropertyReds::test_A1_scatter_facet_preserves_real_errorbars[xerr-has_xerr]</code><span class="outcome passed">passed</span></li>
+<li><span class="layer-marker">👁</span><code>test_phase_13_86_stage_a_red.py::TestStageAPropertyReds::test_A1_scatter_facet_preserves_real_errorbars[yerr-has_yerr]</code><span class="outcome passed">passed</span></li>
+<li><span class="layer-marker">👁</span><code>test_phase_13_86_stage_a_red.py::TestStageAPropertyReds::test_A2_faceted_time_format_reaches_each_cell[hist-time_s-extra2]</code><span class="outcome passed">passed</span></li>
+<li><span class="layer-marker">👁</span><code>test_phase_13_86_stage_a_red.py::TestStageAPropertyReds::test_A2_faceted_time_format_reaches_each_cell[profile-y:time_s-extra1]</code><span class="outcome passed">passed</span></li>
+<li><span class="layer-marker">👁</span><code>test_phase_13_86_stage_a_red.py::TestStageAPropertyReds::test_A2_faceted_time_format_reaches_each_cell[scatter-y:time_s-extra0]</code><span class="outcome passed">passed</span></li>
+<li><span class="layer-marker">👁</span><code>test_phase_13_86_stage_a_red.py::TestStageAPropertyReds::test_A3_hist_facet_preserves_hist_errors</code><span class="outcome passed">passed</span></li>
+<li><span class="layer-marker">👁</span><code>test_phase_13_86_stage_a_red.py::TestStageAPropertyReds::test_A4_profile_group_facet_preserves_explicit_color</code><span class="outcome passed">passed</span></li>
+<li><span class="layer-marker">✓</span><code>test_phase_13_86_stage_a_red.py::TestStageAPropertyReds::test_A5_scatter_selection_vector_facet_is_exact_or_refuses</code><span class="outcome passed">passed</span></li>
+<li><span class="layer-marker">✓</span><code>test_phase_13_86_stage_a_red.py::TestStageAPropertyReds::test_A6_scatter_weights_vector_facet_refuses_until_semantics_exist</code><span class="outcome passed">passed</span></li>
+<li><span class="layer-marker">✓</span><code>test_phase_13_86_stage_a_red.py::TestStageAPropertyReds::test_A7_scatter_errorbar_plus_expression_color_is_exact_or_refuses</code><span class="outcome passed">passed</span></li>
+<li><span class="layer-marker">✓</span><code>test_phase_13_86_stage_a_red.py::TestStageAPropertyReds::test_A7s_single_panel_errorbar_plus_expression_color_is_exact_or_refuses</code><span class="outcome passed">passed</span></li>
+<li><span class="layer-marker">✓</span><code>test_phase_13_86_stage_a_red.py::TestStageAPropertyReds::test_A8_internal_suppress_color_cycle_never_warns_as_user_kwarg</code><span class="outcome passed">passed</span></li>
+<li><span class="layer-marker">✓</span><code>test_phase_13_86_stage_a_red.py::TestStageAStructuralBoundaryInventory::test_A10a_draw_to_typed_plain_expression_green_guard[hist-x-required0]</code><span class="outcome passed">passed</span></li>
+<li><span class="layer-marker">✓</span><code>test_phase_13_86_stage_a_red.py::TestStageAStructuralBoundaryInventory::test_A10a_draw_to_typed_plain_expression_green_guard[hist2d-y:x-required3]</code><span class="outcome passed">passed</span></li>
+<li><span class="layer-marker">✓</span><code>test_phase_13_86_stage_a_red.py::TestStageAStructuralBoundaryInventory::test_A10a_draw_to_typed_plain_expression_green_guard[profile-y:x-required2]</code><span class="outcome passed">passed</span></li>
+<li><span class="layer-marker">✓</span><code>test_phase_13_86_stage_a_red.py::TestStageAStructuralBoundaryInventory::test_A10a_draw_to_typed_plain_expression_green_guard[scatter-y:x-required1]</code><span class="outcome passed">passed</span></li>
+<li><span class="layer-marker">✓</span><code>test_phase_13_86_stage_a_red.py::TestStageAStructuralBoundaryInventory::test_A10b_draw_profile_normalize_vector_special_delegation_preserves_request</code><span class="outcome passed">passed</span></li>
+<li><span class="layer-marker">✓</span><code>test_phase_13_86_stage_a_red.py::TestStageAStructuralBoundaryInventory::test_A10d_draw_to_typed_disposition_is_complete_and_exclusive[hist2d]</code><span class="outcome passed">passed</span></li>
+<li><span class="layer-marker">✓</span><code>test_phase_13_86_stage_a_red.py::TestStageAStructuralBoundaryInventory::test_A10d_draw_to_typed_disposition_is_complete_and_exclusive[hist]</code><span class="outcome passed">passed</span></li>
+<li><span class="layer-marker">✓</span><code>test_phase_13_86_stage_a_red.py::TestStageAStructuralBoundaryInventory::test_A10d_draw_to_typed_disposition_is_complete_and_exclusive[profile2d]</code><span class="outcome passed">passed</span></li>
+<li><span class="layer-marker">✓</span><code>test_phase_13_86_stage_a_red.py::TestStageAStructuralBoundaryInventory::test_A10d_draw_to_typed_disposition_is_complete_and_exclusive[profile]</code><span class="outcome passed">passed</span></li>
+<li><span class="layer-marker">✓</span><code>test_phase_13_86_stage_a_red.py::TestStageAStructuralBoundaryInventory::test_A10d_draw_to_typed_disposition_is_complete_and_exclusive[scatter]</code><span class="outcome passed">passed</span></li>
+<li><span class="layer-marker">✓</span><code>test_phase_13_86_stage_a_red.py::TestStageAStructuralBoundaryInventory::test_A10e_draw_signature_has_no_unclassified_global_parameter</code><span class="outcome passed">passed</span></li>
+<li><span class="layer-marker">✓</span><code>test_phase_13_86_stage_a_red.py::TestStageAStructuralBoundaryInventory::test_A10f_draw_to_typed_forwarded_names_reach_owner[hist-x]</code><span class="outcome passed">passed</span></li>
+<li><span class="layer-marker">✓</span><code>test_phase_13_86_stage_a_red.py::TestStageAStructuralBoundaryInventory::test_A10f_draw_to_typed_forwarded_names_reach_owner[hist2d-y:x]</code><span class="outcome passed">passed</span></li>
+<li><span class="layer-marker">✓</span><code>test_phase_13_86_stage_a_red.py::TestStageAStructuralBoundaryInventory::test_A10f_draw_to_typed_forwarded_names_reach_owner[profile-y:x]</code><span class="outcome passed">passed</span></li>
+<li><span class="layer-marker">✓</span><code>test_phase_13_86_stage_a_red.py::TestStageAStructuralBoundaryInventory::test_A10f_draw_to_typed_forwarded_names_reach_owner[profile2d-z:y:x]</code><span class="outcome passed">passed</span></li>
+<li><span class="layer-marker">✓</span><code>test_phase_13_86_stage_a_red.py::TestStageAStructuralBoundaryInventory::test_A10f_draw_to_typed_forwarded_names_reach_owner[scatter-y:x]</code><span class="outcome passed">passed</span></li>
+<li><span class="layer-marker">✓</span><code>test_phase_13_86_stage_a_red.py::TestStageAStructuralBoundaryInventory::test_A10g_draw_to_typed_refused_names_fail_loudly[hist2d-fit-gauss]</code><span class="outcome passed">passed</span></li>
+<li><span class="layer-marker">✓</span><code>test_phase_13_86_stage_a_red.py::TestStageAStructuralBoundaryInventory::test_A10g_draw_to_typed_refused_names_fail_loudly[profile2d-color-magenta]</code><span class="outcome passed">passed</span></li>
+<li><span class="layer-marker">✓</span><code>test_phase_13_86_stage_a_red.py::TestStageAStructuralBoundaryInventory::test_A10g_draw_to_typed_refused_names_fail_loudly[profile2d-marker-s]</code><span class="outcome passed">passed</span></li>
+<li><span class="layer-marker">✓</span><code>test_phase_13_86_stage_a_red.py::TestStageAStructuralBoundaryInventory::test_A11_internal_vector_control_is_registered_with_typo_guard</code><span class="outcome passed">passed</span></li>
+<li><span class="layer-marker">✓</span><code>test_phase_13_86_stage_a_red.py::TestStageAStructuralBoundaryInventory::test_A12_legacy_facet_true_does_not_leak_facet_layout_controls[hist-x-draw]</code><span class="outcome passed">passed</span></li>
+<li><span class="layer-marker">✓</span><code>test_phase_13_86_stage_a_red.py::TestStageAStructuralBoundaryInventory::test_A12_legacy_facet_true_does_not_leak_facet_layout_controls[hist-x-typed]</code><span class="outcome passed">passed</span></li>
+<li><span class="layer-marker">✓</span><code>test_phase_13_86_stage_a_red.py::TestStageAStructuralBoundaryInventory::test_A12_legacy_facet_true_does_not_leak_facet_layout_controls[hist2d-y:x-draw]</code><span class="outcome passed">passed</span></li>
+<li><span class="layer-marker">✓</span><code>test_phase_13_86_stage_a_red.py::TestStageAStructuralBoundaryInventory::test_A12_legacy_facet_true_does_not_leak_facet_layout_controls[hist2d-y:x-typed]</code><span class="outcome passed">passed</span></li>
+<li><span class="layer-marker">✓</span><code>test_phase_13_86_stage_a_red.py::TestStageAStructuralBoundaryInventory::test_A12_legacy_facet_true_does_not_leak_facet_layout_controls[profile-y:x-draw]</code><span class="outcome passed">passed</span></li>
+<li><span class="layer-marker">✓</span><code>test_phase_13_86_stage_a_red.py::TestStageAStructuralBoundaryInventory::test_A12_legacy_facet_true_does_not_leak_facet_layout_controls[profile-y:x-typed]</code><span class="outcome passed">passed</span></li>
+<li><span class="layer-marker">✓</span><code>test_phase_13_86_stage_a_red.py::TestStageAStructuralBoundaryInventory::test_A12_legacy_facet_true_does_not_leak_facet_layout_controls[scatter-y:x-draw]</code><span class="outcome passed">passed</span></li>
+<li><span class="layer-marker">✓</span><code>test_phase_13_86_stage_a_red.py::TestStageAStructuralBoundaryInventory::test_A12_legacy_facet_true_does_not_leak_facet_layout_controls[scatter-y:x-typed]</code><span class="outcome passed">passed</span></li>
+<li><span class="layer-marker">✓</span><code>test_phase_13_86_stage_a_red.py::TestStageAStructuralBoundaryInventory::test_A9a_typed_to_facet_disposition_is_complete_and_exclusive[hist2d]</code><span class="outcome passed">passed</span></li>
+<li><span class="layer-marker">✓</span><code>test_phase_13_86_stage_a_red.py::TestStageAStructuralBoundaryInventory::test_A9a_typed_to_facet_disposition_is_complete_and_exclusive[hist]</code><span class="outcome passed">passed</span></li>
+<li><span class="layer-marker">✓</span><code>test_phase_13_86_stage_a_red.py::TestStageAStructuralBoundaryInventory::test_A9a_typed_to_facet_disposition_is_complete_and_exclusive[profile]</code><span class="outcome passed">passed</span></li>
+<li><span class="layer-marker">✓</span><code>test_phase_13_86_stage_a_red.py::TestStageAStructuralBoundaryInventory::test_A9a_typed_to_facet_disposition_is_complete_and_exclusive[scatter]</code><span class="outcome passed">passed</span></li>
+<li><span class="layer-marker">✓</span><code>test_phase_13_86_stage_a_red.py::TestStageAStructuralBoundaryInventory::test_A9b_typed_to_facet_forwarded_names_reach_dispatch[hist-x]</code><span class="outcome passed">passed</span></li>
+<li><span class="layer-marker">✓</span><code>test_phase_13_86_stage_a_red.py::TestStageAStructuralBoundaryInventory::test_A9b_typed_to_facet_forwarded_names_reach_dispatch[hist2d-y:x]</code><span class="outcome passed">passed</span></li>
+<li><span class="layer-marker">✓</span><code>test_phase_13_86_stage_a_red.py::TestStageAStructuralBoundaryInventory::test_A9b_typed_to_facet_forwarded_names_reach_dispatch[profile-y:x]</code><span class="outcome passed">passed</span></li>
+<li><span class="layer-marker">✓</span><code>test_phase_13_86_stage_a_red.py::TestStageAStructuralBoundaryInventory::test_A9b_typed_to_facet_forwarded_names_reach_dispatch[scatter-y:x]</code><span class="outcome passed">passed</span></li>
+<li><span class="layer-marker">✓</span><code>test_phase_13_86_stage_a_red.py::TestStageAStructuralBoundaryInventory::test_A9c_consumed_names_do_not_leak_to_facet_dispatch[hist-x]</code><span class="outcome passed">passed</span></li>
+<li><span class="layer-marker">✓</span><code>test_phase_13_86_stage_a_red.py::TestStageAStructuralBoundaryInventory::test_A9c_consumed_names_do_not_leak_to_facet_dispatch[hist2d-y:x]</code><span class="outcome passed">passed</span></li>
+<li><span class="layer-marker">✓</span><code>test_phase_13_86_stage_a_red.py::TestStageAStructuralBoundaryInventory::test_A9c_consumed_names_do_not_leak_to_facet_dispatch[profile-y:x]</code><span class="outcome passed">passed</span></li>
+<li><span class="layer-marker">✓</span><code>test_phase_13_86_stage_a_red.py::TestStageAStructuralBoundaryInventory::test_A9c_consumed_names_do_not_leak_to_facet_dispatch[scatter-y:x]</code><span class="outcome passed">passed</span></li>
+<li><span class="layer-marker">✓</span><code>test_phase_13_86_stage_a_red.py::TestStageAStructuralBoundaryInventory::test_A9d_scatter_refused_multi_branch_vector_semantics_are_loud[selection_vector]</code><span class="outcome passed">passed</span></li>
+<li><span class="layer-marker">✓</span><code>test_phase_13_86_stage_a_red.py::TestStageAStructuralBoundaryInventory::test_A9d_scatter_refused_multi_branch_vector_semantics_are_loud[weights_vector]</code><span class="outcome passed">passed</span></li>
+<li><span class="layer-marker">✓</span><code>test_phase_13_86_stage_a_red.py::TestStageAStructuralBoundaryInventory::test_A9e_profile_refused_same_plus_facet_is_loud</code><span class="outcome passed">passed</span></li>
+<li><span class="layer-marker">✓</span><code>test_phase_13_86_stage_a_red.py::TestStageAStructuralBoundaryInventory::test_A9f2_hist_refused_normalize_plus_facet_is_loud</code><span class="outcome passed">passed</span></li>
+<li><span class="layer-marker">✓</span><code>test_phase_13_86_stage_a_red.py::TestStageAStructuralBoundaryInventory::test_A9f_hist2d_refused_fit_is_loud</code><span class="outcome passed">passed</span></li>
+</ul>
+</div></td></tr>
 <tr class="category-row"><td colspan="8">DRAW</td></tr>
 <tr id="feature-DRAW.R2_forwarding" class="feature-row" data-status="Verified" data-visual="no" data-category="DRAW"><td><span class="expand-toggle">▶</span></td><td>✅</td><td><strong class="mono">DRAW.R2_forwarding</strong> — draw() scalar dispatch forwards Phase 13.27–13.41 named params (selection_vector, weights_vector, share_*, facet_by, etc.) to all 4 typed methods — A≡B with direct calls</td><td class="n">2</td><td class="n">2</td><td class="n">0</td><td class="n">2</td><td class="n"></td></tr>
 <tr class="tests-row" hidden><td colspan="8">
@@ -653,11 +720,19 @@ footer { color: var(--muted); font-size: 0.85em; margin-top: 3em; border-top: 1p
 <li><span class="layer-marker">✓</span><code>test_phase_13_38_df_scatter_enhancements.py::TestFacetByFloatGuard::test_FBGUARD_2_float_facet_by_with_bins_no_error</code><span class="outcome passed">passed</span></li>
 </ul>
 </div></td></tr>
-<tr id="feature-FACET.list_grid" class="feature-row" data-status="Verified" data-visual="no" data-category="FACET"><td><span class="expand-toggle">▶</span></td><td>✅</td><td><strong class="mono">FACET.list_grid</strong> — facet_by accepts Union[str, List[str]] for 1D/2D/3D faceting. Convention LOCKED matching numpy/pandas (n_rows, n_cols, ...) shape: facet_by[0]=ROW (vertical within figure), facet_by[1]=COLUMN (horizontal within figure), facet_by[2]=FIGID (separate figures, one per value). facet_by[3+] raises NotImplementedError. 3D returns (List[Figure], List[axes_2d], List[stats_dict]) — DEVIATES from standard (fig, ax, stats) contract; documented prominently in inline help. New params: share_x/share_y ∈ {&#x27;all&#x27;,&#x27;row&#x27;,&#x27;col&#x27;,&#x27;none&#x27;} (within-figure axis sharing), share_across_figures: bool (3D global range lock). Per-plot-kind lock for share_across_figures (CP1-2): scatter locks x AND y; hist/profile locks x only (y auto-scales per figure to handle sparse-figID variance). New helpers: _normalize_facet_args, _to_mpl_share (symmetric {&#x27;all&#x27;:True,&#x27;row&#x27;:&#x27;row&#x27;,&#x27;col&#x27;:&#x27;col&#x27;,&#x27;none&#x27;:False} — v1.2 CP0-1 fix for Hard Constraint #3), _validate_share_axis_value, _resolve_facet_values (discrete or pd.cut/qcut Interval), _filter_facet_value (CP1-3 discrete vs binned), _compute_global_ranges. dfdraw is FIRST major plotting library with unified API where Nth faceting dimension generates separate figures (seaborn/ggplot2/plotly/altair all require manual loops). _validate_facet_by_binning guard for list input (v1.3 P1-A). Per-plot-kind dispatch: hist uses range= (matplotlib convention); profile uses range= which DFDraw.profile remaps to draw_profile&#x27;s x_range= internally; scatter uses ax.set_xlim/set_ylim post-draw (no native range params); hist also locks ax.set_xlim post-draw (range= only locks bins, not axis xlim). Empty cell handling: &#x27;(no data)&#x27; diagnostic + stats={&#x27;n&#x27;:0,&#x27;empty&#x27;:True} — Phase 13.41.DF</td><td class="n">23</td><td class="n">23</td><td class="n">0</td><td class="n">23</td><td class="n"></td></tr>
+<tr id="feature-FACET.list_grid" class="feature-row" data-status="Verified" data-visual="no" data-category="FACET"><td><span class="expand-toggle">▶</span></td><td>✅</td><td><strong class="mono">FACET.list_grid</strong> — facet_by accepts Union[str, List[str]] for 1D/2D/3D faceting. Convention LOCKED matching numpy/pandas (n_rows, n_cols, ...) shape: facet_by[0]=ROW (vertical within figure), facet_by[1]=COLUMN (horizontal within figure), facet_by[2]=FIGID (separate figures, one per value). facet_by[3+] raises NotImplementedError. 3D returns (List[Figure], List[axes_2d], List[stats_dict]) — DEVIATES from standard (fig, ax, stats) contract; documented prominently in inline help. New params: share_x/share_y ∈ {&#x27;all&#x27;,&#x27;row&#x27;,&#x27;col&#x27;,&#x27;none&#x27;} (within-figure axis sharing), share_across_figures: bool (3D global range lock). Per-plot-kind lock for share_across_figures (CP1-2): scatter locks x AND y; hist/profile locks x only (y auto-scales per figure to handle sparse-figID variance). New helpers: _normalize_facet_args, _to_mpl_share (symmetric {&#x27;all&#x27;:True,&#x27;row&#x27;:&#x27;row&#x27;,&#x27;col&#x27;:&#x27;col&#x27;,&#x27;none&#x27;:False} — v1.2 CP0-1 fix for Hard Constraint #3), _validate_share_axis_value, _resolve_facet_values (discrete or pd.cut/qcut Interval), _filter_facet_value (CP1-3 discrete vs binned), _compute_global_ranges. dfdraw is FIRST major plotting library with unified API where Nth faceting dimension generates separate figures (seaborn/ggplot2/plotly/altair all require manual loops). _validate_facet_by_binning guard for list input (v1.3 P1-A). Per-plot-kind dispatch: hist uses range= (matplotlib convention); profile uses range= which DFDraw.profile remaps to draw_profile&#x27;s x_range= internally; scatter uses ax.set_xlim/set_ylim post-draw (no native range params); hist also locks ax.set_xlim post-draw (range= only locks bins, not axis xlim). Empty cell handling: &#x27;(no data)&#x27; diagnostic + stats={&#x27;n&#x27;:0,&#x27;empty&#x27;:True} — Phase 13.41.DF</td><td class="n">31</td><td class="n">31</td><td class="n">0</td><td class="n">27</td><td class="n"></td></tr>
 <tr class="tests-row" hidden><td colspan="8">
 <div class="tests-panel">
 <ul>
 <li><span class="layer-marker">✓</span><code>test_phase_13_41_df_2d_faceting.py::TestFacetByListGrid::test_FBY_1_string_equals_list_of_one</code><span class="outcome passed">passed</span></li>
+<li><span class="layer-marker">✓</span><code>test_phase_13_76_facet2d_bugfix.py::test_FBY16_B1_dispatch_cell_counts_match_oracle_bins</code><span class="outcome passed">passed</span></li>
+<li><span class="layer-marker">✓</span><code>test_phase_13_76_facet2d_bugfix.py::test_FBY16_B2_dispatch_cell_counts_match_oracle_quantiles</code><span class="outcome passed">passed</span></li>
+<li><span class="layer-marker">✓</span><code>test_phase_13_76_facet2d_bugfix.py::test_FBY16_A1_float16_public_dispatch_bins</code><span class="outcome passed">passed</span></li>
+<li><span class="layer-marker">✓</span><code>test_phase_13_76_facet2d_bugfix.py::test_FBY16_A2_float16_public_dispatch_quantiles</code><span class="outcome passed">passed</span></li>
+<li><span class="layer-marker">☑</span><code>test_phase_13_76_facet2d_bugfix.py::test_FBY16_S1_float16_upcast_preserves_binning</code><span class="outcome passed">passed</span></li>
+<li><span class="layer-marker">☑</span><code>test_phase_13_76_facet2d_bugfix.py::test_FBY16_S2_qcut_duplicates_drop_preserved</code><span class="outcome passed">passed</span></li>
+<li><span class="layer-marker">☑</span><code>test_phase_13_76_facet2d_bugfix.py::test_FBY16_S3_discrete_facet_unaffected</code><span class="outcome passed">passed</span></li>
+<li><span class="layer-marker">☑</span><code>test_phase_13_76_facet2d_bugfix.py::test_FBY16_S4_correlated_fixture_is_nonvacuous</code><span class="outcome passed">passed</span></li>
 <li><span class="layer-marker">✓</span><code>test_phase_13_41_df_2d_faceting.py::TestFacetByListGrid::test_FBY_2_2d_grid_rows_by_cols</code><span class="outcome passed">passed</span></li>
 <li><span class="layer-marker">✓</span><code>test_phase_13_41_df_2d_faceting.py::TestFacetByListGrid::test_FBY_3_2d_bins_per_dim</code><span class="outcome passed">passed</span></li>
 <li><span class="layer-marker">✓</span><code>test_phase_13_41_df_2d_faceting.py::TestFacetByListGrid::test_FBY_4_2d_quantiles_per_dim</code><span class="outcome passed">passed</span></li>
@@ -680,6 +755,140 @@ footer { color: var(--muted); font-size: 0.85em; margin-top: 3em; border-top: 1p
 <li><span class="layer-marker">✓</span><code>test_phase_13_41_df_2d_faceting.py::TestFacetByListGrid::test_FBY_21_share_x_invalid_raises</code><span class="outcome passed">passed</span></li>
 <li><span class="layer-marker">✓</span><code>test_phase_13_41_df_2d_faceting.py::TestFacetByListGrid::test_FBY_22_auto_title_suptitle_lock</code><span class="outcome passed">passed</span></li>
 <li><span class="layer-marker">✓</span><code>test_phase_13_41_df_2d_faceting.py::TestFacetByListGrid::test_FBY_23_3d_auto_title_combined_suptitle</code><span class="outcome passed">passed</span></li>
+</ul>
+</div></td></tr>
+<tr id="feature-FACET.known_silent_gap" class="feature-row" data-status="Planned" data-visual="no" data-category="FACET"><td><span class="expand-toggle">▶</span></td><td>📋</td><td><strong class="mono">FACET.known_silent_gap</strong> — PLANNED gap: facet_by with ax=/same=True must fail loudly instead of being silently ignored; strict XFAIL inventory, not supported behavior</td><td class="n">7</td><td class="n">0</td><td class="n">0</td><td class="n">0</td><td class="n"></td></tr>
+<tr class="tests-row" hidden><td colspan="8">
+<div class="tests-panel">
+<ul>
+<li><span class="layer-marker">✓</span><code>test_phase_13_86_stage_a_red.py::TestStageAStructuralBoundaryInventory::test_A9g_known_silent_gap_is_loud[hist-x-ax]</code><span class="outcome xfailed">xfailed</span></li>
+<li><span class="layer-marker">✓</span><code>test_phase_13_86_stage_a_red.py::TestStageAStructuralBoundaryInventory::test_A9g_known_silent_gap_is_loud[hist-x-same]</code><span class="outcome xfailed">xfailed</span></li>
+<li><span class="layer-marker">✓</span><code>test_phase_13_86_stage_a_red.py::TestStageAStructuralBoundaryInventory::test_A9g_known_silent_gap_is_loud[hist2d-y:x-ax]</code><span class="outcome xfailed">xfailed</span></li>
+<li><span class="layer-marker">✓</span><code>test_phase_13_86_stage_a_red.py::TestStageAStructuralBoundaryInventory::test_A9g_known_silent_gap_is_loud[hist2d-y:x-same]</code><span class="outcome xfailed">xfailed</span></li>
+<li><span class="layer-marker">✓</span><code>test_phase_13_86_stage_a_red.py::TestStageAStructuralBoundaryInventory::test_A9g_known_silent_gap_is_loud[profile-y:x-ax]</code><span class="outcome xfailed">xfailed</span></li>
+<li><span class="layer-marker">✓</span><code>test_phase_13_86_stage_a_red.py::TestStageAStructuralBoundaryInventory::test_A9g_known_silent_gap_is_loud[scatter-y:x-ax]</code><span class="outcome xfailed">xfailed</span></li>
+<li><span class="layer-marker">✓</span><code>test_phase_13_86_stage_a_red.py::TestStageAStructuralBoundaryInventory::test_A9g_known_silent_gap_is_loud[scatter-y:x-same]</code><span class="outcome xfailed">xfailed</span></li>
+</ul>
+</div></td></tr>
+<tr id="feature-FACET.nd_dense_presentation" class="feature-row" data-status="Verified" data-visual="no" data-category="FACET"><td><span class="expand-toggle">▶</span></td><td>✅</td><td><strong class="mono">FACET.nd_dense_presentation</strong> — N-dimensional facet figures use one layout owner per Figure, preserve ordered pandas categorical coordinates and explicit facet_order, provide outer row/column headings and figure-level semantic axis labels independently of numerical axis sharing, and honor explicit margins/spacing without scaling values or errors; unsupported inputs refuse and legacy presentation remains compatible (PHASE_13_93 Stage A)</td><td class="n">32</td><td class="n">32</td><td class="n">0</td><td class="n">32</td><td class="n"></td></tr>
+<tr class="tests-row" hidden><td colspan="8">
+<div class="tests-panel">
+<ul>
+<li><span class="layer-marker">✓</span><code>test_phase_13_93_stage_a_dense_facet_red.py::test_A_R1_2d_nd_facet_has_exactly_one_whole_figure_layout_pass</code><span class="outcome passed">passed</span></li>
+<li><span class="layer-marker">✓</span><code>test_phase_13_93_stage_a_dense_facet_red.py::test_A_R2_3d_nd_facet_has_one_layout_pass_per_generated_figure</code><span class="outcome passed">passed</span></li>
+<li><span class="layer-marker">✓</span><code>test_phase_13_93_stage_a_dense_facet_red.py::test_A_R3_ordered_categorical_rows_preserve_declared_order</code><span class="outcome passed">passed</span></li>
+<li><span class="layer-marker">✓</span><code>test_phase_13_93_stage_a_dense_facet_red.py::test_A_R4_ordered_categorical_columns_preserve_declared_order</code><span class="outcome passed">passed</span></li>
+<li><span class="layer-marker">✓</span><code>test_phase_13_93_stage_a_dense_facet_red.py::test_A_R5_explicit_facet_order_overrides_categorical_order</code><span class="outcome passed">passed</span></li>
+<li><span class="layer-marker">✓</span><code>test_phase_13_93_stage_a_dense_facet_red.py::test_A_R5b_invalid_facet_order_refuses_clearly</code><span class="outcome passed">passed</span></li>
+<li><span class="layer-marker">✓</span><code>test_phase_13_93_stage_a_dense_facet_red.py::test_A_R6_outer_column_headings_appear_once_each</code><span class="outcome passed">passed</span></li>
+<li><span class="layer-marker">✓</span><code>test_phase_13_93_stage_a_dense_facet_red.py::test_A_R7_outer_row_headings_appear_once_each</code><span class="outcome passed">passed</span></li>
+<li><span class="layer-marker">✓</span><code>test_phase_13_93_stage_a_dense_facet_red.py::test_A_R8_outer_mode_removes_outer_dimension_text_from_panels</code><span class="outcome passed">passed</span></li>
+<li><span class="layer-marker">✓</span><code>test_phase_13_93_stage_a_dense_facet_red.py::test_A_R9_shared_xlabel_is_one_figure_semantic_label</code><span class="outcome passed">passed</span></li>
+<li><span class="layer-marker">✓</span><code>test_phase_13_93_stage_a_dense_facet_red.py::test_A_R10_shared_ylabel_preserves_independent_limits_and_ticks</code><span class="outcome passed">passed</span></li>
+<li><span class="layer-marker">✓</span><code>test_phase_13_93_stage_a_dense_facet_red.py::test_A_R11_explicit_figure_margins_survive_final_layout</code><span class="outcome passed">passed</span></li>
+<li><span class="layer-marker">✓</span><code>test_phase_13_93_stage_a_dense_facet_red.py::test_A_R12_explicit_subplot_spacing_survives_final_layout</code><span class="outcome passed">passed</span></li>
+<li><span class="layer-marker">✓</span><code>test_phase_13_93_stage_a_dense_facet_red.py::test_A_R13_legacy_2d_facet_presentation_unchanged_without_new_options</code><span class="outcome passed">passed</span></li>
+<li><span class="layer-marker">✓</span><code>test_phase_13_93_stage_a_dense_facet_red.py::test_A_R14_rendered_left_decorations_do_not_intersect[0.06]</code><span class="outcome passed">passed</span></li>
+<li><span class="layer-marker">✓</span><code>test_phase_13_93_stage_a_dense_facet_red.py::test_A_R14_rendered_left_decorations_do_not_intersect[0.08]</code><span class="outcome passed">passed</span></li>
+<li><span class="layer-marker">✓</span><code>test_phase_13_93_stage_a_dense_facet_red.py::test_A_R15_too_narrow_left_gutter_warns_without_changing_margins</code><span class="outcome passed">passed</span></li>
+<li><span class="layer-marker">✓</span><code>test_phase_13_93_stage_a_handover_regressions.py::test_A_H1_public_draw_retains_unscaled_scatter_errorbar_values</code><span class="outcome passed">passed</span></li>
+<li><span class="layer-marker">✓</span><code>test_phase_13_93_stage_a_handover_regressions.py::test_A_H2_all_ND_plot_kinds_share_the_single_layout_owner[scatter-coefficient:region-extra0]</code><span class="outcome passed">passed</span></li>
+<li><span class="layer-marker">✓</span><code>test_phase_13_93_stage_a_handover_regressions.py::test_A_H2_all_ND_plot_kinds_share_the_single_layout_owner[hist-coefficient-extra1]</code><span class="outcome passed">passed</span></li>
+<li><span class="layer-marker">✓</span><code>test_phase_13_93_stage_a_handover_regressions.py::test_A_H2_all_ND_plot_kinds_share_the_single_layout_owner[profile-coefficient:region-extra2]</code><span class="outcome passed">passed</span></li>
+<li><span class="layer-marker">✓</span><code>test_phase_13_93_stage_a_handover_regressions.py::test_A_H2_all_ND_plot_kinds_share_the_single_layout_owner[hist2d-coefficient:region-extra3]</code><span class="outcome passed">passed</span></li>
+<li><span class="layer-marker">✓</span><code>test_phase_13_93_stage_a_handover_regressions.py::test_A_H3_3D_categorical_figure_order_and_outer_headings</code><span class="outcome passed">passed</span></li>
+<li><span class="layer-marker">✓</span><code>test_phase_13_93_stage_a_handover_regressions.py::test_A_H4_invalid_facet_order_never_degrades_silently[bad0]</code><span class="outcome passed">passed</span></li>
+<li><span class="layer-marker">✓</span><code>test_phase_13_93_stage_a_handover_regressions.py::test_A_H4_invalid_facet_order_never_degrades_silently[bad1]</code><span class="outcome passed">passed</span></li>
+<li><span class="layer-marker">✓</span><code>test_phase_13_93_stage_a_handover_regressions.py::test_A_H4_invalid_facet_order_never_degrades_silently[bad2]</code><span class="outcome passed">passed</span></li>
+<li><span class="layer-marker">✓</span><code>test_phase_13_93_stage_a_handover_regressions.py::test_A_H4_invalid_facet_order_never_degrades_silently[bad3]</code><span class="outcome passed">passed</span></li>
+<li><span class="layer-marker">✓</span><code>test_phase_13_93_stage_a_handover_regressions.py::test_A_H5_scalar_facet_accepts_shared_presentation_but_refuses_nd_only_controls</code><span class="outcome passed">passed</span></li>
+<li><span class="layer-marker">✓</span><code>test_phase_13_93_stage_a_handover_regressions.py::test_A_H6_shared_ylabel_without_outer_mode_keeps_row_identity</code><span class="outcome passed">passed</span></li>
+<li><span class="layer-marker">✓</span><code>test_phase_13_93_stage_a_handover_regressions.py::test_A_H7_invalid_layout_parameters_raise_before_figure_allocation[figure_margins-value0]</code><span class="outcome passed">passed</span></li>
+<li><span class="layer-marker">✓</span><code>test_phase_13_93_stage_a_handover_regressions.py::test_A_H7_invalid_layout_parameters_raise_before_figure_allocation[figure_margins-value1]</code><span class="outcome passed">passed</span></li>
+<li><span class="layer-marker">✓</span><code>test_phase_13_93_stage_a_handover_regressions.py::test_A_H7_invalid_layout_parameters_raise_before_figure_allocation[subplot_spacing-value2]</code><span class="outcome passed">passed</span></li>
+</ul>
+</div></td></tr>
+<tr id="feature-FACET.interval_label_format_2d" class="feature-row" data-status="Verified" data-visual="yes" data-category="FACET"><td><span class="expand-toggle">▶</span></td><td>✅</td><td><strong class="mono">FACET.interval_label_format_2d</strong> — 2-D numeric facet interval display formatting with canonical parameter/style precedence, collision-safe auto precision, atomic per-dimension overrides and unchanged statistical identity (PHASE_13_97 Stage A) <span class="eye-badge">👁</span></td><td class="n">23</td><td class="n">23</td><td class="n">0</td><td class="n">14</td><td class="n">3</td></tr>
+<tr class="tests-row" hidden><td colspan="8">
+<div class="tests-panel">
+<ul>
+<li><span class="layer-marker">✓</span><code>test_phase_13_97_facet_interval_label_format_red.py::test_R01_omitted_baseline_reproduces_long_pandas_3x5_headings</code><span class="outcome passed">passed</span></li>
+<li><span class="layer-marker">✓</span><code>test_phase_13_97_facet_interval_label_format_red.py::test_R02_explicit_none_and_legacy_are_exact_historical_display</code><span class="outcome passed">passed</span></li>
+<li><span class="layer-marker">👁</span><code>test_phase_13_97_facet_interval_label_format_red.py::test_R03_explicit_numeric_formats_control_row_and_column_dimensions</code><span class="outcome passed">passed</span></li>
+<li><span class="layer-marker">👁</span><code>test_phase_13_97_facet_interval_label_format_red.py::test_R04_plain_per_dimension_mapping_leaves_unspecified_dimension_legacy</code><span class="outcome passed">passed</span></li>
+<li><span class="layer-marker">✓</span><code>test_phase_13_97_facet_interval_label_format_red.py::test_R05_auto_is_collision_safe_for_nearby_distinct_endpoints</code><span class="outcome passed">passed</span></li>
+<li><span class="layer-marker">☑</span><code>test_phase_13_97_facet_interval_label_format_red.py::test_R06_underprecise_explicit_format_and_bad_dimension_fail_before_figure</code><span class="outcome passed">passed</span></li>
+<li><span class="layer-marker">✓</span><code>test_phase_13_97_facet_interval_label_format_red.py::test_R07_formatting_changes_no_stats_keys_payload_or_group_colors</code><span class="outcome passed">passed</span></li>
+<li><span class="layer-marker">✓</span><code>test_phase_13_97_facet_interval_label_format_red.py::test_R08_auto_preserves_interval_brackets_signs_and_zero_crossing</code><span class="outcome passed">passed</span></li>
+<li><span class="layer-marker">👁</span><code>test_phase_13_97_facet_interval_label_format_red.py::test_R09_formatting_keeps_user_axes_geometry_identical</code><span class="outcome passed">passed</span></li>
+<li><span class="layer-marker">✓</span><code>test_phase_13_97_facet_interval_label_format_red.py::test_R10_typed_profile_and_draw_forward_same_policy[typed]</code><span class="outcome passed">passed</span></li>
+<li><span class="layer-marker">✓</span><code>test_phase_13_97_facet_interval_label_format_red.py::test_R10_typed_profile_and_draw_forward_same_policy[draw]</code><span class="outcome passed">passed</span></li>
+<li><span class="layer-marker">✓</span><code>test_phase_13_97_facet_interval_label_format_red.py::test_C01_style_key_registered_and_save_load_roundtrips_structured_value</code><span class="outcome passed">passed</span></li>
+<li><span class="layer-marker">✓</span><code>test_phase_13_97_facet_interval_label_format_red.py::test_C02_omitted_inherits_style_but_explicit_none_forces_legacy</code><span class="outcome passed">passed</span></li>
+<li><span class="layer-marker">✓</span><code>test_phase_13_97_facet_interval_label_format_red.py::test_C03_explicit_scalar_wins_over_active_style_mapping</code><span class="outcome passed">passed</span></li>
+<li><span class="layer-marker">✓</span><code>test_phase_13_97_facet_interval_label_format_red.py::test_C04_explicit_plain_mapping_replaces_style_atomically</code><span class="outcome passed">passed</span></li>
+<li><span class="layer-marker">✓</span><code>test_phase_13_97_facet_interval_label_format_red.py::test_C05_shortcuts_and_canonical_full_form_are_equivalent</code><span class="outcome passed">passed</span></li>
+<li><span class="layer-marker">☑</span><code>test_phase_13_97_facet_interval_label_format_red.py::test_C06_ambiguous_or_invalid_structured_policies_refuse_before_figure[bad0]</code><span class="outcome passed">passed</span></li>
+<li><span class="layer-marker">☑</span><code>test_phase_13_97_facet_interval_label_format_red.py::test_C06_ambiguous_or_invalid_structured_policies_refuse_before_figure[bad1]</code><span class="outcome passed">passed</span></li>
+<li><span class="layer-marker">☑</span><code>test_phase_13_97_facet_interval_label_format_red.py::test_C06_ambiguous_or_invalid_structured_policies_refuse_before_figure[bad2]</code><span class="outcome passed">passed</span></li>
+<li><span class="layer-marker">☑</span><code>test_phase_13_97_facet_interval_label_format_red.py::test_C06_ambiguous_or_invalid_structured_policies_refuse_before_figure[bad3]</code><span class="outcome passed">passed</span></li>
+<li><span class="layer-marker">✓</span><code>test_phase_13_97_facet_interval_label_format_red.py::test_C07_existing_AD3_group_interval_formatter_is_byte_identical</code><span class="outcome passed">passed</span></li>
+<li><span class="layer-marker">✓</span><code>test_phase_13_97_facet_interval_label_format_red.py::test_C08_style_state_resets_without_cross_test_leakage</code><span class="outcome passed">passed</span></li>
+<li><span class="layer-marker">☑</span><code>test_phase_13_97_facet_interval_label_format_red.py::test_C09_nonlegacy_explicit_policy_rejects_unsupported_1d_and_3d_facets</code><span class="outcome passed">passed</span></li>
+</ul>
+</div></td></tr>
+<tr id="feature-FACET.global_group_identity_in_figure" class="feature-row" data-status="Smoke-only" data-visual="no" data-category="FACET"><td><span class="expand-toggle">▶</span></td><td>☑️</td><td><strong class="mono">FACET.global_group_identity_in_figure</strong> — Figure-wide group-by identity and global/facet provenance labels, without private metadata leakage (PHASE_13_98_DF)</td><td class="n">5</td><td class="n">5</td><td class="n">0</td><td class="n">0</td><td class="n"></td></tr>
+<tr class="tests-row" hidden><td colspan="8">
+<div class="tests-panel">
+<ul>
+<li><span class="layer-marker">☑</span><code>test_phase_13_98_autotitle_groupmetadata_red.py::test_GM01_GM02_global_group_identity_once_at_figure_level[False]</code><span class="outcome passed">passed</span></li>
+<li><span class="layer-marker">☑</span><code>test_phase_13_98_autotitle_groupmetadata_red.py::test_GM01_GM02_global_group_identity_once_at_figure_level[True]</code><span class="outcome passed">passed</span></li>
+<li><span class="layer-marker">☑</span><code>test_phase_13_98_autotitle_groupmetadata_red.py::test_GM02_explicit_title_is_not_modified</code><span class="outcome passed">passed</span></li>
+<li><span class="layer-marker">☑</span><code>test_phase_13_98_autotitle_groupmetadata_red.py::test_GM03_local_group_mode_does_not_claim_global_bins</code><span class="outcome passed">passed</span></li>
+<li><span class="layer-marker">☑</span><code>test_phase_13_98_autotitle_groupmetadata_red.py::test_GM03_categorical_global_groups_are_not_mislabeled_as_bins</code><span class="outcome passed">passed</span></li>
+</ul>
+</div></td></tr>
+<tr id="feature-FACET.figure_presentation_parity" class="feature-row" data-status="Smoke-only" data-visual="yes" data-category="FACET"><td><span class="expand-toggle">▶</span></td><td>☑️</td><td><strong class="mono">FACET.figure_presentation_parity</strong> — 1-D/2-D facet Figure headings, shared labels, titles, placement and legacy display modes (PHASE_13_99_DF) <span class="eye-badge">👁</span></td><td class="n">10</td><td class="n">10</td><td class="n">0</td><td class="n">0</td><td class="n">1</td></tr>
+<tr class="tests-row" hidden><td colspan="8">
+<div class="tests-panel">
+<ul>
+<li><span class="layer-marker">☑</span><code>test_phase_13_99_facet_presentation_parity_red.py::test_FP01_FP02_FP03_six_real_panels_and_factored_shared_legend</code><span class="outcome passed">passed</span></li>
+<li><span class="layer-marker">☑</span><code>test_phase_13_99_facet_presentation_parity_red.py::test_FP04_FP05_scalar_one_dimensional_accepts_common_labels_outer_heads</code><span class="outcome passed">passed</span></li>
+<li><span class="layer-marker">☑</span><code>test_phase_13_99_facet_presentation_parity_red.py::test_FP06_shared_legend_explicit_lower_position_still_works</code><span class="outcome passed">passed</span></li>
+<li><span class="layer-marker">☑</span><code>test_phase_13_99_facet_presentation_parity_red.py::test_FP08_FP15_two_dimensional_legend_contains_quantile_semantics</code><span class="outcome passed">passed</span></li>
+<li><span class="layer-marker">☑</span><code>test_phase_13_99_facet_presentation_parity_red.py::test_FP14_automatic_title_mentions_both_vector_components</code><span class="outcome passed">passed</span></li>
+<li><span class="layer-marker">☑</span><code>test_phase_13_99_facet_presentation_parity_red.py::test_FP12_1d_facet_label_format_auto_still_refuses</code><span class="outcome passed">passed</span></li>
+<li><span class="layer-marker">👁</span><code>test_phase_13_99_facet_presentation_parity_red.py::test_FP13_1d_legend_does_not_intersect_axes_or_panel_headings</code><span class="outcome passed">passed</span></li>
+<li><span class="layer-marker">☑</span><code>test_phase_13_99_facet_presentation_parity_red.py::test_FP06_legacy_legend_modes_respected</code><span class="outcome passed">passed</span></li>
+<li><span class="layer-marker">☑</span><code>test_phase_13_99_facet_presentation_parity_red.py::test_FP07_one_element_list_vector_facet_refusal_not_widened</code><span class="outcome passed">passed</span></li>
+<li><span class="layer-marker">☑</span><code>test_phase_13_99_facet_presentation_parity_red.py::test_FP16_legacy_shared_group_legend_with_sparse_last_facet_row</code><span class="outcome passed">passed</span></li>
+</ul>
+</div></td></tr>
+<tr id="feature-FACET.grouped_vector_quantile_legend" class="feature-row" data-status="Smoke-only" data-visual="no" data-category="FACET"><td><span class="expand-toggle">▶</span></td><td>☑️</td><td><strong class="mono">FACET.grouped_vector_quantile_legend</strong> — Shared legend identities and actual artist styles for grouped vector-profile quantiles and facets (PHASE_13_99_DF)</td><td class="n">7</td><td class="n">7</td><td class="n">0</td><td class="n">0</td><td class="n"></td></tr>
+<tr class="tests-row" hidden><td colspan="8">
+<div class="tests-panel">
+<ul>
+<li><span class="layer-marker">☑</span><code>test_phase_13_99_group_quantile_semantic_red.py::test_FP03_group_vector_quantile_legend_complete[f-6]</code><span class="outcome passed">passed</span></li>
+<li><span class="layer-marker">☑</span><code>test_phase_13_99_group_quantile_semantic_red.py::test_FP03_group_vector_quantile_legend_complete[facet_by1-facet_bins1]</code><span class="outcome passed">passed</span></li>
+<li><span class="layer-marker">☑</span><code>test_phase_13_99_group_quantile_semantic_red.py::test_FP03_group_quantile_legend_sparse_groups</code><span class="outcome passed">passed</span></li>
+<li><span class="layer-marker">☑</span><code>test_phase_13_99_group_quantile_semantic_red.py::test_FP03_style_keys_are_rendered_artist_styles[f-6]</code><span class="outcome passed">passed</span></li>
+<li><span class="layer-marker">☑</span><code>test_phase_13_99_group_quantile_semantic_red.py::test_FP03_style_keys_are_rendered_artist_styles[facet_by1-facet_bins1]</code><span class="outcome passed">passed</span></li>
+<li><span class="layer-marker">☑</span><code>test_phase_13_99_group_quantile_semantic_red.py::test_FP06_grouped_custom_legend_placement_remains_authoritative</code><span class="outcome passed">passed</span></li>
+<li><span class="layer-marker">☑</span><code>test_phase_13_99_group_quantile_semantic_red.py::test_FP03_nonfaceted_group_quantile_linestyles_not_changed</code><span class="outcome passed">passed</span></li>
+</ul>
+</div></td></tr>
+<tr id="feature-FACET.explicit_anchor_and_size_geometry" class="feature-row" data-status="Smoke-only" data-visual="yes" data-category="FACET"><td><span class="expand-toggle">▶</span></td><td>☑️</td><td><strong class="mono">FACET.explicit_anchor_and_size_geometry</strong> — Requested legend anchor, 2-D heading clipping and Figure size preserved (PHASE_13_99_DF) <span class="eye-badge">👁</span></td><td class="n">8</td><td class="n">8</td><td class="n">0</td><td class="n">0</td><td class="n">7</td></tr>
+<tr class="tests-row" hidden><td colspan="8">
+<div class="tests-panel">
+<ul>
+<li><span class="layer-marker">👁</span><code>test_phase_13_99_v5_anchor_geometry_red.py::test_FP06_user_bbox_anchor_preserved_after_figure_positioning[anchor_only-one_dim]</code><span class="outcome passed">passed</span></li>
+<li><span class="layer-marker">👁</span><code>test_phase_13_99_v5_anchor_geometry_red.py::test_FP06_user_bbox_anchor_preserved_after_figure_positioning[anchor_only-two_dim]</code><span class="outcome passed">passed</span></li>
+<li><span class="layer-marker">👁</span><code>test_phase_13_99_v5_anchor_geometry_red.py::test_FP06_user_bbox_anchor_preserved_after_figure_positioning[loc_and_anchor-one_dim]</code><span class="outcome passed">passed</span></li>
+<li><span class="layer-marker">👁</span><code>test_phase_13_99_v5_anchor_geometry_red.py::test_FP06_user_bbox_anchor_preserved_after_figure_positioning[loc_and_anchor-two_dim]</code><span class="outcome passed">passed</span></li>
+<li><span class="layer-marker">👁</span><code>test_phase_13_99_v5_anchor_geometry_red.py::test_FP13_2d_real_range_row_headings_not_clipped_by_figure_edge</code><span class="outcome passed">passed</span></li>
+<li><span class="layer-marker">👁</span><code>test_phase_13_99_v5_anchor_geometry_red.py::test_FP10_requested_figsize_is_effective_before_facet_artist_render[one_dim]</code><span class="outcome passed">passed</span></li>
+<li><span class="layer-marker">👁</span><code>test_phase_13_99_v5_anchor_geometry_red.py::test_FP10_requested_figsize_is_effective_before_facet_artist_render[two_dim]</code><span class="outcome passed">passed</span></li>
+<li><span class="layer-marker">☑</span><code>test_phase_13_99_v5_anchor_geometry_red.py::test_FP10_invalid_requested_figsize_rejected_before_allocation</code><span class="outcome passed">passed</span></li>
 </ul>
 </div></td></tr>
 <tr class="category-row"><td colspan="8">FIT</td></tr>
@@ -855,6 +1064,28 @@ footer { color: var(--muted); font-size: 0.85em; margin-top: 3em; border-top: 1p
 <li><span class="layer-marker">✓</span><code>test_phase_13_40_df_cumulative_hist.py::TestCumulativeHist::test_CH_10_group_by_stacked_cumulative_regression_lock</code><span class="outcome passed">passed</span></li>
 </ul>
 </div></td></tr>
+<tr id="feature-HIST.expression_vector_facets" class="feature-row" data-status="Verified" data-visual="no" data-category="HIST"><td><span class="expand-toggle">▶</span></td><td>✅</td><td><strong class="mono">HIST.expression_vector_facets</strong> — Histogram bracket-expression vectors render one facet per component through typed/draw doors, with independent counts, stable expression identity, and per-component x-axis metadata (PHASE_13_91)</td><td class="n">5</td><td class="n">5</td><td class="n">0</td><td class="n">5</td><td class="n"></td></tr>
+<tr class="tests-row" hidden><td colspan="8">
+<div class="tests-panel">
+<ul>
+<li><span class="layer-marker">✓</span><code>test_phase_13_91_hist_expression_vector_facets_red.py::test_R1_R2_computed_expression_vector_facets_match_numpy_truth[typed]</code><span class="outcome passed">passed</span></li>
+<li><span class="layer-marker">✓</span><code>test_phase_13_91_hist_expression_vector_facets_red.py::test_R1_R2_computed_expression_vector_facets_match_numpy_truth[draw]</code><span class="outcome passed">passed</span></li>
+<li><span class="layer-marker">✓</span><code>test_phase_13_91_hist_expression_vector_facets_red.py::test_R3_typed_and_draw_doors_have_identical_panel_values</code><span class="outcome passed">passed</span></li>
+<li><span class="layer-marker">✓</span><code>test_phase_13_91_hist_expression_vector_facets_red.py::test_R4_physical_column_vector_facets_preserve_component_x_metadata[typed]</code><span class="outcome passed">passed</span></li>
+<li><span class="layer-marker">✓</span><code>test_phase_13_91_hist_expression_vector_facets_red.py::test_R4_physical_column_vector_facets_preserve_component_x_metadata[draw]</code><span class="outcome passed">passed</span></li>
+</ul>
+</div></td></tr>
+<tr id="feature-HIST.expression_vector_facet_guards" class="feature-row" data-status="Verified" data-visual="no" data-category="HIST"><td><span class="expand-toggle">▶</span></td><td>✅</td><td><strong class="mono">HIST.expression_vector_facet_guards</strong> — Histogram expression-vector facet composition rejects duplicate identities and deferred vector/normalize cross-products before Figure allocation (PHASE_13_91)</td><td class="n">5</td><td class="n">5</td><td class="n">0</td><td class="n">5</td><td class="n"></td></tr>
+<tr class="tests-row" hidden><td colspan="8">
+<div class="tests-panel">
+<ul>
+<li><span class="layer-marker">✓</span><code>test_phase_13_91_hist_expression_vector_facets_red.py::test_R5_duplicate_expression_identity_refuses_before_figure_allocation[typed]</code><span class="outcome passed">passed</span></li>
+<li><span class="layer-marker">✓</span><code>test_phase_13_91_hist_expression_vector_facets_red.py::test_R5_duplicate_expression_identity_refuses_before_figure_allocation[draw]</code><span class="outcome passed">passed</span></li>
+<li><span class="layer-marker">✓</span><code>test_phase_13_91_hist_expression_vector_facets_red.py::test_R6_deferred_cross_products_refuse_before_figure_allocation[selection-vector]</code><span class="outcome passed">passed</span></li>
+<li><span class="layer-marker">✓</span><code>test_phase_13_91_hist_expression_vector_facets_red.py::test_R6_deferred_cross_products_refuse_before_figure_allocation[weights-vector]</code><span class="outcome passed">passed</span></li>
+<li><span class="layer-marker">✓</span><code>test_phase_13_91_hist_expression_vector_facets_red.py::test_R6_deferred_cross_products_refuse_before_figure_allocation[normalize]</code><span class="outcome passed">passed</span></li>
+</ul>
+</div></td></tr>
 <tr class="category-row"><td colspan="8">HIST2D</td></tr>
 <tr id="feature-HIST2D.time_format_epoch" class="feature-row" data-status="Smoke-only" data-visual="no" data-category="HIST2D"><td><span class="expand-toggle">▶</span></td><td>☑️</td><td><strong class="mono">HIST2D.time_format_epoch</strong> — hist2d() time_format= handles float64 epoch-second timestamps (~1.776e9) without OverflowError; mirrors draw_hist() epoch-second branch (BUG_dfdraw_20260610 close)</td><td class="n">3</td><td class="n">3</td><td class="n">0</td><td class="n">0</td><td class="n"></td></tr>
 <tr class="tests-row" hidden><td colspan="8">
@@ -988,6 +1219,76 @@ footer { color: var(--muted); font-size: 0.85em; margin-top: 3em; border-top: 1p
 <li><span class="layer-marker">✓</span><code>test_normalize.py::TestNormalizeFacetBy::test_NF_1_k_by_2_grid</code><span class="outcome passed">passed</span></li>
 <li><span class="layer-marker">✓</span><code>test_normalize.py::TestNormalizeFacetBy::test_NF_2_per_facet_independent_computation</code><span class="outcome passed">passed</span></li>
 <li><span class="layer-marker">✓</span><code>test_normalize.py::TestNormalizeFacetBy::test_NF_3_facet_by_bins_with_normalize_raises_with_workaround_hint</code><span class="outcome passed">passed</span></li>
+</ul>
+</div></td></tr>
+<tr id="feature-NORMALIZE.hist_shared_autorange" class="feature-row" data-status="Verified" data-visual="no" data-category="NORMALIZE"><td><span class="expand-toggle">▶</span></td><td>✅</td><td><strong class="mono">NORMALIZE.hist_shared_autorange</strong> — Histogram ratio normalization resolves one canonical pooled range before branch rendering; explicit ranges remain exact and edge compatibility stays guarded (PHASE_13_88 Bug A)</td><td class="n">6</td><td class="n">6</td><td class="n">0</td><td class="n">6</td><td class="n"></td></tr>
+<tr class="tests-row" hidden><td colspan="8">
+<div class="tests-panel">
+<ul>
+<li><span class="layer-marker">✓</span><code>test_phase_13_88_bug_a_hist_autorange.py::test_A1_hist_selection_vector_uses_one_canonical_pooled_range[None]</code><span class="outcome passed">passed</span></li>
+<li><span class="layer-marker">✓</span><code>test_phase_13_88_bug_a_hist_autorange.py::test_A1_hist_selection_vector_uses_one_canonical_pooled_range[hybrid]</code><span class="outcome passed">passed</span></li>
+<li><span class="layer-marker">✓</span><code>test_phase_13_88_bug_a_hist_autorange.py::test_A1_hist_selection_vector_uses_one_canonical_pooled_range[robust_4mad]</code><span class="outcome passed">passed</span></li>
+<li><span class="layer-marker">✓</span><code>test_phase_13_88_bug_a_hist_autorange.py::test_A2_explicit_numeric_range_remains_exact_green_control</code><span class="outcome passed">passed</span></li>
+<li><span class="layer-marker">✓</span><code>test_phase_13_88_bug_a_hist_autorange.py::test_A3_weights_vector_same_rows_remains_green_control</code><span class="outcome passed">passed</span></li>
+<li><span class="layer-marker">✓</span><code>test_phase_13_88_bug_a_hist_autorange.py::test_A4_two_expression_vector_uses_union_domain</code><span class="outcome passed">passed</span></li>
+</ul>
+</div></td></tr>
+<tr id="feature-NORMALIZE.profile_expression_materialization" class="feature-row" data-status="Verified" data-visual="no" data-category="NORMALIZE"><td><span class="expand-toggle">▶</span></td><td>✅</td><td><strong class="mono">NORMALIZE.profile_expression_materialization</strong> — Normalized profiles materialize supported computed x/y positional expressions on the active plain/grouped/faceted curve frame before low-level rendering (PHASE_13_88 Bug B)</td><td class="n">7</td><td class="n">7</td><td class="n">0</td><td class="n">7</td><td class="n"></td></tr>
+<tr class="tests-row" hidden><td colspan="8">
+<div class="tests-panel">
+<ul>
+<li><span class="layer-marker">✓</span><code>test_phase_13_88_bug_b_profile_expressions.py::test_B1_profile_normalize_materializes_computed_positional_expressions[plain-[y,2*y]:x]</code><span class="outcome passed">passed</span></li>
+<li><span class="layer-marker">✓</span><code>test_phase_13_88_bug_b_profile_expressions.py::test_B1_profile_normalize_materializes_computed_positional_expressions[plain-[y,2*y]:2*x]</code><span class="outcome passed">passed</span></li>
+<li><span class="layer-marker">✓</span><code>test_phase_13_88_bug_b_profile_expressions.py::test_B1_profile_normalize_materializes_computed_positional_expressions[grouped-[y,2*y]:x]</code><span class="outcome passed">passed</span></li>
+<li><span class="layer-marker">✓</span><code>test_phase_13_88_bug_b_profile_expressions.py::test_B1_profile_normalize_materializes_computed_positional_expressions[grouped-[y,2*y]:2*x]</code><span class="outcome passed">passed</span></li>
+<li><span class="layer-marker">✓</span><code>test_phase_13_88_bug_b_profile_expressions.py::test_B1_profile_normalize_materializes_computed_positional_expressions[faceted-[y,2*y]:x]</code><span class="outcome passed">passed</span></li>
+<li><span class="layer-marker">✓</span><code>test_phase_13_88_bug_b_profile_expressions.py::test_B1_profile_normalize_materializes_computed_positional_expressions[faceted-[y,2*y]:2*x]</code><span class="outcome passed">passed</span></li>
+<li><span class="layer-marker">✓</span><code>test_phase_13_88_bug_b_profile_expressions.py::test_B2_single_y_computed_x_supported_with_selection_vector</code><span class="outcome passed">passed</span></li>
+</ul>
+</div></td></tr>
+<tr id="feature-NORMALIZE.profile_shared_autorange" class="feature-row" data-status="Verified" data-visual="no" data-category="NORMALIZE"><td><span class="expand-toggle">▶</span></td><td>✅</td><td><strong class="mono">NORMALIZE.profile_shared_autorange</strong> — Plain, grouped and faceted normalized-profile owners share the canonical configured 1-D autorange instead of local raw min/max (PHASE_13_88 F7)</td><td class="n">3</td><td class="n">3</td><td class="n">0</td><td class="n">3</td><td class="n"></td></tr>
+<tr class="tests-row" hidden><td colspan="8">
+<div class="tests-panel">
+<ul>
+<li><span class="layer-marker">✓</span><code>test_phase_13_88_bug_b_profile_expressions.py::test_F7_profile_normalize_uses_canonical_shared_autorange_not_raw_minmax[plain]</code><span class="outcome passed">passed</span></li>
+<li><span class="layer-marker">✓</span><code>test_phase_13_88_bug_b_profile_expressions.py::test_F7_profile_normalize_uses_canonical_shared_autorange_not_raw_minmax[grouped]</code><span class="outcome passed">passed</span></li>
+<li><span class="layer-marker">✓</span><code>test_phase_13_88_bug_b_profile_expressions.py::test_F7_profile_normalize_uses_canonical_shared_autorange_not_raw_minmax[faceted]</code><span class="outcome passed">passed</span></li>
+</ul>
+</div></td></tr>
+<tr id="feature-NORMALIZE.hist_draw_parity" class="feature-row" data-status="Verified" data-visual="no" data-category="NORMALIZE"><td><span class="expand-toggle">▶</span></td><td>✅</td><td><strong class="mono">NORMALIZE.hist_draw_parity</strong> — Public draw() preserves atomic two-expression histogram normalize semantics and computed branch expressions exactly as the typed hist() owner (PHASE_13_88 Bug C/follow-up)</td><td class="n">2</td><td class="n">2</td><td class="n">0</td><td class="n">2</td><td class="n"></td></tr>
+<tr class="tests-row" hidden><td colspan="8">
+<div class="tests-panel">
+<ul>
+<li><span class="layer-marker">✓</span><code>test_phase_13_88_bug_c_draw_hist_normalize.py::test_C1_draw_hist_vector_normalize_matches_typed_owner</code><span class="outcome passed">passed</span></li>
+<li><span class="layer-marker">✓</span><code>test_phase_13_88_bug_c_draw_hist_normalize.py::test_C2_draw_hist_computed_vector_element_is_materialized</code><span class="outcome passed">passed</span></li>
+</ul>
+</div></td></tr>
+<tr id="feature-NORMALIZE.profile_explicit_ax_embedding" class="feature-row" data-status="Verified" data-visual="no" data-category="NORMALIZE"><td><span class="expand-toggle">▶</span></td><td>✅</td><td><strong class="mono">NORMALIZE.profile_explicit_ax_embedding</strong> — Plain normalized profiles embed into caller-owned subplot Axes without changing numerical normalization or unrelated Figure ownership (PHASE_13_89)</td><td class="n">9</td><td class="n">9</td><td class="n">0</td><td class="n">9</td><td class="n"></td></tr>
+<tr class="tests-row" hidden><td colspan="8">
+<div class="tests-panel">
+<ul>
+<li><span class="layer-marker">✓</span><code>test_phase_13_89_explicit_ax_normalize_red.py::test_R1_R3_plain_overlay_diff_embeds_in_caller_slot_and_preserves_numbers[delta-typed]</code><span class="outcome passed">passed</span></li>
+<li><span class="layer-marker">✓</span><code>test_phase_13_89_explicit_ax_normalize_red.py::test_R1_R3_plain_overlay_diff_embeds_in_caller_slot_and_preserves_numbers[delta-draw]</code><span class="outcome passed">passed</span></li>
+<li><span class="layer-marker">✓</span><code>test_phase_13_89_explicit_ax_normalize_red.py::test_R1_R3_plain_overlay_diff_embeds_in_caller_slot_and_preserves_numbers[ratio-typed]</code><span class="outcome passed">passed</span></li>
+<li><span class="layer-marker">✓</span><code>test_phase_13_89_explicit_ax_normalize_red.py::test_R1_R3_plain_overlay_diff_embeds_in_caller_slot_and_preserves_numbers[ratio-draw]</code><span class="outcome passed">passed</span></li>
+<li><span class="layer-marker">✓</span><code>test_phase_13_89_explicit_ax_normalize_red.py::test_R2_draw_selection_vector_production_shape_embeds_and_preserves_numbers</code><span class="outcome passed">passed</span></li>
+<li><span class="layer-marker">✓</span><code>test_phase_13_89_explicit_ax_normalize_red.py::test_R4_diff_only_uses_exact_supplied_axis[delta]</code><span class="outcome passed">passed</span></li>
+<li><span class="layer-marker">✓</span><code>test_phase_13_89_explicit_ax_normalize_red.py::test_R4_diff_only_uses_exact_supplied_axis[ratio]</code><span class="outcome passed">passed</span></li>
+<li><span class="layer-marker">✓</span><code>test_phase_13_89_explicit_ax_normalize_red.py::test_R5_multisubplot_embedding_changes_only_target_slot</code><span class="outcome passed">passed</span></li>
+<li><span class="layer-marker">✓</span><code>test_phase_13_89_explicit_ax_normalize_red.py::test_R10_profile_and_hist_standalone_controls_remain_supported</code><span class="outcome passed">passed</span></li>
+</ul>
+</div></td></tr>
+<tr id="feature-NORMALIZE.explicit_ax_refusal_guards" class="feature-row" data-status="Verified" data-visual="no" data-category="NORMALIZE"><td><span class="expand-toggle">▶</span></td><td>✅</td><td><strong class="mono">NORMALIZE.explicit_ax_refusal_guards</strong> — Unsupported normalize + explicit-Axes ownership combinations refuse before caller mutation or persistent Figure leakage (PHASE_13_89)</td><td class="n">7</td><td class="n">7</td><td class="n">0</td><td class="n">7</td><td class="n"></td></tr>
+<tr class="tests-row" hidden><td colspan="8">
+<div class="tests-panel">
+<ul>
+<li><span class="layer-marker">✓</span><code>test_phase_13_89_explicit_ax_normalize_red.py::test_R6_custom_add_axes_refuses_before_mutation_or_leak</code><span class="outcome passed">passed</span></li>
+<li><span class="layer-marker">✓</span><code>test_phase_13_89_explicit_ax_normalize_red.py::test_R7_nonempty_placeholder_refuses_before_mutation_or_leak</code><span class="outcome passed">passed</span></li>
+<li><span class="layer-marker">✓</span><code>test_phase_13_89_explicit_ax_normalize_red.py::test_R8_grouped_or_faceted_normalize_with_ax_refuses_without_leak[grouped]</code><span class="outcome passed">passed</span></li>
+<li><span class="layer-marker">✓</span><code>test_phase_13_89_explicit_ax_normalize_red.py::test_R8_grouped_or_faceted_normalize_with_ax_refuses_without_leak[faceted]</code><span class="outcome passed">passed</span></li>
+<li><span class="layer-marker">✓</span><code>test_phase_13_89_explicit_ax_normalize_red.py::test_R9_hist_normalize_ax_preserves_existing_loud_refusal[typed]</code><span class="outcome passed">passed</span></li>
+<li><span class="layer-marker">✓</span><code>test_phase_13_89_explicit_ax_normalize_red.py::test_R9_hist_normalize_ax_preserves_existing_loud_refusal[draw]</code><span class="outcome passed">passed</span></li>
+<li><span class="layer-marker">✓</span><code>test_phase_13_89_explicit_ax_normalize_red.py::test_R11_ax_plus_save_refuses_without_mutating_caller</code><span class="outcome passed">passed</span></li>
 </ul>
 </div></td></tr>
 <tr class="category-row"><td colspan="8">OVERLAY</td></tr>
@@ -1204,6 +1505,211 @@ footer { color: var(--muted); font-size: 0.85em; margin-top: 3em; border-top: 1p
 <div class="tests-panel">
 <ul>
 <li><span class="layer-marker">✓</span><code>test_phase_13_51_post_audit.py::test_T9c_profile_fit_central_median_fit_center_differs</code><span class="outcome passed">passed</span></li>
+</ul>
+</div></td></tr>
+<tr id="feature-PROFILE.expression_vector_nd_facet" class="feature-row" data-status="Verified" data-visual="yes" data-category="PROFILE"><td><span class="expand-toggle">▶</span></td><td>✅</td><td><strong class="mono">PROFILE.expression_vector_nd_facet</strong> — Profile expression-vectors compose with N-D facet partitions and group overlays, global selected-frame group bins, stable physical group/vector identity and one Figure-level legend; preserve independent scalar numerical oracle and neighboring refusals (PHASE_13_94_DF) <span class="eye-badge">👁</span></td><td class="n">24</td><td class="n">24</td><td class="n">0</td><td class="n">22</td><td class="n">2</td></tr>
+<tr class="tests-row" hidden><td colspan="8">
+<div class="tests-panel">
+<ul>
+<li><span class="layer-marker">✓</span><code>test_phase_13_94_profile_vector_nd_facet_red.py::test_R1_two_branches_in_each_2d_facet_without_group[typed]</code><span class="outcome passed">passed</span></li>
+<li><span class="layer-marker">✓</span><code>test_phase_13_94_profile_vector_nd_facet_red.py::test_R1_two_branches_in_each_2d_facet_without_group[draw]</code><span class="outcome passed">passed</span></li>
+<li><span class="layer-marker">✓</span><code>test_phase_13_94_profile_vector_nd_facet_red.py::test_R2_computed_vector_residuals_equal_materialized_truth</code><span class="outcome passed">passed</span></li>
+<li><span class="layer-marker">✓</span><code>test_phase_13_94_profile_vector_nd_facet_red.py::test_R3_numeric_3x5_facet_classification_matches_global_pandas_membership</code><span class="outcome passed">passed</span></li>
+<li><span class="layer-marker">✓</span><code>test_phase_13_94_profile_vector_nd_facet_red.py::test_R4_categorical_group_composes_2_vectors_times_3_groups</code><span class="outcome passed">passed</span></li>
+<li><span class="layer-marker">✓</span><code>test_phase_13_94_profile_vector_nd_facet_red.py::test_R5_global_group_bins_maintain_physical_identity_across_cells</code><span class="outcome passed">passed</span></li>
+<li><span class="layer-marker">✓</span><code>test_phase_13_94_profile_vector_nd_facet_red.py::test_R6_group_quantile_boundaries_resolved_globally</code><span class="outcome passed">passed</span></li>
+<li><span class="layer-marker">👁</span><code>test_phase_13_94_profile_vector_nd_facet_red.py::test_R7_vector_group_identity_and_single_figure_legend</code><span class="outcome passed">passed</span></li>
+<li><span class="layer-marker">✓</span><code>test_phase_13_94_profile_vector_nd_facet_red.py::test_R8_strong_numeric_decomposition_with_selection_and_all_coordinates</code><span class="outcome passed">passed</span></li>
+<li><span class="layer-marker">✓</span><code>test_phase_13_94_profile_vector_nd_facet_red.py::test_R9_missing_facet_cell_preserves_empty_cell_schema</code><span class="outcome passed">passed</span></li>
+<li><span class="layer-marker">✓</span><code>test_phase_13_94_profile_vector_nd_facet_red.py::test_R10_forwarding_nondefault_min_entries_50_masks_short_profiles</code><span class="outcome passed">passed</span></li>
+<li><span class="layer-marker">✓</span><code>test_phase_13_94_profile_vector_nd_facet_red.py::test_R11_typed_and_public_draw_nested_stats_equivalent</code><span class="outcome passed">passed</span></li>
+<li><span class="layer-marker">✓</span><code>test_phase_13_94_profile_vector_nd_facet_red.py::test_R12_existing_one_dimensional_profile_vector_facet_still_works</code><span class="outcome passed">passed</span></li>
+<li><span class="layer-marker">✓</span><code>test_phase_13_94_profile_vector_nd_facet_red.py::test_R13_neighbor_hist_scatter_nd_vector_still_refuse_loudly[hist-[y0,y1]]</code><span class="outcome passed">passed</span></li>
+<li><span class="layer-marker">✓</span><code>test_phase_13_94_profile_vector_nd_facet_red.py::test_R13_neighbor_hist_scatter_nd_vector_still_refuse_loudly[scatter-[y0,y1]:x]</code><span class="outcome passed">passed</span></li>
+<li><span class="layer-marker">✓</span><code>test_phase_13_94_profile_vector_nd_facet_red.py::test_R14_existing_scalar_nd_facet_is_not_changed_by_new_global_policy</code><span class="outcome passed">passed</span></li>
+<li><span class="layer-marker">👁</span><code>test_phase_13_94_profile_vector_nd_facet_red.py::test_R15_missing_intermediate_group_keeps_global_color_marker_and_label</code><span class="outcome passed">passed</span></li>
+<li><span class="layer-marker">✓</span><code>test_phase_13_94_profile_vector_nd_facet_red.py::test_R16_new_nd_vector_profile_neighbor_refuses_before_creating_figure[restricted0]</code><span class="outcome passed">passed</span></li>
+<li><span class="layer-marker">✓</span><code>test_phase_13_94_profile_vector_nd_facet_red.py::test_R16_new_nd_vector_profile_neighbor_refuses_before_creating_figure[restricted1]</code><span class="outcome passed">passed</span></li>
+<li><span class="layer-marker">✓</span><code>test_phase_13_94_profile_vector_nd_facet_red.py::test_R16_new_nd_vector_profile_neighbor_refuses_before_creating_figure[restricted2]</code><span class="outcome passed">passed</span></li>
+<li><span class="layer-marker">✓</span><code>test_phase_13_94_profile_vector_nd_facet_red.py::test_R16_new_nd_vector_profile_neighbor_refuses_before_creating_figure[restricted3]</code><span class="outcome passed">passed</span></li>
+<li><span class="layer-marker">✓</span><code>test_phase_13_94_profile_vector_nd_facet_red.py::test_R17_figure_channel_assignment_is_resolved_once</code><span class="outcome passed">passed</span></li>
+<li><span class="layer-marker">✓</span><code>test_phase_13_94_profile_vector_nd_facet_red.py::test_R18_explicit_group_color_override_remains_authoritative</code><span class="outcome passed">passed</span></li>
+<li><span class="layer-marker">✓</span><code>test_phase_13_94_profile_vector_nd_facet_red.py::test_R19_group_bins_without_group_column_fail_before_figure</code><span class="outcome passed">passed</span></li>
+</ul>
+</div></td></tr>
+<tr id="feature-PROFILE.group_by_scope" class="feature-row" data-status="Verified" data-visual="yes" data-category="PROFILE"><td><span class="expand-toggle">▶</span></td><td>✅</td><td><strong class="mono">PROFILE.group_by_scope</strong> — Public deterministic auto/global/facet group-by domain for 1-D and 2-D grouped profiles; selected-frame bins and quantiles, global physical identities, truthful legends and legacy compatibility (PHASE_13_95_DF) <span class="eye-badge">👁</span></td><td class="n">27</td><td class="n">27</td><td class="n">0</td><td class="n">24</td><td class="n">3</td></tr>
+<tr class="tests-row" hidden><td colspan="8">
+<div class="tests-panel">
+<ul>
+<li><span class="layer-marker">✓</span><code>test_phase_13_95_group_scope_title_red.py::test_R1_public_signature_and_invalid_values</code><span class="outcome passed">passed</span></li>
+<li><span class="layer-marker">✓</span><code>test_phase_13_95_group_scope_title_red.py::test_R2_auto_preserves_historical_1d_faceted_numbers</code><span class="outcome passed">passed</span></li>
+<li><span class="layer-marker">✓</span><code>test_phase_13_95_group_scope_title_red.py::test_R3_explicit_global_1d_reuses_exact_physical_groups</code><span class="outcome passed">passed</span></li>
+<li><span class="layer-marker">✓</span><code>test_phase_13_95_group_scope_title_red.py::test_R4_explicit_local_1d_matches_auto</code><span class="outcome passed">passed</span></li>
+<li><span class="layer-marker">✓</span><code>test_phase_13_95_group_scope_title_red.py::test_R5_global_quantiles_in_1d</code><span class="outcome passed">passed</span></li>
+<li><span class="layer-marker">✓</span><code>test_phase_13_95_group_scope_title_red.py::test_R6_global_missing_group_2d_has_stable_identity</code><span class="outcome passed">passed</span></li>
+<li><span class="layer-marker">👁</span><code>test_phase_13_95_group_scope_title_red.py::test_R7_global_figure_legend_obeys_explicit_hide</code><span class="outcome passed">passed</span></li>
+<li><span class="layer-marker">👁</span><code>test_phase_13_95_group_scope_title_red.py::test_R8_facet_local_has_no_false_global_numeric_legend</code><span class="outcome passed">passed</span></li>
+<li><span class="layer-marker">✓</span><code>test_phase_13_95_group_scope_title_red.py::test_R9_13_94_auto_matches_omitted_policy</code><span class="outcome passed">passed</span></li>
+<li><span class="layer-marker">✓</span><code>test_phase_13_95_group_scope_title_red.py::test_R10_13_94_explicit_facet_policy_changes_group_boundaries</code><span class="outcome passed">passed</span></li>
+<li><span class="layer-marker">✓</span><code>test_phase_13_95_group_scope_title_red.py::test_R13_typed_draw_parity_for_explicit_global[typed]</code><span class="outcome passed">passed</span></li>
+<li><span class="layer-marker">✓</span><code>test_phase_13_95_group_scope_title_red.py::test_R13_typed_draw_parity_for_explicit_global[draw]</code><span class="outcome passed">passed</span></li>
+<li><span class="layer-marker">✓</span><code>test_phase_13_95_group_scope_title_red.py::test_R14_categorical_no_binning_no_numeric_changes</code><span class="outcome passed">passed</span></li>
+<li><span class="layer-marker">✓</span><code>test_phase_13_95_group_scope_title_red.py::test_R15_single_global_cut_event</code><span class="outcome passed">passed</span></li>
+<li><span class="layer-marker">✓</span><code>test_phase_13_95_group_scope_title_red.py::test_R16_selection_domain_global_bin_membership_independent_pandas</code><span class="outcome passed">passed</span></li>
+<li><span class="layer-marker">✓</span><code>test_phase_13_95_group_scope_title_red.py::test_R17_single_dimension_list_is_equivalent_to_scalar_facet</code><span class="outcome passed">passed</span></li>
+<li><span class="layer-marker">✓</span><code>test_phase_13_95_group_scope_title_red.py::test_R18_global_quantile_boundaries_derived_from_selection_not_raw_input</code><span class="outcome passed">passed</span></li>
+<li><span class="layer-marker">✓</span><code>test_phase_13_95_group_scope_title_red.py::test_R20_no_scope_widening_to_other_plot_families</code><span class="outcome passed">passed</span></li>
+<li><span class="layer-marker">✓</span><code>test_phase_13_95_group_scope_title_red.py::test_R21_global_top_k_does_not_claim_unsupported_global_ranking</code><span class="outcome passed">passed</span></li>
+<li><span class="layer-marker">✓</span><code>test_phase_13_95_group_scope_title_red.py::test_R22_2d_scalar_global_matches_selected_pandas_counts</code><span class="outcome passed">passed</span></li>
+<li><span class="layer-marker">✓</span><code>test_phase_13_95_group_scope_title_red.py::test_R23_auto_vector_13_94_figure_legend_obeys_explicit_hide</code><span class="outcome passed">passed</span></li>
+<li><span class="layer-marker">👁</span><code>test_phase_13_95_group_scope_title_red.py::test_R24_explicit_all_overrides_default_shared_global_legend</code><span class="outcome passed">passed</span></li>
+<li><span class="layer-marker">✓</span><code>test_phase_13_95_group_scope_title_red.py::test_R25_vector_1d_global_bins_match_full_selected_pandas_and_scalar[draw]</code><span class="outcome passed">passed</span></li>
+<li><span class="layer-marker">✓</span><code>test_phase_13_95_group_scope_title_red.py::test_R25_vector_1d_global_bins_match_full_selected_pandas_and_scalar[typed]</code><span class="outcome passed">passed</span></li>
+<li><span class="layer-marker">✓</span><code>test_phase_13_95_group_scope_title_red.py::test_R26_vector_1d_global_quantile_scope_reuses_selected_boundaries[draw]</code><span class="outcome passed">passed</span></li>
+<li><span class="layer-marker">✓</span><code>test_phase_13_95_group_scope_title_red.py::test_R26_vector_1d_global_quantile_scope_reuses_selected_boundaries[typed]</code><span class="outcome passed">passed</span></li>
+<li><span class="layer-marker">✓</span><code>test_phase_13_95_group_scope_title_red.py::test_R27_vector_1d_auto_and_facet_retain_legacy_local_semantics</code><span class="outcome passed">passed</span></li>
+</ul>
+</div></td></tr>
+<tr id="feature-PROFILE.median_resolved_bin_edges" class="feature-row" data-status="Verified" data-visual="no" data-category="PROFILE"><td><span class="expand-toggle">▶</span></td><td>✅</td><td><strong class="mono">PROFILE.median_resolved_bin_edges</strong> — Existing median uses precisely the resolved profile x-bin edges (PHASE_13_96 Stage A)</td><td class="n">3</td><td class="n">3</td><td class="n">0</td><td class="n">3</td><td class="n"></td></tr>
+<tr class="tests-row" hidden><td colspan="8">
+<div class="tests-panel">
+<ul>
+<li><span class="layer-marker">✓</span><code>test_phase_13_96_median_bin_owner_red.py::test_M1_both_median_curve_agrees_with_independent_exact_bin_truth</code><span class="outcome passed">passed</span></li>
+<li><span class="layer-marker">✓</span><code>test_phase_13_96_median_bin_owner_red.py::test_M2_median_exported_y_central_agrees_with_same_bin_truth</code><span class="outcome passed">passed</span></li>
+<li><span class="layer-marker">✓</span><code>test_phase_13_96_median_bin_owner_red.py::test_M3_explicit_xrange_median_remains_exact</code><span class="outcome passed">passed</span></li>
+</ul>
+</div></td></tr>
+<tr id="feature-PROFILE.stat_list_basic" class="feature-row" data-status="Verified" data-visual="yes" data-category="PROFILE"><td><span class="expand-toggle">▶</span></td><td>✅</td><td><strong class="mono">PROFILE.stat_list_basic</strong> — Mean/std/SEM statistic curves from one profile computation; independent numerical truth, compatibility and supported boundaries (PHASE_13_96) <span class="eye-badge">👁</span></td><td class="n">15</td><td class="n">15</td><td class="n">0</td><td class="n">8</td><td class="n">2</td></tr>
+<tr class="tests-row" hidden><td colspan="8">
+<div class="tests-panel">
+<ul>
+<li><span class="layer-marker">✓</span><code>test_phase_13_96_stage_b_stat_curves_red.py::test_B01_stat_curves_match_independent_numpy[mean]</code><span class="outcome passed">passed</span></li>
+<li><span class="layer-marker">✓</span><code>test_phase_13_96_stage_b_stat_curves_red.py::test_B01_stat_curves_match_independent_numpy[std]</code><span class="outcome passed">passed</span></li>
+<li><span class="layer-marker">✓</span><code>test_phase_13_96_stage_b_stat_curves_red.py::test_B01_stat_curves_match_independent_numpy[sem]</code><span class="outcome passed">passed</span></li>
+<li><span class="layer-marker">👁</span><code>test_phase_13_96_stage_b_stat_curves_red.py::test_B02_two_stat_curves_in_order_and_without_mean_uncertainties</code><span class="outcome passed">passed</span></li>
+<li><span class="layer-marker">✓</span><code>test_phase_13_96_stage_b_stat_curves_red.py::test_B03_draw_and_typed_profile_equivalent</code><span class="outcome passed">passed</span></li>
+<li><span class="layer-marker">✓</span><code>test_phase_13_96_stage_b_stat_curves_red.py::test_B04_historical_default_none_is_unchanged</code><span class="outcome passed">passed</span></li>
+<li><span class="layer-marker">✓</span><code>test_phase_13_96_stage_b_stat_curves_red.py::test_B05_compute_profile_called_once</code><span class="outcome passed">passed</span></li>
+<li><span class="layer-marker">✓</span><code>test_phase_13_96_stage_b_stat_curves_red.py::test_B06_weighted_statistics_equal_existing_profile_data</code><span class="outcome passed">passed</span></li>
+<li><span class="layer-marker">☑</span><code>test_phase_13_96_stage_b_stat_curves_red.py::test_B07_future_or_conflicting_combinations_fail_loudly[bad0-median]</code><span class="outcome passed">passed</span></li>
+<li><span class="layer-marker">☑</span><code>test_phase_13_96_stage_b_stat_curves_red.py::test_B07_future_or_conflicting_combinations_fail_loudly[bad1-quantiles]</code><span class="outcome passed">passed</span></li>
+<li><span class="layer-marker">☑</span><code>test_phase_13_96_stage_b_stat_curves_red.py::test_B07_future_or_conflicting_combinations_fail_loudly[bad2-group]</code><span class="outcome passed">passed</span></li>
+<li><span class="layer-marker">☑</span><code>test_phase_13_96_stage_b_stat_curves_red.py::test_B07_future_or_conflicting_combinations_fail_loudly[bad3-facet]</code><span class="outcome passed">passed</span></li>
+<li><span class="layer-marker">☑</span><code>test_phase_13_96_stage_b_stat_curves_red.py::test_B07_future_or_conflicting_combinations_fail_loudly[bad4-central]</code><span class="outcome passed">passed</span></li>
+<li><span class="layer-marker">✓</span><code>test_phase_13_96_stage_b_stat_curves_red.py::test_B08_weighted_statistics_agree_with_direct_weighted_numpy</code><span class="outcome passed">passed</span></li>
+<li><span class="layer-marker">👁</span><code>test_phase_13_96_stage_b_stat_curves_red.py::test_B09_refusal_never_allocates_a_new_figure</code><span class="outcome passed">passed</span></li>
+</ul>
+</div></td></tr>
+<tr id="feature-PROFILE.stat_list_median_quantiles" class="feature-row" data-status="Verified" data-visual="yes" data-category="PROFILE"><td><span class="expand-toggle">▶</span></td><td>✅</td><td><strong class="mono">PROFILE.stat_list_median_quantiles</strong> — Median and existing quantile bundles in independent profile statistic curves; exact-bin NumPy truth, central-line de-duplication, unsupported combinations fail-loud (PHASE_13_96 Stage C) <span class="eye-badge">👁</span></td><td class="n">18</td><td class="n">18</td><td class="n">0</td><td class="n">9</td><td class="n">3</td></tr>
+<tr class="tests-row" hidden><td colspan="8">
+<div class="tests-panel">
+<ul>
+<li><span class="layer-marker">✓</span><code>test_phase_13_96_stage_c_median_quantiles_red.py::test_C01_median_matches_numpy_at_same_bin_centers_and_has_no_errorbars</code><span class="outcome passed">passed</span></li>
+<li><span class="layer-marker">✓</span><code>test_phase_13_96_stage_c_median_quantiles_red.py::test_C02_mean_median_std_sem_four_distinct_curves_and_one_profile_computation</code><span class="outcome passed">passed</span></li>
+<li><span class="layer-marker">✓</span><code>test_phase_13_96_stage_c_median_quantiles_red.py::test_C03_quantiles_only_reuses_legacy_mode_and_reports_values[error_bars-qs0]</code><span class="outcome passed">passed</span></li>
+<li><span class="layer-marker">✓</span><code>test_phase_13_96_stage_c_median_quantiles_red.py::test_C03_quantiles_only_reuses_legacy_mode_and_reports_values[band-qs1]</code><span class="outcome passed">passed</span></li>
+<li><span class="layer-marker">✓</span><code>test_phase_13_96_stage_c_median_quantiles_red.py::test_C03_quantiles_only_reuses_legacy_mode_and_reports_values[discrete-qs2]</code><span class="outcome passed">passed</span></li>
+<li><span class="layer-marker">✓</span><code>test_phase_13_96_stage_c_median_quantiles_red.py::test_C03_quantiles_only_reuses_legacy_mode_and_reports_values[nested_band-qs3]</code><span class="outcome passed">passed</span></li>
+<li><span class="layer-marker">👁</span><code>test_phase_13_96_stage_c_median_quantiles_red.py::test_C04_mean_and_band_quantile_have_one_central_mean_curve</code><span class="outcome passed">passed</span></li>
+<li><span class="layer-marker">👁</span><code>test_phase_13_96_stage_c_median_quantiles_red.py::test_C05_mean_quantile_asym_errorbars_overlay_without_duplicate_mean_curve</code><span class="outcome passed">passed</span></li>
+<li><span class="layer-marker">👁</span><code>test_phase_13_96_stage_c_median_quantiles_red.py::test_C06_median_discrete_quantile_half_is_not_duplicated</code><span class="outcome passed">passed</span></li>
+<li><span class="layer-marker">☑</span><code>test_phase_13_96_stage_c_median_quantiles_red.py::test_C07_refuse_unsupported_before_new_figure[extra0-quantiles=]</code><span class="outcome passed">passed</span></li>
+<li><span class="layer-marker">☑</span><code>test_phase_13_96_stage_c_median_quantiles_red.py::test_C07_refuse_unsupported_before_new_figure[extra1-median]</code><span class="outcome passed">passed</span></li>
+<li><span class="layer-marker">☑</span><code>test_phase_13_96_stage_c_median_quantiles_red.py::test_C07_refuse_unsupported_before_new_figure[extra2-group]</code><span class="outcome passed">passed</span></li>
+<li><span class="layer-marker">☑</span><code>test_phase_13_96_stage_c_median_quantiles_red.py::test_C07_refuse_unsupported_before_new_figure[extra3-weighted]</code><span class="outcome passed">passed</span></li>
+<li><span class="layer-marker">☑</span><code>test_phase_13_96_stage_c_median_quantiles_red.py::test_C07_refuse_unsupported_before_new_figure[extra4-central]</code><span class="outcome passed">passed</span></li>
+<li><span class="layer-marker">☑</span><code>test_phase_13_96_stage_c_median_quantiles_red.py::test_C07_refuse_unsupported_before_new_figure[extra5-weighted]</code><span class="outcome passed">passed</span></li>
+<li><span class="layer-marker">✓</span><code>test_phase_13_96_stage_c_median_quantiles_red.py::test_C08_draw_door_median_and_quantile_parity</code><span class="outcome passed">passed</span></li>
+<li><span class="layer-marker">✓</span><code>test_phase_13_96_stage_c_median_quantiles_red.py::test_C09_quantile_values_match_raw_numpy_on_actual_resolved_autorange_edges</code><span class="outcome passed">passed</span></li>
+<li><span class="layer-marker">✓</span><code>test_phase_13_96_stage_c_median_quantiles_red.py::test_C10_returned_statistic_identity_exists_without_return_data</code><span class="outcome passed">passed</span></li>
+</ul>
+</div></td></tr>
+<tr id="feature-PROFILE.stat_list_vector_composition" class="feature-row" data-status="Verified" data-visual="yes" data-category="PROFILE"><td><span class="expand-toggle">▶</span></td><td>✅</td><td><strong class="mono">PROFILE.stat_list_vector_composition</strong> — Existing vector branches B compose independently with statistic curves S, preserving B × S identity, numerical truth, one Figure legend and fail-loud finite channels (PHASE_13_96 Stage D) <span class="eye-badge">👁</span></td><td class="n">12</td><td class="n">12</td><td class="n">0</td><td class="n">5</td><td class="n">3</td></tr>
+<tr class="tests-row" hidden><td colspan="8">
+<div class="tests-panel">
+<ul>
+<li><span class="layer-marker">✓</span><code>test_phase_13_96_stage_d_vector_stat_red.py::test_D01_expression_vector_stat_outer_product_draw_typed_and_numpy</code><span class="outcome passed">passed</span></li>
+<li><span class="layer-marker">✓</span><code>test_phase_13_96_stage_d_vector_stat_red.py::test_D02_selection_vector_stat_outer_preserves_selections</code><span class="outcome passed">passed</span></li>
+<li><span class="layer-marker">✓</span><code>test_phase_13_96_stage_d_vector_stat_red.py::test_D03_weight_vector_stat_outer_matches_scalar_reference</code><span class="outcome passed">passed</span></li>
+<li><span class="layer-marker">👁</span><code>test_phase_13_96_stage_d_vector_stat_red.py::test_D04_mean_colors_follow_branch_not_statistic</code><span class="outcome passed">passed</span></li>
+<li><span class="layer-marker">☑</span><code>test_phase_13_96_stage_d_vector_stat_red.py::test_D05_channel_collision_refused_before_creating_figure</code><span class="outcome passed">passed</span></li>
+<li><span class="layer-marker">✓</span><code>test_phase_13_96_stage_d_vector_stat_red.py::test_D06_legacy_vector_payload_unchanged_when_stat_list_none</code><span class="outcome passed">passed</span></li>
+<li><span class="layer-marker">👁</span><code>test_phase_13_96_stage_d_vector_stat_red.py::test_D07_explicit_show_legend_false_and_marker_identity</code><span class="outcome passed">passed</span></li>
+<li><span class="layer-marker">👁</span><code>test_phase_13_96_stage_d_vector_stat_red.py::test_D08_expression_and_selection_branch_cross_product</code><span class="outcome passed">passed</span></li>
+<li><span class="layer-marker">✓</span><code>test_phase_13_96_stage_d_vector_stat_red.py::test_D09_quantile_band_composes_with_expression_vector_without_extra_mean</code><span class="outcome passed">passed</span></li>
+<li><span class="layer-marker">☑</span><code>test_phase_13_96_stage_d_vector_stat_red.py::test_D10_discrete_quantile_channel_refuses_and_no_plot</code><span class="outcome passed">passed</span></li>
+<li><span class="layer-marker">☑</span><code>test_phase_13_96_stage_d_vector_stat_red.py::test_D11_weight_vector_unsupported_statistics_refuse_before_artists[median]</code><span class="outcome passed">passed</span></li>
+<li><span class="layer-marker">☑</span><code>test_phase_13_96_stage_d_vector_stat_red.py::test_D11_weight_vector_unsupported_statistics_refuse_before_artists[quantiles]</code><span class="outcome passed">passed</span></li>
+</ul>
+</div></td></tr>
+<tr id="feature-PROFILE.stat_list_group_facet" class="feature-row" data-status="Verified" data-visual="yes" data-category="PROFILE"><td><span class="expand-toggle">▶</span></td><td>✅</td><td><strong class="mono">PROFILE.stat_list_group_facet</strong> — Statistic curves mean/std/SEM reuse existing grouped and faceted profile owners with independent numerical truth, stable global group colors, finite legends, compute-once and explicit unsupported-surface refusals (PHASE_13_96 Stage E) <span class="eye-badge">👁</span></td><td class="n">18</td><td class="n">18</td><td class="n">0</td><td class="n">11</td><td class="n">4</td></tr>
+<tr class="tests-row" hidden><td colspan="8">
+<div class="tests-panel">
+<ul>
+<li><span class="layer-marker">✓</span><code>test_phase_13_96_stage_e_group_facet_red.py::test_E1_grouped_identity_and_direct_numpy_truth</code><span class="outcome passed">passed</span></li>
+<li><span class="layer-marker">✓</span><code>test_phase_13_96_stage_e_group_facet_red.py::test_E2_grouped_draw_typed_equivalence</code><span class="outcome passed">passed</span></li>
+<li><span class="layer-marker">✓</span><code>test_phase_13_96_stage_e_group_facet_red.py::test_E3_one_dimensional_facet_stats_truth</code><span class="outcome passed">passed</span></li>
+<li><span class="layer-marker">☑</span><code>test_phase_13_96_stage_e_group_facet_red.py::test_E4_refusals_before_figure_allocation</code><span class="outcome passed">passed</span></li>
+<li><span class="layer-marker">✓</span><code>test_phase_13_96_stage_e_group_facet_red.py::test_E5_grouped_weighted_numpy_truth</code><span class="outcome passed">passed</span></li>
+<li><span class="layer-marker">👁</span><code>test_phase_13_96_stage_e_group_facet_red.py::test_E6_global_group_bins_1d_facets_semantic_legend</code><span class="outcome passed">passed</span></li>
+<li><span class="layer-marker">👁</span><code>test_phase_13_96_stage_e_group_facet_red.py::test_E7_global_group_quantiles_2d_facets_one_figure_legend</code><span class="outcome passed">passed</span></li>
+<li><span class="layer-marker">👁</span><code>test_phase_13_96_stage_e_group_facet_red.py::test_E8_ungrouped_facets_single_figure_stat_legend</code><span class="outcome passed">passed</span></li>
+<li><span class="layer-marker">✓</span><code>test_phase_13_96_stage_e_group_facet_red.py::test_E9_legacy_grouped_and_faceted_payload_when_none</code><span class="outcome passed">passed</span></li>
+<li><span class="layer-marker">✓</span><code>test_phase_13_96_stage_e_group_facet_red.py::test_E10_grouped_count_compute_once</code><span class="outcome passed">passed</span></li>
+<li><span class="layer-marker">✓</span><code>test_phase_13_96_stage_e_group_facet_red.py::test_E11_global_group_sparse_cell_colors_stable</code><span class="outcome passed">passed</span></li>
+<li><span class="layer-marker">👁</span><code>test_phase_13_96_stage_e_group_facet_red.py::test_E12_grouped_explicit_legend_false</code><span class="outcome passed">passed</span></li>
+<li><span class="layer-marker">✓</span><code>test_phase_13_96_stage_e_group_facet_red.py::test_E13_two_dimensional_global_group_statistics_match_raw_pandas</code><span class="outcome passed">passed</span></li>
+<li><span class="layer-marker">☑</span><code>test_phase_13_96_stage_e_group_facet_red.py::test_E14_unsupported_3d_facet_and_group_color_refuse</code><span class="outcome passed">passed</span></li>
+<li><span class="layer-marker">✓</span><code>test_phase_13_96_stage_e_group_facet_red.py::test_E15_draw_nonfaceted_explicit_global_bins_against_pandas</code><span class="outcome passed">passed</span></li>
+<li><span class="layer-marker">✓</span><code>test_phase_13_96_stage_e_group_facet_red.py::test_E16_typed_nonfaceted_explicit_global_quantiles_equal_auto</code><span class="outcome passed">passed</span></li>
+<li><span class="layer-marker">✓</span><code>test_phase_13_96_stage_e_group_facet_red.py::test_E17_nonfaceted_global_without_stat_list_preserves_legacy</code><span class="outcome passed">passed</span></li>
+<li><span class="layer-marker">☑</span><code>test_phase_13_96_stage_e_group_facet_red.py::test_E18_nonfaceted_scope_refusal_boundaries_before_figure_allocation</code><span class="outcome passed">passed</span></li>
+</ul>
+</div></td></tr>
+<tr id="feature-PROFILE.stat_list_vector_groupfacet_single_std" class="feature-row" data-status="Verified" data-visual="yes" data-category="PROFILE"><td><span class="expand-toggle">▶</span></td><td>✅</td><td><strong class="mono">PROFILE.stat_list_vector_groupfacet_single_std</strong> — Two expression profile branches compose with five Figure-global groups, 2-D facets and singleton std using group colors, expression markers, factored Figure legend and independent NumPy/pandas truth (PHASE_13_96 Stage F) <span class="eye-badge">👁</span></td><td class="n">17</td><td class="n">17</td><td class="n">0</td><td class="n">5</td><td class="n">4</td></tr>
+<tr class="tests-row" hidden><td colspan="8">
+<div class="tests-panel">
+<ul>
+<li><span class="layer-marker">👁</span><code>test_phase_13_96_stage_f_vector_groupfacet_single_std_red.py::test_F01_exact_stagef_query_renders_through_both_public_doors</code><span class="outcome passed">passed</span></li>
+<li><span class="layer-marker">✓</span><code>test_phase_13_96_stage_f_vector_groupfacet_single_std_red.py::test_F02_every_occupied_expression_group_facet_xbin_matches_pandas_numpy_truth</code><span class="outcome passed">passed</span></li>
+<li><span class="layer-marker">✓</span><code>test_phase_13_96_stage_f_vector_groupfacet_single_std_red.py::test_F03_sparse_groups_and_min_entries_do_not_invent_rendered_curves_or_points</code><span class="outcome passed">passed</span></li>
+<li><span class="layer-marker">👁</span><code>test_phase_13_96_stage_f_vector_groupfacet_single_std_red.py::test_F04_global_group_colors_stay_physical_through_sparse_middle_group</code><span class="outcome passed">passed</span></li>
+<li><span class="layer-marker">👁</span><code>test_phase_13_96_stage_f_vector_groupfacet_single_std_red.py::test_F05_two_expression_markers_own_identity_and_all_curves_are_marker_only_std</code><span class="outcome passed">passed</span></li>
+<li><span class="layer-marker">👁</span><code>test_phase_13_96_stage_f_vector_groupfacet_single_std_red.py::test_F06_one_factored_figure_legend_truthful_and_nonoverlapping</code><span class="outcome passed">passed</span></li>
+<li><span class="layer-marker">✓</span><code>test_phase_13_96_stage_f_vector_groupfacet_single_std_red.py::test_F07_public_result_shape_remains_facet_keyed_with_ordered_expression_branches</code><span class="outcome passed">passed</span></li>
+<li><span class="layer-marker">✓</span><code>test_phase_13_96_stage_f_vector_groupfacet_single_std_red.py::test_F08_stat_list_none_preserves_existing_nd_vector_group_facet_route</code><span class="outcome passed">passed</span></li>
+<li><span class="layer-marker">☑</span><code>test_phase_13_96_stage_f_vector_groupfacet_single_std_red.py::test_F09_unsupported_neighboring_combinations_refuse_before_figure_allocation[override0]</code><span class="outcome passed">passed</span></li>
+<li><span class="layer-marker">☑</span><code>test_phase_13_96_stage_f_vector_groupfacet_single_std_red.py::test_F09_unsupported_neighboring_combinations_refuse_before_figure_allocation[override1]</code><span class="outcome passed">passed</span></li>
+<li><span class="layer-marker">☑</span><code>test_phase_13_96_stage_f_vector_groupfacet_single_std_red.py::test_F09_unsupported_neighboring_combinations_refuse_before_figure_allocation[override2]</code><span class="outcome passed">passed</span></li>
+<li><span class="layer-marker">☑</span><code>test_phase_13_96_stage_f_vector_groupfacet_single_std_red.py::test_F09_unsupported_neighboring_combinations_refuse_before_figure_allocation[override3]</code><span class="outcome passed">passed</span></li>
+<li><span class="layer-marker">☑</span><code>test_phase_13_96_stage_f_vector_groupfacet_single_std_red.py::test_F09_unsupported_neighboring_combinations_refuse_before_figure_allocation[override4]</code><span class="outcome passed">passed</span></li>
+<li><span class="layer-marker">☑</span><code>test_phase_13_96_stage_f_vector_groupfacet_single_std_red.py::test_F09_unsupported_neighboring_combinations_refuse_before_figure_allocation[override5]</code><span class="outcome passed">passed</span></li>
+<li><span class="layer-marker">☑</span><code>test_phase_13_96_stage_f_vector_groupfacet_single_std_red.py::test_F09_unsupported_neighboring_combinations_refuse_before_figure_allocation[override6]</code><span class="outcome passed">passed</span></li>
+<li><span class="layer-marker">☑</span><code>test_phase_13_96_stage_f_vector_groupfacet_single_std_red.py::test_F09b_private_stagef_coordinator_token_is_not_a_public_escape_hatch</code><span class="outcome passed">passed</span></li>
+<li><span class="layer-marker">✓</span><code>test_phase_13_96_stage_f_vector_groupfacet_single_std_red.py::test_F10_global_group_resolution_and_figure_layout_have_single_owners</code><span class="outcome passed">passed</span></li>
+</ul>
+</div></td></tr>
+<tr id="feature-PROFILE.grouped_facet_quantile_numeric_oracle" class="feature-row" data-status="Verified" data-visual="no" data-category="PROFILE"><td><span class="expand-toggle">▶</span></td><td>✅</td><td><strong class="mono">PROFILE.grouped_facet_quantile_numeric_oracle</strong> — Discrete grouped facet quantiles equal independent raw-data bin percentiles (PHASE_13_99_DF)</td><td class="n">1</td><td class="n">1</td><td class="n">0</td><td class="n">1</td><td class="n"></td></tr>
+<tr class="tests-row" hidden><td colspan="8">
+<div class="tests-panel">
+<ul>
+<li><span class="layer-marker">✓</span><code>test_phase_13_99_group_quantile_semantic_red.py::test_FP07_grouped_quantiles_agree_with_independent_raw_percentiles</code><span class="outcome passed">passed</span></li>
+</ul>
+</div></td></tr>
+<tr id="feature-PROFILE.paired_xy_expression_vector" class="feature-row" data-status="Verified" data-visual="no" data-category="PROFILE"><td><span class="expand-toggle">▶</span></td><td>✅</td><td><strong class="mono">PROFILE.paired_xy_expression_vector</strong> — Positional [y0,y1]:[x0,x1] profile pairing, branch-local valid rows and X bins, scalar equivalence and 1-D ordinary facets (PHASE_13_100_DF)</td><td class="n">10</td><td class="n">10</td><td class="n">0</td><td class="n">4</td><td class="n"></td></tr>
+<tr class="tests-row" hidden><td colspan="8">
+<div class="tests-panel">
+<ul>
+<li><span class="layer-marker">☑</span><code>test_phase_13_100_paired_xy_profile_facets_red.py::test_PXY01_old_shared_x_remains_green</code><span class="outcome passed">passed</span></li>
+<li><span class="layer-marker">☑</span><code>test_phase_13_100_paired_xy_profile_facets_red.py::test_PXY02_no_facet_pair_is_already_supported</code><span class="outcome passed">passed</span></li>
+<li><span class="layer-marker">✓</span><code>test_phase_13_100_paired_xy_profile_facets_red.py::test_PXY03_pair_with_ordinary_facet_is_scalar_equivalent[typed]</code><span class="outcome passed">passed</span></li>
+<li><span class="layer-marker">✓</span><code>test_phase_13_100_paired_xy_profile_facets_red.py::test_PXY03_pair_with_ordinary_facet_is_scalar_equivalent[draw]</code><span class="outcome passed">passed</span></li>
+<li><span class="layer-marker">✓</span><code>test_phase_13_100_paired_xy_profile_facets_red.py::test_PXY04_asymmetric_finiteness_and_selection_are_branch_local</code><span class="outcome passed">passed</span></li>
+<li><span class="layer-marker">✓</span><code>test_phase_13_100_paired_xy_profile_facets_red.py::test_PXY05_independent_auto_ranges_reused_in_every_facet</code><span class="outcome passed">passed</span></li>
+<li><span class="layer-marker">☑</span><code>test_phase_13_100_paired_xy_profile_facets_red.py::test_PXY06_discrete_quantiles_and_legend_keep_pair_identity</code><span class="outcome passed">passed</span></li>
+<li><span class="layer-marker">☑</span><code>test_phase_13_100_paired_xy_profile_facets_red.py::test_PXY07_vector_length_mismatch_refuses_before_figure</code><span class="outcome passed">passed</span></li>
+<li><span class="layer-marker">☑</span><code>test_phase_13_100_paired_xy_profile_facets_red.py::test_PXY08_computed_x_components_materialize_correctly</code><span class="outcome passed">passed</span></li>
+<li><span class="layer-marker">☑</span><code>test_phase_13_100_paired_xy_profile_facets_red.py::test_PXY09_synthetic_ALICE_calibration_signature_six_facets</code><span class="outcome passed">passed</span></li>
 </ul>
 </div></td></tr>
 <tr class="category-row"><td colspan="8">PROFILE2D</td></tr>
@@ -1494,6 +2000,58 @@ footer { color: var(--muted); font-size: 0.85em; margin-top: 3em; border-top: 1p
 <li><span class="layer-marker">☑</span><code>test_phase_13_54_df_gallery_fixes.py::test_T3_scatter_no_auto_title_regression_baseline</code><span class="outcome passed">passed</span></li>
 </ul>
 </div></td></tr>
+<tr id="feature-SCATTER.mapped_color_errorbars" class="feature-row" data-status="Verified" data-visual="no" data-category="SCATTER"><td><span class="expand-toggle">▶</span></td><td>✅</td><td><strong class="mono">SCATTER.mapped_color_errorbars</strong> — Numeric mapped scatter color composes with x/y error bars while preserving one common row domain, scatter-owned colorbar/marker semantics, lower-zorder marker-free uncertainty geometry, per-point marker composition, full-domain shared color normalization, categorical fail-loud behavior, and legacy neighboring owners (PHASE_13_92)</td><td class="n">15</td><td class="n">15</td><td class="n">0</td><td class="n">15</td><td class="n"></td></tr>
+<tr class="tests-row" hidden><td colspan="8">
+<div class="tests-panel">
+<ul>
+<li><span class="layer-marker">✓</span><code>test_phase_13_92_scatter_mapped_color_errorbars.py::test_R1_numeric_mapped_color_plus_yerr_two_layer</code><span class="outcome passed">passed</span></li>
+<li><span class="layer-marker">✓</span><code>test_phase_13_92_scatter_mapped_color_errorbars.py::test_R2_numeric_mapped_color_plus_xerr_two_layer</code><span class="outcome passed">passed</span></li>
+<li><span class="layer-marker">✓</span><code>test_phase_13_92_scatter_mapped_color_errorbars.py::test_R3_numeric_mapped_color_plus_both_errors_preserves_both_geometries</code><span class="outcome passed">passed</span></li>
+<li><span class="layer-marker">✓</span><code>test_phase_13_92_scatter_mapped_color_errorbars.py::test_R4_R5_faceted_numeric_mapped_color_preserves_points_and_errors[yerr]</code><span class="outcome passed">passed</span></li>
+<li><span class="layer-marker">✓</span><code>test_phase_13_92_scatter_mapped_color_errorbars.py::test_R4_R5_faceted_numeric_mapped_color_preserves_points_and_errors[xerr]</code><span class="outcome passed">passed</span></li>
+<li><span class="layer-marker">✓</span><code>test_phase_13_92_scatter_mapped_color_errorbars.py::test_R6_computed_color_expression_plus_errorbar_and_colorbar</code><span class="outcome passed">passed</span></li>
+<li><span class="layer-marker">✓</span><code>test_phase_13_92_scatter_mapped_color_errorbars.py::test_R7_colorbar_mappable_is_exact_point_collection_object</code><span class="outcome passed">passed</span></li>
+<li><span class="layer-marker">✓</span><code>test_phase_13_92_scatter_mapped_color_errorbars.py::test_R8_asymmetric_row_alignment_after_selection_nan_and_range_filter</code><span class="outcome passed">passed</span></li>
+<li><span class="layer-marker">✓</span><code>test_phase_13_92_scatter_mapped_color_errorbars.py::test_R9_errorbars_have_explicitly_lower_zorder_than_points</code><span class="outcome passed">passed</span></li>
+<li><span class="layer-marker">✓</span><code>test_phase_13_92_scatter_mapped_color_errorbars.py::test_R10_per_point_marker_expression_plus_yerr_keeps_marker_owner</code><span class="outcome passed">passed</span></li>
+<li><span class="layer-marker">✓</span><code>test_phase_13_92_scatter_mapped_color_errorbars.py::test_G1_string_categorical_color_plus_errors_remains_fail_loud</code><span class="outcome passed">passed</span></li>
+<li><span class="layer-marker">✓</span><code>test_phase_13_92_scatter_mapped_color_errorbars.py::test_C1_fixed_scalar_color_plus_errors_keeps_legacy_errorbar_owner</code><span class="outcome passed">passed</span></li>
+<li><span class="layer-marker">✓</span><code>test_phase_13_92_scatter_mapped_color_errorbars.py::test_C2_numeric_color_only_keeps_ordinary_scatter_path</code><span class="outcome passed">passed</span></li>
+<li><span class="layer-marker">✓</span><code>test_phase_13_92_scatter_mapped_color_errorbars.py::test_R11_caller_dataframe_not_mutated_by_composed_path</code><span class="outcome passed">passed</span></li>
+<li><span class="layer-marker">✓</span><code>test_phase_13_92_scatter_mapped_color_errorbars.py::test_R12_marker_split_preserves_full_numeric_color_domain_and_colorbar_owner</code><span class="outcome passed">passed</span></li>
+</ul>
+</div></td></tr>
+<tr id="feature-SCATTER.figure_categorical_color_legend" class="feature-row" data-status="Verified" data-visual="no" data-category="SCATTER"><td><span class="expand-toggle">▶</span></td><td>✅</td><td><strong class="mono">SCATTER.figure_categorical_color_legend</strong> — Opt-in N-D mapped numeric scatter colors yield one figure-level categorical legend with stable category colors and equivalent markers across facets and 3-D figure pages; keep point/error-bar geometry, legacy colorbars, explicit colorbar choice and strict refusal boundaries (PHASE_13_93 Stage B)</td><td class="n">25</td><td class="n">25</td><td class="n">0</td><td class="n">25</td><td class="n"></td></tr>
+<tr class="tests-row" hidden><td colspan="8">
+<div class="tests-panel">
+<ul>
+<li><span class="layer-marker">✓</span><code>test_phase_13_93_stage_b_color_display_red.py::test_b1_omitted_color_display_keeps_original_colorbars</code><span class="outcome passed">passed</span></li>
+<li><span class="layer-marker">✓</span><code>test_phase_13_93_stage_b_color_display_red.py::test_b2_b3_binary_numeric_side_one_figure_legend[auto]</code><span class="outcome passed">passed</span></li>
+<li><span class="layer-marker">✓</span><code>test_phase_13_93_stage_b_color_display_red.py::test_b2_b3_binary_numeric_side_one_figure_legend[legend]</code><span class="outcome passed">passed</span></li>
+<li><span class="layer-marker">✓</span><code>test_phase_13_93_stage_b_color_display_red.py::test_b4_explicit_colorbar_is_not_silently_changed_to_legend</code><span class="outcome passed">passed</span></li>
+<li><span class="layer-marker">✓</span><code>test_phase_13_93_stage_b_color_display_red.py::test_b5_same_side_same_rgba_in_all_facets_even_singleton</code><span class="outcome passed">passed</span></li>
+<li><span class="layer-marker">✓</span><code>test_phase_13_93_stage_b_color_display_red.py::test_b6_no_repeated_axes_legend</code><span class="outcome passed">passed</span></li>
+<li><span class="layer-marker">✓</span><code>test_phase_13_93_stage_b_color_display_red.py::test_b8_matching_marker_partition_produces_combined_legend</code><span class="outcome passed">passed</span></li>
+<li><span class="layer-marker">✓</span><code>test_phase_13_93_stage_b_color_display_red.py::test_b8b_non_equivalent_marker_partition_refuses</code><span class="outcome passed">passed</span></li>
+<li><span class="layer-marker">✓</span><code>test_phase_13_93_stage_b_color_display_red.py::test_b9_uncertainties_are_retained_with_two_marker_classes</code><span class="outcome passed">passed</span></li>
+<li><span class="layer-marker">✓</span><code>test_phase_13_93_stage_b_color_display_red.py::test_b10_auto_threshold_controls_discrete_heuristic</code><span class="outcome passed">passed</span></li>
+<li><span class="layer-marker">✓</span><code>test_phase_13_93_stage_b_color_display_red.py::test_b10b_explicit_legend_limit_refuses</code><span class="outcome passed">passed</span></li>
+<li><span class="layer-marker">✓</span><code>test_phase_13_93_stage_b_color_display_red.py::test_b11_bad_mode_rejected_before_plotting</code><span class="outcome passed">passed</span></li>
+<li><span class="layer-marker">✓</span><code>test_phase_13_93_stage_b_color_display_red.py::test_b12_invalid_threshold_rejected</code><span class="outcome passed">passed</span></li>
+<li><span class="layer-marker">✓</span><code>test_phase_13_93_stage_b_color_display_red.py::test_b13_real_grid_40_cells_one_legend</code><span class="outcome passed">passed</span></li>
+<li><span class="layer-marker">✓</span><code>test_phase_13_93_stage_b_color_display_red.py::test_b14_layout_still_one_owner</code><span class="outcome passed">passed</span></li>
+<li><span class="layer-marker">✓</span><code>test_phase_13_93_stage_b_color_display_red.py::test_b15_max_legend_alone_does_not_silently_do_nothing</code><span class="outcome passed">passed</span></li>
+<li><span class="layer-marker">✓</span><code>test_phase_13_93_stage_b_color_display_red.py::test_b16_string_color_with_errorbars_preserves_explicit_refusal</code><span class="outcome passed">passed</span></li>
+<li><span class="layer-marker">✓</span><code>test_phase_13_93_stage_b_color_display_red.py::test_b17_three_dimensional_facets_keep_one_color_domain_across_figures</code><span class="outcome passed">passed</span></li>
+<li><span class="layer-marker">✓</span><code>test_phase_13_93_stage_b_color_display_red.py::test_b18_numeric_color_expression_three_categories_with_one_legend</code><span class="outcome passed">passed</span></li>
+<li><span class="layer-marker">✓</span><code>test_phase_13_93_stage_b_color_display_red.py::test_b19_grouped_color_owner_does_not_silently_fabricate_side_legend</code><span class="outcome passed">passed</span></li>
+<li><span class="layer-marker">✓</span><code>test_phase_13_93_stage_b_color_display_red.py::test_b20_nonfaceted_explicit_none_is_legacy_compatible</code><span class="outcome passed">passed</span></li>
+<li><span class="layer-marker">✓</span><code>test_phase_13_93_stage_b_color_display_red.py::test_b21_nonfaceted_legend_refuses_before_matplotlib</code><span class="outcome passed">passed</span></li>
+<li><span class="layer-marker">✓</span><code>test_phase_13_93_stage_b_color_display_red.py::test_b_R11_legend_disjoint_from_column_headings_and_title[0.89]</code><span class="outcome passed">passed</span></li>
+<li><span class="layer-marker">✓</span><code>test_phase_13_93_stage_b_color_display_red.py::test_b_R11_legend_disjoint_from_column_headings_and_title[0.92]</code><span class="outcome passed">passed</span></li>
+<li><span class="layer-marker">✓</span><code>test_phase_13_93_stage_b_color_display_red.py::test_b_R12_after_return_manual_annotation_edit_is_not_reversed</code><span class="outcome passed">passed</span></li>
+</ul>
+</div></td></tr>
 <tr class="category-row"><td colspan="8">STATS</td></tr>
 <tr id="feature-STATS.default_fields" class="feature-row" data-status="Smoke-only" data-visual="no" data-category="STATS"><td><span class="expand-toggle">▶</span></td><td>☑️</td><td><strong class="mono">STATS.default_fields</strong> — Auto-detect default stats fields by plot type</td><td class="n">1</td><td class="n">1</td><td class="n">0</td><td class="n">0</td><td class="n"></td></tr>
 <tr class="tests-row" hidden><td colspan="8">
@@ -1527,6 +2085,50 @@ footer { color: var(--muted); font-size: 0.85em; margin-top: 3em; border-top: 1p
 <li><span class="layer-marker">✓</span><code>test_phase_13_57_df_fixes.py::TestE2YCentral::test_y_central_equals_mean_when_central_default</code><span class="outcome passed">passed</span></li>
 <li><span class="layer-marker">✓</span><code>test_phase_13_57_df_fixes.py::TestE2YCentral::test_grouped_export_has_y_central</code><span class="outcome passed">passed</span></li>
 <li><span class="layer-marker">☑</span><code>test_phase_13_57_df_fixes.py::TestE2YCentral::test_pre_existing_columns_unchanged</code><span class="outcome passed">passed</span></li>
+</ul>
+</div></td></tr>
+<tr id="feature-STATS.retained_histogram_state" class="feature-row" data-status="Verified" data-visual="no" data-category="STATS"><td><span class="expand-toggle">▶</span></td><td>✅</td><td><strong class="mono">STATS.retained_histogram_state</strong> — Internal generic sparse weighted histogram retained state, named categorical coordinates and strict edge/provenance/schema guards (first-slice candidate)</td><td class="n">8</td><td class="n">8</td><td class="n">0</td><td class="n">8</td><td class="n"></td></tr>
+<tr class="tests-row" hidden><td colspan="8">
+<div class="tests-panel">
+<ul>
+<li><span class="layer-marker">✓</span><code>test_phase_13_82_retained_state_red.py::test_t1_weighted_histogram_against_numpy</code><span class="outcome passed">passed</span></li>
+<li><span class="layer-marker">✓</span><code>test_phase_13_82_retained_state_red.py::test_t2_cancelled_weight_is_not_empty</code><span class="outcome passed">passed</span></li>
+<li><span class="layer-marker">✓</span><code>test_phase_13_82_retained_state_red.py::test_t4_categorical_coordinate_is_semantic_dimension</code><span class="outcome passed">passed</span></li>
+<li><span class="layer-marker">✓</span><code>test_phase_13_82_retained_state_red.py::test_t5_schema_name_and_partition_contract</code><span class="outcome passed">passed</span></li>
+<li><span class="layer-marker">✓</span><code>test_phase_13_82_retained_state_red.py::test_t6_sparse_underflow_overflow_nan_and_last_edge</code><span class="outcome passed">passed</span></li>
+<li><span class="layer-marker">✓</span><code>test_phase_13_82_retained_state_red.py::test_t9_invalid_resolved_edges_refused</code><span class="outcome passed">passed</span></li>
+<li><span class="layer-marker">✓</span><code>test_phase_13_82_retained_state_red.py::test_t11_numeric_categories_preserve_identity</code><span class="outcome passed">passed</span></li>
+<li><span class="layer-marker">✓</span><code>test_phase_13_82_retained_state_red.py::test_t13_two_named_categorical_dimensions_form_sparse_product</code><span class="outcome passed">passed</span></li>
+</ul>
+</div></td></tr>
+<tr id="feature-STATS.retained_profile_state" class="feature-row" data-status="Verified" data-visual="no" data-category="STATS"><td><span class="expand-toggle">▶</span></td><td>✅</td><td><strong class="mono">STATS.retained_profile_state</strong> — Internal generic weighted profile retained moments and logical payload round-trip with corruption guards (first-slice candidate)</td><td class="n">5</td><td class="n">5</td><td class="n">0</td><td class="n">5</td><td class="n"></td></tr>
+<tr class="tests-row" hidden><td colspan="8">
+<div class="tests-panel">
+<ul>
+<li><span class="layer-marker">✓</span><code>test_phase_13_82_retained_state_red.py::test_t3_weighted_profile_against_independent_raw_sums</code><span class="outcome passed">passed</span></li>
+<li><span class="layer-marker">✓</span><code>test_phase_13_82_retained_state_red.py::test_t7_one_node_class_different_sufficient_state</code><span class="outcome passed">passed</span></li>
+<li><span class="layer-marker">✓</span><code>test_phase_13_82_retained_state_red.py::test_t8_logical_payload_round_trip_with_metadata</code><span class="outcome passed">passed</span></li>
+<li><span class="layer-marker">✓</span><code>test_phase_13_82_retained_state_red.py::test_t10_nonfinite_weight_and_profile_value_not_accumulated</code><span class="outcome passed">passed</span></li>
+<li><span class="layer-marker">✓</span><code>test_phase_13_82_retained_state_red.py::test_t12_corrupt_payload_fractional_entries_refused</code><span class="outcome passed">passed</span></li>
+</ul>
+</div></td></tr>
+<tr id="feature-STATS.exact_retained_state_merge" class="feature-row" data-status="Verified" data-visual="no" data-category="STATS"><td><span class="expand-toggle">▶</span></td><td>✅</td><td><strong class="mono">STATS.exact_retained_state_merge</strong> — Exact pooled merge of compatible retained histogram/profile state, with duplicate-partition protection, categorical outer alignment, provenance retention and pooled-data/finalization equivalence (PHASE_13_82 continuation)</td><td class="n">13</td><td class="n">13</td><td class="n">0</td><td class="n">13</td><td class="n"></td></tr>
+<tr class="tests-row" hidden><td colspan="8">
+<div class="tests-panel">
+<ul>
+<li><span class="layer-marker">✓</span><code>test_phase_13_82_exact_merge_red.py::test_m1_weighted_histogram_merge_equals_direct_pooled_state</code><span class="outcome passed">passed</span></li>
+<li><span class="layer-marker">✓</span><code>test_phase_13_82_exact_merge_red.py::test_m2_weighted_profile_merge_equals_direct_pooled_state</code><span class="outcome passed">passed</span></li>
+<li><span class="layer-marker">✓</span><code>test_phase_13_82_exact_merge_red.py::test_m3_signed_weight_cancellation_across_partitions_stays_occupied</code><span class="outcome passed">passed</span></li>
+<li><span class="layer-marker">✓</span><code>test_phase_13_82_exact_merge_red.py::test_m4_sparse_categorical_union_matches_direct_pooled_state</code><span class="outcome passed">passed</span></li>
+<li><span class="layer-marker">✓</span><code>test_phase_13_82_exact_merge_red.py::test_m5_duplicate_partition_refused_including_nested_contributors</code><span class="outcome passed">passed</span></li>
+<li><span class="layer-marker">✓</span><code>test_phase_13_82_exact_merge_red.py::test_m6_different_name_refused</code><span class="outcome passed">passed</span></li>
+<li><span class="layer-marker">✓</span><code>test_phase_13_82_exact_merge_red.py::test_m7_different_binned_axis_refused_without_rebinning</code><span class="outcome passed">passed</span></li>
+<li><span class="layer-marker">✓</span><code>test_phase_13_82_exact_merge_red.py::test_m8_statistic_kind_and_state_contract_mismatch_refused</code><span class="outcome passed">passed</span></li>
+<li><span class="layer-marker">✓</span><code>test_phase_13_82_exact_merge_red.py::test_m9_semantic_source_definition_mismatch_refused</code><span class="outcome passed">passed</span></li>
+<li><span class="layer-marker">✓</span><code>test_phase_13_82_exact_merge_red.py::test_m10_metadata_mismatch_refused_for_first_exact_merge_slice</code><span class="outcome passed">passed</span></li>
+<li><span class="layer-marker">✓</span><code>test_phase_13_82_exact_merge_red.py::test_m11_requires_at_least_two_nodes_and_explicit_output_partition</code><span class="outcome passed">passed</span></li>
+<li><span class="layer-marker">✓</span><code>test_phase_13_82_exact_merge_red.py::test_m12_merged_profile_finalization_matches_direct_pooled_raw_data</code><span class="outcome passed">passed</span></li>
+<li><span class="layer-marker">✓</span><code>test_phase_13_82_exact_merge_red.py::test_m13_payload_roundtrip_states_merge_to_direct_pooled_truth</code><span class="outcome passed">passed</span></li>
 </ul>
 </div></td></tr>
 <tr class="category-row"><td colspan="8">STYLE</td></tr>
@@ -1592,6 +2194,38 @@ footer { color: var(--muted); font-size: 0.85em; margin-top: 3em; border-top: 1p
 <li><span class="layer-marker">✓</span><code>test_phase_13_46_df_audit_fixes.py::TestPhase1346AuditFixes::test_f70_get_suptitle_live_path</code><span class="outcome passed">passed</span></li>
 </ul>
 </div></td></tr>
+<tr id="feature-TITLE.width_aware_selection" class="feature-row" data-status="Verified" data-visual="yes" data-category="TITLE"><td><span class="expand-toggle">▶</span></td><td>✅</td><td><strong class="mono">TITLE.width_aware_selection</strong> — Automatic-title selection text is preserved semantically and fitted at render time to physical figure width; no fixed 72-character cutoff (Stage C-a) <span class="eye-badge">👁</span></td><td class="n">4</td><td class="n">4</td><td class="n">0</td><td class="n">2</td><td class="n">2</td></tr>
+<tr class="tests-row" hidden><td colspan="8">
+<div class="tests-panel">
+<ul>
+<li><span class="layer-marker">✓</span><code>test_auto_title.py::TestAutoTitleParts::test_long_selection_preserved_until_render</code><span class="outcome passed">passed</span></li>
+<li><span class="layer-marker">👁</span><code>test_phase_13_86_stage_ca.py::test_CA1_wide_figure_keeps_full_selection_but_narrow_figure_elides</code><span class="outcome passed">passed</span></li>
+<li><span class="layer-marker">✓</span><code>test_phase_13_86_stage_ca.py::test_CA2_build_auto_title_preserves_selection_until_render_width_is_known</code><span class="outcome passed">passed</span></li>
+<li><span class="layer-marker">👁</span><code>test_phase_13_86_stage_ca.py::test_CA3_faceted_wide_figure_keeps_full_selection_in_figure_title</code><span class="outcome passed">passed</span></li>
+</ul>
+</div></td></tr>
+<tr id="feature-TITLE.profile_quantile_semantics" class="feature-row" data-status="Verified" data-visual="no" data-category="TITLE"><td><span class="expand-toggle">▶</span></td><td>✅</td><td><strong class="mono">TITLE.profile_quantile_semantics</strong> — Automatic profile title reports non-default two-value and multi-value quantiles once, preserving explicit titles and auto_title=False (PHASE_13_95_DF)</td><td class="n">3</td><td class="n">3</td><td class="n">0</td><td class="n">3</td><td class="n"></td></tr>
+<tr class="tests-row" hidden><td colspan="8">
+<div class="tests-panel">
+<ul>
+<li><span class="layer-marker">✓</span><code>test_phase_13_95_group_scope_title_red.py::test_R11_1d_quantiles_appear_once_in_auto_title</code><span class="outcome passed">passed</span></li>
+<li><span class="layer-marker">✓</span><code>test_phase_13_95_group_scope_title_red.py::test_R12_title_false_and_explicit_title_precedence</code><span class="outcome passed">passed</span></li>
+<li><span class="layer-marker">✓</span><code>test_phase_13_95_group_scope_title_red.py::test_R19_more_than_two_quantiles_are_listed_not_misrepresented_as_range</code><span class="outcome passed">passed</span></li>
+</ul>
+</div></td></tr>
+<tr id="feature-TITLE.facet_auto_title_fit_ownership" class="feature-row" data-status="Smoke-only" data-visual="no" data-category="TITLE"><td><span class="expand-toggle">▶</span></td><td>☑️</td><td><strong class="mono">TITLE.facet_auto_title_fit_ownership</strong> — No discarded per-cell title fitting; one Figure title owner and explicit title precedence (PHASE_13_98_DF)</td><td class="n">7</td><td class="n">7</td><td class="n">0</td><td class="n">0</td><td class="n"></td></tr>
+<tr class="tests-row" hidden><td colspan="8">
+<div class="tests-panel">
+<ul>
+<li><span class="layer-marker">☑</span><code>test_phase_13_98_autotitle_groupmetadata_red.py::test_AT01_AT02_no_discarded_inner_title_metrics[False-profile]</code><span class="outcome passed">passed</span></li>
+<li><span class="layer-marker">☑</span><code>test_phase_13_98_autotitle_groupmetadata_red.py::test_AT01_AT02_no_discarded_inner_title_metrics[False-draw]</code><span class="outcome passed">passed</span></li>
+<li><span class="layer-marker">☑</span><code>test_phase_13_98_autotitle_groupmetadata_red.py::test_AT01_AT02_no_discarded_inner_title_metrics[True-profile]</code><span class="outcome passed">passed</span></li>
+<li><span class="layer-marker">☑</span><code>test_phase_13_98_autotitle_groupmetadata_red.py::test_AT01_AT02_no_discarded_inner_title_metrics[True-draw]</code><span class="outcome passed">passed</span></li>
+<li><span class="layer-marker">☑</span><code>test_phase_13_98_autotitle_groupmetadata_red.py::test_AT04_nonfacet_vector_title_is_preserved</code><span class="outcome passed">passed</span></li>
+<li><span class="layer-marker">☑</span><code>test_phase_13_98_autotitle_groupmetadata_red.py::test_AT03_exact_3x5_singleton_std_has_no_discarded_titles</code><span class="outcome passed">passed</span></li>
+<li><span class="layer-marker">☑</span><code>test_phase_13_98_autotitle_groupmetadata_red.py::test_AT_style_auto_title_does_not_reenable_inner_cell_titles</code><span class="outcome passed">passed</span></li>
+</ul>
+</div></td></tr>
 <tr class="category-row"><td colspan="8">VECTOR</td></tr>
 <tr id="feature-VECTOR.parse" class="feature-row" data-status="Smoke-only" data-visual="no" data-category="VECTOR"><td><span class="expand-toggle">▶</span></td><td>☑️</td><td><strong class="mono">VECTOR.parse</strong> — Bracket syntax parsing with paren-aware split</td><td class="n">8</td><td class="n">8</td><td class="n">0</td><td class="n">0</td><td class="n"></td></tr>
 <tr class="tests-row" hidden><td colspan="8">
@@ -1607,7 +2241,7 @@ footer { color: var(--muted); font-size: 0.85em; margin-top: 3em; border-top: 1p
 <li><span class="layer-marker">☑</span><code>test_vector.py::TestParserParenInsideBracket::test_paren_comma_inside_bracket</code><span class="outcome passed">passed</span></li>
 </ul>
 </div></td></tr>
-<tr id="feature-VECTOR.dispatch" class="feature-row" data-status="Smoke-only" data-visual="no" data-category="VECTOR"><td><span class="expand-toggle">▶</span></td><td>☑️</td><td><strong class="mono">VECTOR.dispatch</strong> — Vector dispatch across profile/hist/scatter/draw</td><td class="n">5</td><td class="n">5</td><td class="n">0</td><td class="n">0</td><td class="n"></td></tr>
+<tr id="feature-VECTOR.dispatch" class="feature-row" data-status="Verified" data-visual="no" data-category="VECTOR"><td><span class="expand-toggle">▶</span></td><td>✅</td><td><strong class="mono">VECTOR.dispatch</strong> — Vector dispatch across profile/hist/scatter/draw</td><td class="n">6</td><td class="n">6</td><td class="n">0</td><td class="n">1</td><td class="n"></td></tr>
 <tr class="tests-row" hidden><td colspan="8">
 <div class="tests-panel">
 <ul>
@@ -1616,6 +2250,7 @@ footer { color: var(--muted); font-size: 0.85em; margin-top: 3em; border-top: 1p
 <li><span class="layer-marker">☑</span><code>test_vector.py::TestVectorDispatch::test_scatter_NN</code><span class="outcome passed">passed</span></li>
 <li><span class="layer-marker">☑</span><code>test_vector.py::TestVectorDispatch::test_draw_dispatches_profile</code><span class="outcome passed">passed</span></li>
 <li><span class="layer-marker">☑</span><code>test_vector.py::TestVectorDispatch::test_draw_1d_auto_dispatches_hist</code><span class="outcome passed">passed</span></li>
+<li><span class="layer-marker">✓</span><code>test_phase_13_91_hist_expression_vector_facets_red.py::test_R7_nonfaceted_hist_expression_vector_overlay_remains_supported</code><span class="outcome passed">passed</span></li>
 </ul>
 </div></td></tr>
 <tr id="feature-VECTOR.fail_fast" class="feature-row" data-status="Smoke-only" data-visual="no" data-category="VECTOR"><td><span class="expand-toggle">▶</span></td><td>☑️</td><td><strong class="mono">VECTOR.fail_fast</strong> — Fail-fast guards on hist2d/hexbin; per-pair for stats</td><td class="n">3</td><td class="n">3</td><td class="n">0</td><td class="n">0</td><td class="n"></td></tr>
@@ -1712,6 +2347,51 @@ footer { color: var(--muted); font-size: 0.85em; margin-top: 3em; border-top: 1p
 <li><span class="layer-marker">☑</span><code>test_vector.py::TestVectorKwargSurface::test_all_forwarded_names_are_valid_signature_params</code><span class="outcome passed">passed</span></li>
 </ul>
 </div></td></tr>
+<tr id="feature-VECTOR.facet_routing" class="feature-row" data-status="Verified" data-visual="no" data-category="VECTOR"><td><span class="expand-toggle">▶</span></td><td>✅</td><td><strong class="mono">VECTOR.facet_routing</strong> — Profile expression-vector facet_by=&quot;vector&quot; routing preserves intact expression and draw()≡typed-owner semantics (Stage B-a)</td><td class="n">4</td><td class="n">4</td><td class="n">0</td><td class="n">4</td><td class="n"></td></tr>
+<tr class="tests-row" hidden><td colspan="8">
+<div class="tests-panel">
+<ul>
+<li><span class="layer-marker">✓</span><code>test_phase_13_86_stage_a_red.py::TestStageAStructuralBoundaryInventory::test_A10c_draw_profile_facet_vector_preserves_intact_expression_for_typed_owner</code><span class="outcome passed">passed</span></li>
+<li><span class="layer-marker">✓</span><code>test_phase_13_86_stage_ba.py::test_Ba1_draw_profile_facet_vector_matches_typed_owner</code><span class="outcome passed">passed</span></li>
+<li><span class="layer-marker">✓</span><code>test_phase_13_86_stage_ba.py::test_Ba2_vector_facets_keep_expression_components_distinct</code><span class="outcome passed">passed</span></li>
+<li><span class="layer-marker">✓</span><code>test_phase_13_91_hist_expression_vector_facets_red.py::test_R8_profile_expression_vector_facets_remain_supported</code><span class="outcome passed">passed</span></li>
+</ul>
+</div></td></tr>
+<tr id="feature-VECTOR.ordinary_facet_compose" class="feature-row" data-status="Verified" data-visual="yes" data-category="VECTOR"><td><span class="expand-toggle">▶</span></td><td>✅</td><td><strong class="mono">VECTOR.ordinary_facet_compose</strong> — Profile expression vectors compose inside ordinary facets with group/selection/weights channels; unsupported neighboring compositions refuse loudly (Stage B-b) <span class="eye-badge">👁</span></td><td class="n">15</td><td class="n">15</td><td class="n">0</td><td class="n">14</td><td class="n">1</td></tr>
+<tr class="tests-row" hidden><td colspan="8">
+<div class="tests-panel">
+<ul>
+<li><span class="layer-marker">✓</span><code>test_phase_13_86_stage_bb.py::test_BB1_typed_profile_vector_ordinary_facet_matches_independent_oracle</code><span class="outcome passed">passed</span></li>
+<li><span class="layer-marker">✓</span><code>test_phase_13_86_stage_bb.py::test_BB2_draw_group_vector_ordinary_facet_matches_oracle_and_typed_owner</code><span class="outcome passed">passed</span></li>
+<li><span class="layer-marker">✓</span><code>test_phase_13_86_stage_bb.py::test_BB3_realistic_group_quantiles_and_facet_bins_compose_inside_panels</code><span class="outcome passed">passed</span></li>
+<li><span class="layer-marker">✓</span><code>test_phase_13_86_stage_bb.py::test_BB4_expression_vector_selection_vector_composes_within_each_facet[inner-2]</code><span class="outcome passed">passed</span></li>
+<li><span class="layer-marker">✓</span><code>test_phase_13_86_stage_bb.py::test_BB4_expression_vector_selection_vector_composes_within_each_facet[outer-4]</code><span class="outcome passed">passed</span></li>
+<li><span class="layer-marker">✓</span><code>test_phase_13_86_stage_bb.py::test_BB5_expression_vector_weights_vector_composes_within_each_facet[inner-2]</code><span class="outcome passed">passed</span></li>
+<li><span class="layer-marker">✓</span><code>test_phase_13_86_stage_bb.py::test_BB5_expression_vector_weights_vector_composes_within_each_facet[outer-4]</code><span class="outcome passed">passed</span></li>
+<li><span class="layer-marker">✓</span><code>test_phase_13_86_stage_bb.py::test_BB6_neighbor_hist_scatter_expression_vector_facet_refuse_loudly[hist-[y0,y1]-draw]</code><span class="outcome passed">passed</span></li>
+<li><span class="layer-marker">✓</span><code>test_phase_13_86_stage_bb.py::test_BB6_neighbor_hist_scatter_expression_vector_facet_refuse_loudly[hist-[y0,y1]-typed]</code><span class="outcome passed">passed</span></li>
+<li><span class="layer-marker">✓</span><code>test_phase_13_86_stage_bb.py::test_BB6_neighbor_hist_scatter_expression_vector_facet_refuse_loudly[scatter-[y0,y1]:x-draw]</code><span class="outcome passed">passed</span></li>
+<li><span class="layer-marker">✓</span><code>test_phase_13_86_stage_bb.py::test_BB6_neighbor_hist_scatter_expression_vector_facet_refuse_loudly[scatter-[y0,y1]:x-typed]</code><span class="outcome passed">passed</span></li>
+<li><span class="layer-marker">✓</span><code>test_phase_13_86_stage_bb.py::test_BB7_profile_expression_vector_nd_facet_positive_contract[draw]</code><span class="outcome passed">passed</span></li>
+<li><span class="layer-marker">✓</span><code>test_phase_13_86_stage_bb.py::test_BB7_profile_expression_vector_nd_facet_positive_contract[typed]</code><span class="outcome passed">passed</span></li>
+<li><span class="layer-marker">✓</span><code>test_phase_13_86_stage_bb.py::test_BB8_public_same_true_neighbor_remains_invalid</code><span class="outcome passed">passed</span></li>
+<li><span class="layer-marker">👁</span><code>test_phase_13_86_stage_bb.py::test_BB9_expression_vector_channel_identity_is_stable_across_facets</code><span class="outcome passed">passed</span></li>
+</ul>
+</div></td></tr>
+<tr id="feature-VECTOR.expression_components" class="feature-row" data-status="Verified" data-visual="no" data-category="VECTOR"><td><span class="expand-toggle">▶</span></td><td>✅</td><td><strong class="mono">VECTOR.expression_components</strong> — Computed y components and shared x expressions are materialized correctly in vector and ordinary profile facets through typed/draw doors (Stage B-c)</td><td class="n">8</td><td class="n">8</td><td class="n">0</td><td class="n">8</td><td class="n"></td></tr>
+<tr class="tests-row" hidden><td colspan="8">
+<div class="tests-panel">
+<ul>
+<li><span class="layer-marker">✓</span><code>test_phase_13_86_stage_bc.py::test_BC1_computed_y_component_works_with_vector_facets[draw]</code><span class="outcome passed">passed</span></li>
+<li><span class="layer-marker">✓</span><code>test_phase_13_86_stage_bc.py::test_BC1_computed_y_component_works_with_vector_facets[typed]</code><span class="outcome passed">passed</span></li>
+<li><span class="layer-marker">✓</span><code>test_phase_13_86_stage_bc.py::test_BC2_computed_y_component_works_inside_ordinary_facets[draw]</code><span class="outcome passed">passed</span></li>
+<li><span class="layer-marker">✓</span><code>test_phase_13_86_stage_bc.py::test_BC2_computed_y_component_works_inside_ordinary_facets[typed]</code><span class="outcome passed">passed</span></li>
+<li><span class="layer-marker">✓</span><code>test_phase_13_86_stage_bc.py::test_BC3_computed_shared_x_expression_is_materialized[draw-facet]</code><span class="outcome passed">passed</span></li>
+<li><span class="layer-marker">✓</span><code>test_phase_13_86_stage_bc.py::test_BC3_computed_shared_x_expression_is_materialized[draw-vector]</code><span class="outcome passed">passed</span></li>
+<li><span class="layer-marker">✓</span><code>test_phase_13_86_stage_bc.py::test_BC3_computed_shared_x_expression_is_materialized[typed-facet]</code><span class="outcome passed">passed</span></li>
+<li><span class="layer-marker">✓</span><code>test_phase_13_86_stage_bc.py::test_BC3_computed_shared_x_expression_is_materialized[typed-vector]</code><span class="outcome passed">passed</span></li>
+</ul>
+</div></td></tr>
 <tr class="category-row"><td colspan="8">VISUAL</td></tr>
 <tr id="feature-VISUAL.data_bounds" class="feature-row" data-status="Smoke-only" data-visual="yes" data-category="VISUAL"><td><span class="expand-toggle">▶</span></td><td>☑️</td><td><strong class="mono">VISUAL.data_bounds</strong> — plotted points lie within axes limits (C-9 regression lock) <span class="eye-badge">👁</span></td><td class="n">1</td><td class="n">1</td><td class="n">0</td><td class="n">0</td><td class="n">1</td></tr>
 <tr class="tests-row" hidden><td colspan="8">
@@ -1798,8 +2478,8 @@ footer { color: var(--muted); font-size: 0.85em; margin-top: 3em; border-top: 1p
 </tbody></table>
 <div id="no-results" class="no-results" hidden>No features match the current filters.</div>
 </section>
-<section><h2>Unmatched Tests (486)</h2>
-<p>486 tests pytest collected that no feature claims. Grouped by test-file prefix.</p>
+<section><h2>Unmatched Tests (645)</h2>
+<p>645 tests pytest collected that no feature claims. Grouped by test-file prefix.</p>
 <details><summary><code>test_adf_integration.py</code> (14)</summary><ul>
 <li><code>test_adf_integration.py::TestBatchWithAxisTitles::test_batch_uses_axis_titles</code></li>
 <li><code>test_adf_integration.py::TestDFDrawDataSourceStorage::test_data_source_is_original</code></li>
@@ -1816,12 +2496,11 @@ footer { color: var(--muted); font-size: 0.85em; margin-top: 3em; border-top: 1p
 <li><code>test_adf_integration.py::TestWithoutDataSource::test_hist_without_data_source</code></li>
 <li><code>test_adf_integration.py::TestWithoutDataSource::test_scatter_without_data_source</code></li>
 </ul></details>
-<details><summary><code>test_auto_title.py</code> (17)</summary><ul>
+<details><summary><code>test_auto_title.py</code> (16)</summary><ul>
 <li><code>test_auto_title.py::TestAutoTitleHexbin::test_auto_title_hexbin</code></li>
 <li><code>test_auto_title.py::TestAutoTitleParts::test_callable_selection_skipped</code></li>
 <li><code>test_auto_title.py::TestAutoTitleParts::test_expr_only</code></li>
 <li><code>test_auto_title.py::TestAutoTitleParts::test_expr_plus_group</code></li>
-<li><code>test_auto_title.py::TestAutoTitleParts::test_long_selection_truncated</code></li>
 <li><code>test_auto_title.py::TestAutoTitleProfile::test_auto_title_with_group</code></li>
 <li><code>test_auto_title.py::TestAutoTitleProfile::test_auto_title_with_selection</code></li>
 <li><code>test_auto_title.py::TestAutoTitleProfile::test_auto_title_with_weights</code></li>
@@ -1861,6 +2540,44 @@ footer { color: var(--muted); font-size: 0.85em; margin-top: 3em; border-top: 1p
 </ul></details>
 <details><summary><code>test_batch_groups.py</code> (1)</summary><ul>
 <li><code>test_batch_groups.py::test_return_structure</code></li>
+</ul></details>
+<details><summary><code>test_bug_vector_facet_channel_fit.py</code> (15)</summary><ul>
+<li><code>test_bug_vector_facet_channel_fit.py::test_T10_explicit_range_respected_in_vector_facet</code></li>
+<li><code>test_bug_vector_facet_channel_fit.py::test_T10b_no_range_still_autoranges</code></li>
+<li><code>test_bug_vector_facet_channel_fit.py::test_T1_assign_channels_called_at_most_once_vector_facet</code></li>
+<li><code>test_bug_vector_facet_channel_fit.py::test_T1b_assign_channels_at_most_once_weights_vector</code></li>
+<li><code>test_bug_vector_facet_channel_fit.py::test_T2_selection_vector_facet_returns_vector_major_list</code></li>
+<li><code>test_bug_vector_facet_channel_fit.py::test_T2b_selection_branch_order_matches_selection_order</code></li>
+<li><code>test_bug_vector_facet_channel_fit.py::test_T3_weights_vector_facet_returns_vector_major_list</code></li>
+<li><code>test_bug_vector_facet_channel_fit.py::test_T4_ordinary_facet_still_returns_dict</code></li>
+<li><code>test_bug_vector_facet_channel_fit.py::test_T4b_ordinary_facet_fit_still_lands_at_top_level</code></li>
+<li><code>test_bug_vector_facet_channel_fit.py::test_T5_resolved_assignment_matches_unfaceted_resolution</code></li>
+<li><code>test_bug_vector_facet_channel_fit.py::test_T5b_line_styles_identical_across_panels</code></li>
+<li><code>test_bug_vector_facet_channel_fit.py::test_T6_selection_vector_facet_fit_present_per_branch</code></li>
+<li><code>test_bug_vector_facet_channel_fit.py::test_T7_weights_vector_facet_fit_present_per_branch</code></li>
+<li><code>test_bug_vector_facet_channel_fit.py::test_T8_selection_vector_facet_fit_summary_fit_consumable</code></li>
+<li><code>test_bug_vector_facet_channel_fit.py::test_T9_weights_vector_facet_fit_summary_fit_consumable</code></li>
+</ul></details>
+<details><summary><code>test_bug_vector_facet_semantic_dimension_oracle.py</code> (7)</summary><ul>
+<li><code>test_bug_vector_facet_semantic_dimension_oracle.py::test_SDO_1_branch_identity_bound_to_raw_counts</code></li>
+<li><code>test_bug_vector_facet_semantic_dimension_oracle.py::test_SDO_2_every_branch_has_a_fit_for_every_facet</code></li>
+<li><code>test_bug_vector_facet_semantic_dimension_oracle.py::test_SDO_3_summary_payload_real_and_exact_row_count</code></li>
+<li><code>test_bug_vector_facet_semantic_dimension_oracle.py::test_SDO_4_exact_semantic_coordinate_product</code></li>
+<li><code>test_bug_vector_facet_semantic_dimension_oracle.py::test_SDO_5_fit_params_match_generated_truth_per_coordinate</code></li>
+<li><code>test_bug_vector_facet_semantic_dimension_oracle.py::test_SDO_6_rendered_table_identities_match_validated_rows</code></li>
+<li><code>test_bug_vector_facet_semantic_dimension_oracle.py::test_SDO_9_grouped_keeps_three_dimensions_separate</code></li>
+</ul></details>
+<details><summary><code>test_bug_vector_facet_summary_fit_semantics.py</code> (10)</summary><ul>
+<li><code>test_bug_vector_facet_summary_fit_semantics.py::test_branch_identity_is_present_and_distinct</code></li>
+<li><code>test_bug_vector_facet_summary_fit_semantics.py::test_every_actual_facet_value_appears_in_the_facet_label</code></li>
+<li><code>test_bug_vector_facet_summary_fit_semantics.py::test_fit_payload_survives_alongside_correct_labels</code></li>
+<li><code>test_bug_vector_facet_summary_fit_semantics.py::test_fixture_cardinalities_are_asymmetric</code></li>
+<li><code>test_bug_vector_facet_summary_fit_semantics.py::test_group_by_populates_group_without_corrupting_facet</code></li>
+<li><code>test_bug_vector_facet_summary_fit_semantics.py::test_group_is_unset_when_no_group_by_requested</code></li>
+<li><code>test_bug_vector_facet_summary_fit_semantics.py::test_ordinary_facet_summary_fit_unchanged_by_the_fix</code></li>
+<li><code>test_bug_vector_facet_summary_fit_semantics.py::test_plain_vector_summary_fit_unchanged_by_the_fix</code></li>
+<li><code>test_bug_vector_facet_summary_fit_semantics.py::test_row_count_is_the_full_facet_by_branch_cross_product</code></li>
+<li><code>test_bug_vector_facet_summary_fit_semantics.py::test_summary_fit_is_a_real_payload_not_a_note</code></li>
 </ul></details>
 <details><summary><code>test_data_sanitize_autorange.py</code> (6)</summary><ul>
 <li><code>test_data_sanitize_autorange.py::TestNanPolicy::test_nan_policy_raise_only_fires_when_invalid_present</code></li>
@@ -2143,6 +2860,135 @@ footer { color: var(--muted); font-size: 0.85em; margin-top: 3em; border-top: 1p
 <details><summary><code>test_phase_13_52_df_overlay.py</code> (1)</summary><ul>
 <li><code>test_phase_13_52_df_overlay.py::test_T1p_overlay_profile2d_profile_alternative_density_base</code></li>
 </ul></details>
+<details><summary><code>test_phase_13_82_semantic_explain.py</code> (58)</summary><ul>
+<li><code>test_phase_13_82_semantic_explain.py::test_B10_public_explain_does_not_change_later_draw</code></li>
+<li><code>test_phase_13_82_semantic_explain.py::test_B1_public_explain_default_is_machine_readable_dict</code></li>
+<li><code>test_phase_13_82_semantic_explain.py::test_B2_public_explain_pretty_is_same_description</code></li>
+<li><code>test_phase_13_82_semantic_explain.py::test_B3_public_explain_dict_matches_private_description</code></li>
+<li><code>test_phase_13_82_semantic_explain.py::test_B4a_public_explain_supplied_view_is_available</code></li>
+<li><code>test_phase_13_82_semantic_explain.py::test_B4b_public_explain_reserved_resolved_views_fail_loudly[all]</code></li>
+<li><code>test_phase_13_82_semantic_explain.py::test_B4b_public_explain_reserved_resolved_views_fail_loudly[resolved]</code></li>
+<li><code>test_phase_13_82_semantic_explain.py::test_B5_public_explain_unknown_view_is_rejected</code></li>
+<li><code>test_phase_13_82_semantic_explain.py::test_B6_public_explain_unknown_format_is_rejected</code></li>
+<li><code>test_phase_13_82_semantic_explain.py::test_B7_public_explain_refuses_unsupported_type_loudly</code></li>
+<li><code>test_phase_13_82_semantic_explain.py::test_B8_public_explain_draws_nothing_and_leaves_frame_unchanged</code></li>
+<li><code>test_phase_13_82_semantic_explain.py::test_B9_public_explain_does_not_mutate_global_configuration</code></li>
+<li><code>test_phase_13_82_semantic_explain.py::test_G1A_S1_effective_global_then_explicit_override</code></li>
+<li><code>test_phase_13_82_semantic_explain.py::test_G1A_S1_supplied_omits_unsupplied_defaults</code></li>
+<li><code>test_phase_13_82_semantic_explain.py::test_G1A_S2_same_effective_marker_can_preserve_different_explicitness</code></li>
+<li><code>test_phase_13_82_semantic_explain.py::test_G1A_S3_multibranch_selection_vector_has_named_branch_coordinate</code></li>
+<li><code>test_phase_13_82_semantic_explain.py::test_G1A_S3_one_element_vector_combines_with_global_selection</code></li>
+<li><code>test_phase_13_82_semantic_explain.py::test_G1A_S3_one_element_vector_lowers_to_scalar_without_branch</code></li>
+<li><code>test_phase_13_82_semantic_explain.py::test_G1A_S6_group_coordinate_is_named_without_resolving_membership</code></li>
+<li><code>test_phase_13_82_semantic_explain.py::test_G1A_S7_declared_profile_doors_share_contract_semantics</code></li>
+<li><code>test_phase_13_82_semantic_explain.py::test_G1A_S7_does_not_overgeneralize_delta_evidence</code></li>
+<li><code>test_phase_13_82_semantic_explain.py::test_G1A_S7_unknown_door_is_rejected</code></li>
+<li><code>test_phase_13_82_semantic_explain.py::test_G1A_pretty_and_dict_are_same_semantic_owner</code></li>
+<li><code>test_phase_13_82_semantic_explain.py::test_G1A_status_vocabulary_is_ratified_two_axis_model</code></li>
+<li><code>test_phase_13_82_semantic_explain.py::test_G1A_unmodeled_kwarg_refuses_instead_of_returning_partial_answer</code></li>
+<li><code>test_phase_13_82_semantic_explain.py::test_G1A_v11_dependent_group_bins_without_group_is_explicit</code></li>
+<li><code>test_phase_13_82_semantic_explain.py::test_G1A_v11_refusal_is_terminal_and_drops_downstream_gap_evidence</code></li>
+<li><code>test_phase_13_82_semantic_explain.py::test_G1A_v11_status_known_gap_is_not_weakened_by_unmeasured</code></li>
+<li><code>test_phase_13_82_semantic_explain.py::test_G1A_v11_status_multiple_known_gap_evidence_coexists</code></li>
+<li><code>test_phase_13_82_semantic_explain.py::test_G1A_v11_vector_owner_empty_selection_refusal</code></li>
+<li><code>test_phase_13_82_semantic_explain.py::test_G1A_v11_vector_owner_scalar_y_two_selection_inner_refuses</code></li>
+<li><code>test_phase_13_82_semantic_explain.py::test_G1A_v11_vector_owner_scalar_y_two_selection_outer</code></li>
+<li><code>test_phase_13_82_semantic_explain.py::test_G1A_v11_vector_owner_two_y_two_selection_inner</code></li>
+<li><code>test_phase_13_82_semantic_explain.py::test_P1_1_both_callers_consume_the_same_declarations</code></li>
+<li><code>test_phase_13_82_semantic_explain.py::test_P1_1_field_contracts_are_declared_in_exactly_one_place</code></li>
+<li><code>test_phase_13_82_semantic_explain.py::test_T11_explanation_agrees_with_execution[explicit bins-kwargs3]</code></li>
+<li><code>test_phase_13_82_semantic_explain.py::test_T11_explanation_agrees_with_execution[explicit marker-kwargs1]</code></li>
+<li><code>test_phase_13_82_semantic_explain.py::test_T11_explanation_agrees_with_execution[explicit markersize-kwargs2]</code></li>
+<li><code>test_phase_13_82_semantic_explain.py::test_T11_explanation_agrees_with_execution[plain call-kwargs0]</code></li>
+<li><code>test_phase_13_82_semantic_explain.py::test_T11b_explain_surface_agrees_with_the_draw_path</code></li>
+<li><code>test_phase_13_82_semantic_explain.py::test_T11c_drift_would_be_caught</code></li>
+<li><code>test_phase_13_82_semantic_explain.py::test_T1_resolve_matches_the_inline_pattern_it_replaced</code></li>
+<li><code>test_phase_13_82_semantic_explain.py::test_T1b_no_config_key_means_the_fallback_applies</code></li>
+<li><code>test_phase_13_82_semantic_explain.py::test_T2_explain_draws_nothing</code></li>
+<li><code>test_phase_13_82_semantic_explain.py::test_T2b_explain_does_not_mutate_global_configuration</code></li>
+<li><code>test_phase_13_82_semantic_explain.py::test_T2c_explain_does_not_mutate_the_frame</code></li>
+<li><code>test_phase_13_82_semantic_explain.py::test_T2d_explain_does_not_affect_a_later_draw</code></li>
+<li><code>test_phase_13_82_semantic_explain.py::test_T4_explicitness_is_recorded_for_origin_sensitive_fields</code></li>
+<li><code>test_phase_13_82_semantic_explain.py::test_T4b_non_origin_sensitive_fields_do_not_claim_explicitness</code></li>
+<li><code>test_phase_13_82_semantic_explain.py::test_T5_value_equal_to_shipped_default_is_reported_as_unknown</code></li>
+<li><code>test_phase_13_82_semantic_explain.py::test_T5b_changed_registry_value_is_reported_as_changed</code></li>
+<li><code>test_phase_13_82_semantic_explain.py::test_T5c_explicit_call_argument_carries_no_origin_detail</code></li>
+<li><code>test_phase_13_82_semantic_explain.py::test_T5d_an_invented_origin_is_rejected</code></li>
+<li><code>test_phase_13_82_semantic_explain.py::test_T_CAL_01_oracle01_one_element_selection_vector_product_equivalence</code></li>
+<li><code>test_phase_13_82_semantic_explain.py::test_T_CAL_05_oracle05_draw_profile_normalize_product_equivalence</code></li>
+<li><code>test_phase_13_82_semantic_explain.py::test_explain_is_deterministic</code></li>
+<li><code>test_phase_13_82_semantic_explain.py::test_explain_refuses_unsupported_types_loudly</code></li>
+<li><code>test_phase_13_82_semantic_explain.py::test_phase_13_83_fixed_oracles_are_passing_regressions</code></li>
+</ul></details>
+<details><summary><code>test_phase_13_83_bug01_bug05.py</code> (11)</summary><ul>
+<li><code>test_phase_13_83_bug01_bug05.py::test_B01_empty_selection_vector_still_refuses</code></li>
+<li><code>test_phase_13_83_bug01_bug05.py::test_B01_selection_singleton_composes_with_global_selection</code></li>
+<li><code>test_phase_13_83_bug01_bug05.py::test_B01_selection_singleton_matches_scalar_selection_with_facet</code></li>
+<li><code>test_phase_13_83_bug01_bug05.py::test_B01_singleton_selection_hist_matches_scalar_selection</code></li>
+<li><code>test_phase_13_83_bug01_bug05.py::test_B01_singleton_selection_label_refuses_explicitly</code></li>
+<li><code>test_phase_13_83_bug01_bug05.py::test_B01_weights_singleton_matches_scalar_weights</code></li>
+<li><code>test_phase_13_83_bug01_bug05.py::test_B01_weights_singleton_multiplies_global_weights</code></li>
+<li><code>test_phase_13_83_bug01_bug05.py::test_B05_draw_bracket_vector_callable_matches_typed_profile</code></li>
+<li><code>test_phase_13_83_bug01_bug05.py::test_B05_draw_bracket_vector_delta_matches_typed_profile</code></li>
+<li><code>test_phase_13_83_bug01_bug05.py::test_B05_draw_bracket_vector_ratio_matches_typed_profile</code></li>
+<li><code>test_phase_13_83_bug01_bug05.py::test_B05_no_normalize_bracket_vector_draw_keeps_existing_vector_shape</code></li>
+</ul></details>
+<details><summary><code>test_phase_13_83_bug02.py</code> (4)</summary><ul>
+<li><code>test_phase_13_83_bug02.py::test_B02_CONTROL_facet_only_hist_is_already_correct</code></li>
+<li><code>test_phase_13_83_bug02.py::test_B02_CONTROL_nonfaceted_outer_vector_hist_is_already_correct</code></li>
+<li><code>test_phase_13_83_bug02.py::test_B02_RED_default_inner_refuses_instead_of_silently_dropping_vector</code></li>
+<li><code>test_phase_13_83_bug02.py::test_B02_RED_outer_hist_selection_vector_facet_matches_independent_numpy</code></li>
+</ul></details>
+<details><summary><code>test_phase_13_84_hist_ratio.py</code> (23)</summary><ul>
+<li><code>test_phase_13_84_hist_ratio.py::test_hist_ratio_auto_title_is_applied_like_plain_hist</code></li>
+<li><code>test_phase_13_84_hist_ratio.py::test_hist_ratio_creates_no_stray_figures</code></li>
+<li><code>test_phase_13_84_hist_ratio.py::test_hist_ratio_diff_only_layout</code></li>
+<li><code>test_phase_13_84_hist_ratio.py::test_hist_ratio_draw_door_equals_typed_hist_door</code></li>
+<li><code>test_phase_13_84_hist_ratio.py::test_hist_ratio_lower_panel_rendered_values_match_independent_truth</code></li>
+<li><code>test_phase_13_84_hist_ratio.py::test_hist_ratio_payload_values_and_errors_match_profile_convention</code></li>
+<li><code>test_phase_13_84_hist_ratio.py::test_hist_ratio_refuses_outside_domain[bad0-NotImplementedError]</code></li>
+<li><code>test_phase_13_84_hist_ratio.py::test_hist_ratio_refuses_outside_domain[bad1-NotImplementedError]</code></li>
+<li><code>test_phase_13_84_hist_ratio.py::test_hist_ratio_refuses_outside_domain[bad2-NotImplementedError]</code></li>
+<li><code>test_phase_13_84_hist_ratio.py::test_hist_ratio_refuses_outside_domain[bad3-NotImplementedError]</code></li>
+<li><code>test_phase_13_84_hist_ratio.py::test_hist_ratio_refuses_outside_domain[bad4-NotImplementedError]</code></li>
+<li><code>test_phase_13_84_hist_ratio.py::test_hist_ratio_refuses_outside_domain[bad5-ValueError]</code></li>
+<li><code>test_phase_13_84_hist_ratio.py::test_hist_ratio_refuses_wrong_branch_count[bad0]</code></li>
+<li><code>test_phase_13_84_hist_ratio.py::test_hist_ratio_refuses_wrong_branch_count[bad1]</code></li>
+<li><code>test_phase_13_84_hist_ratio.py::test_hist_ratio_selection_vector_two_branches</code></li>
+<li><code>test_phase_13_84_hist_ratio.py::test_hist_ratio_step_histtype_acceptance_form</code></li>
+<li><code>test_phase_13_84_hist_ratio.py::test_hist_ratio_upper_panel_branches_have_distinct_colors[bar]</code></li>
+<li><code>test_phase_13_84_hist_ratio.py::test_hist_ratio_upper_panel_branches_have_distinct_colors[step]</code></li>
+<li><code>test_phase_13_84_hist_ratio.py::test_hist_ratio_upper_panel_branches_have_distinct_colors[stepfilled]</code></li>
+<li><code>test_phase_13_84_hist_ratio.py::test_hist_ratio_upper_panel_histograms_unchanged</code></li>
+<li><code>test_phase_13_84_hist_ratio.py::test_hist_ratio_user_color_applies_to_both_branches</code></li>
+<li><code>test_phase_13_84_hist_ratio.py::test_hist_ratio_zero_denominator_is_masked_like_profile</code></li>
+<li><code>test_phase_13_84_hist_ratio.py::test_positive_control_two_weighted_histograms_without_normalize</code></li>
+</ul></details>
+<details><summary><code>test_phase_13_86_stage_a_red.py</code> (1)</summary><ul>
+<li><code>test_phase_13_86_stage_a_red.py::TestStageAStructuralBoundaryInventory::test_A10g_draw_to_typed_refused_names_fail_loudly[profile2d-group_by_scope-global]</code></li>
+</ul></details>
+<details><summary><code>test_phase_13_90_single_layout_owner_red.py</code> (9)</summary><ul>
+<li><code>test_phase_13_90_single_layout_owner_red.py::test_R1_faceted_plot_has_exactly_one_final_layout_pass[hist-y]</code></li>
+<li><code>test_phase_13_90_single_layout_owner_red.py::test_R1_faceted_plot_has_exactly_one_final_layout_pass[hist2d-y:x]</code></li>
+<li><code>test_phase_13_90_single_layout_owner_red.py::test_R1_faceted_plot_has_exactly_one_final_layout_pass[profile-y:x]</code></li>
+<li><code>test_phase_13_90_single_layout_owner_red.py::test_R1_faceted_plot_has_exactly_one_final_layout_pass[scatter-y:x]</code></li>
+<li><code>test_phase_13_90_single_layout_owner_red.py::test_R2_new_phase_13_91_hist_vector_facets_have_one_layout_pass</code></li>
+<li><code>test_phase_13_90_single_layout_owner_red.py::test_R3_standalone_nonfaceted_layout_behavior_is_unchanged[hist-y]</code></li>
+<li><code>test_phase_13_90_single_layout_owner_red.py::test_R3_standalone_nonfaceted_layout_behavior_is_unchanged[hist2d-y:x]</code></li>
+<li><code>test_phase_13_90_single_layout_owner_red.py::test_R3_standalone_nonfaceted_layout_behavior_is_unchanged[profile-y:x]</code></li>
+<li><code>test_phase_13_90_single_layout_owner_red.py::test_R3_standalone_nonfaceted_layout_behavior_is_unchanged[scatter-y:x]</code></li>
+</ul></details>
+<details><summary><code>test_phase_13_96_preclosure_presentation_red.py</code> (9)</summary><ul>
+<li><code>test_phase_13_96_preclosure_presentation_red.py::test_PC01_2d_facet_auto_title_includes_effective_selection</code></li>
+<li><code>test_phase_13_96_preclosure_presentation_red.py::test_PC02_2d_facet_auto_title_reuses_width_fit_helper</code></li>
+<li><code>test_phase_13_96_preclosure_presentation_red.py::test_PC03_auto_title_false_does_not_inject_selection_title</code></li>
+<li><code>test_phase_13_96_preclosure_presentation_red.py::test_PC04_explicit_title_remains_owner</code></li>
+<li><code>test_phase_13_96_preclosure_presentation_red.py::test_PC05_selection_title_preserves_shared_stagef_legend_and_shape</code></li>
+<li><code>test_phase_13_96_preclosure_presentation_red.py::test_PC06_legacy_no_stat_legend_order_matches_pre_stagef</code></li>
+<li><code>test_phase_13_96_preclosure_presentation_red.py::test_PC07_legacy_marker_request_keeps_historical_expression_proxy_identity</code></li>
+<li><code>test_phase_13_96_preclosure_presentation_red.py::test_PC08_stagef_legend_order_and_marker_proxies_remain_new_contract</code></li>
+<li><code>test_phase_13_96_preclosure_presentation_red.py::test_PC09_presentation_paths_preserve_public_stats_shape</code></li>
+</ul></details>
 <details><summary><code>test_profile.py</code> (24)</summary><ul>
 <li><code>test_profile.py::TestBasicProfile::test_profile_requires_2d_expr</code></li>
 <li><code>test_profile.py::TestBasicProfile::test_profile_stats_keys</code></li>
@@ -2314,6 +3160,21 @@ footer { color: var(--muted); font-size: 0.85em; margin-top: 3em; border-top: 1p
 <li><code>test_style.py::TestSetStyle::test_set_style_invalid_key_raises</code></li>
 <li><code>test_style.py::TestSetStyle::test_set_style_invalid_name_raises</code></li>
 <li><code>test_style.py::TestSetStyle::test_set_style_invalid_type_raises</code></li>
+</ul></details>
+<details><summary><code>test_time_coords_perf.py</code> (13)</summary><ul>
+<li><code>test_time_coords_perf.py::test_T1_float_epoch_seconds_matches_legacy</code></li>
+<li><code>test_time_coords_perf.py::test_T2_integer_epoch_seconds_matches_legacy</code></li>
+<li><code>test_time_coords_perf.py::test_T3_realistic_epoch_is_not_left_as_raw_coordinate</code></li>
+<li><code>test_time_coords_perf.py::test_T4_datetime64_input_unchanged</code></li>
+<li><code>test_time_coords_perf.py::test_T5_sub_second_and_negative_epochs</code></li>
+<li><code>test_time_coords_perf.py::test_T6_nan_propagates_and_empty_is_safe</code></li>
+<li><code>test_time_coords_perf.py::test_T6b_list_input_accepted</code></li>
+<li><code>test_time_coords_perf.py::test_T6c_matplotlib_epoch_setting_is_honoured</code></li>
+<li><code>test_time_coords_perf.py::test_T7_no_plot_family_reimplements_the_conversion</code></li>
+<li><code>test_time_coords_perf.py::test_T7b_each_time_family_calls_the_owner</code></li>
+<li><code>test_time_coords_perf.py::test_T8_falsifier_actually_fails_on_the_old_implementation</code></li>
+<li><code>test_time_coords_perf.py::test_T8_no_object_dtype_datetime_materialisation</code></li>
+<li><code>test_time_coords_perf.py::test_T8b_large_vector_conversion_is_fast</code></li>
 </ul></details>
 <details><summary><code>test_validation_display.py</code> (3)</summary><ul>
 <li><code>test_validation_display.py::TestReferenceOverlay::test_overlay_custom_styling</code></li>

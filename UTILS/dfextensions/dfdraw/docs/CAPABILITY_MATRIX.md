@@ -1,7 +1,7 @@
 # Capability Matrix — dfdraw
 
-**Generated:** 2026-07-15 06:57 UTC
-**Phase:** PHASE_13_76_DF_END
+**Generated:** 2026-10-31 08:29 UTC
+**Phase:** PHASE_13_99_DF_END
 **Generator:** `scripts/generate_capability_matrix.py`
 **Sources:** `tests/feature_taxonomy.py` + `tests/test_layer_classification.py`
 
@@ -9,14 +9,14 @@
 
 | Status | Count | % |
 |--------|------:|--:|
-| ✅ Verified | 71 | 46% |
-| ☑️ Smoke-only | 81 | 53% |
+| ✅ Verified | 104 | 55% |
+| ☑️ Smoke-only | 84 | 44% |
 | 🧨 Broken | 0 | 0% |
-| 📋 Planned | 1 | 1% |
-| **Total features** | **153** | |
-| **Total proof tests** | **727** | |
-| **Invariance tests** | **389** | |
-| **Visual tests** | **34** | |
+| 📋 Planned | 2 | 1% |
+| **Total features** | **190** | |
+| **Total proof tests** | **1177** | |
+| **Invariance tests** | **688** | |
+| **Visual tests** | **76** | |
 
 **Status key:**
 - ✅ Verified — has at least one passing invariance test (A ≡ B check)
@@ -30,7 +30,7 @@
 | Status | Feature | Tests | Pass | Fail | Inv | Visual |
 |--------|---------|------:|-----:|-----:|----:|-------:|
 | | **ADF** | | | | | |
-| ☑️ | **ADF.axis_titles** — Duck-typed axis titles from AliasDataFrame | 5 | 5 | 0 | 0 |  |
+| ✅ | **ADF.axis_titles** — Duck-typed axis titles from AliasDataFrame, including per-component labels in vector profile facets | 9 | 9 | 0 | 4 |  |
 | | **ANNOT** | | | | | |
 | ☑️ | **ANNOT.statistics_box** — Statistics annotation box | 3 | 3 | 0 | 0 |  |
 | ☑️ | **ANNOT.reference_overlay** — Reference function overlay (Gaussian, callable) | 4 | 4 | 0 | 0 |  |
@@ -77,6 +77,7 @@
 | ✅ | **DISPATCH.kwarg_aliases** — Kept-forever aliases (D4 quantiles_mode->quantile_mode both surfaces, scope-limited per FX-4; DR-5 fit p0->initial, guess untouched); equivalence-tested incl. old-key forms | 14 | 14 | 0 | 4 |  |
 | ☑️ | **DISPATCH.input_guards** — Clean input guards: time_format/quantiles dict rejection (AF-1), non-numeric binning subjects (AF-3, profile + dispatch twins) — negative controls assert dfdraw raises, never the backend | 9 | 9 | 0 | 0 |  |
 | ✅ | **DISPATCH.E3_parity** — draw() entry-form parity with typed methods on the profile2d/scatter3d early-dispatch: named params (ax/selection/bins/save/...) forwarded (K-4, E-3/E3-D fix); F-E native 3-var profile promotion on draw()+draw_batch | 9 | 9 | 0 | 4 |  |
+| ✅ | **DISPATCH.facet_owner_contract** — Explicit draw→typed→facet ownership contract: forwarded/consumed/refused parameters preserve semantics or fail loudly (Stage A) 👁 | 57 | 57 | 0 | 50 | 7 |
 | | **DRAW** | | | | | |
 | ✅ | **DRAW.R2_forwarding** — draw() scalar dispatch forwards Phase 13.27–13.41 named params (selection_vector, weights_vector, share_*, facet_by, etc.) to all 4 typed methods — A≡B with direct calls | 2 | 2 | 0 | 2 |  |
 | | **FACET** | | | | | |
@@ -88,6 +89,13 @@
 | ✅ | **FACET.numeric_bin_sort** — Facet bin panels in numeric order, not lexicographic (BUG-003) — Phase 13.32 FIX1 | 1 | 1 | 0 | 1 |  |
 | ✅ | **FACET.float_facet_by_guard** — _dispatch_faceted_render() float facet_by + no bins + nunique>20 raises ValueError with facet_by_bins=N / facet_by_quantiles=N guidance (BUG-017; third instance of BUG-012/BUG-015 float-guard class) — Phase 13.38.DF | 2 | 2 | 0 | 2 |  |
 | ✅ | **FACET.list_grid** — facet_by accepts Union[str, List[str]] for 1D/2D/3D faceting. Convention LOCKED matching numpy/pandas (n_rows, n_cols, ...) shape: facet_by[0]=ROW (vertical within figure), facet_by[1]=COLUMN (horizontal within figure), facet_by[2]=FIGID (separate figures, one per value). facet_by[3+] raises NotImplementedError. 3D returns (List[Figure], List[axes_2d], List[stats_dict]) — DEVIATES from standard (fig, ax, stats) contract; documented prominently in inline help. New params: share_x/share_y ∈ {'all','row','col','none'} (within-figure axis sharing), share_across_figures: bool (3D global range lock). Per-plot-kind lock for share_across_figures (CP1-2): scatter locks x AND y; hist/profile locks x only (y auto-scales per figure to handle sparse-figID variance). New helpers: _normalize_facet_args, _to_mpl_share (symmetric {'all':True,'row':'row','col':'col','none':False} — v1.2 CP0-1 fix for Hard Constraint #3), _validate_share_axis_value, _resolve_facet_values (discrete or pd.cut/qcut Interval), _filter_facet_value (CP1-3 discrete vs binned), _compute_global_ranges. dfdraw is FIRST major plotting library with unified API where Nth faceting dimension generates separate figures (seaborn/ggplot2/plotly/altair all require manual loops). _validate_facet_by_binning guard for list input (v1.3 P1-A). Per-plot-kind dispatch: hist uses range= (matplotlib convention); profile uses range= which DFDraw.profile remaps to draw_profile's x_range= internally; scatter uses ax.set_xlim/set_ylim post-draw (no native range params); hist also locks ax.set_xlim post-draw (range= only locks bins, not axis xlim). Empty cell handling: '(no data)' diagnostic + stats={'n':0,'empty':True} — Phase 13.41.DF | 31 | 31 | 0 | 27 |  |
+| 📋 | **FACET.known_silent_gap** — PLANNED gap: facet_by with ax=/same=True must fail loudly instead of being silently ignored; strict XFAIL inventory, not supported behavior | 7 | 0 | 0 | 0 |  |
+| ✅ | **FACET.nd_dense_presentation** — N-dimensional facet figures use one layout owner per Figure, preserve ordered pandas categorical coordinates and explicit facet_order, provide outer row/column headings and figure-level semantic axis labels independently of numerical axis sharing, and honor explicit margins/spacing without scaling values or errors; unsupported inputs refuse and legacy presentation remains compatible (PHASE_13_93 Stage A) | 32 | 32 | 0 | 32 |  |
+| ✅ | **FACET.interval_label_format_2d** — 2-D numeric facet interval display formatting with canonical parameter/style precedence, collision-safe auto precision, atomic per-dimension overrides and unchanged statistical identity (PHASE_13_97 Stage A) 👁 | 23 | 23 | 0 | 14 | 3 |
+| ☑️ | **FACET.global_group_identity_in_figure** — Figure-wide group-by identity and global/facet provenance labels, without private metadata leakage (PHASE_13_98_DF) | 5 | 5 | 0 | 0 |  |
+| ☑️ | **FACET.figure_presentation_parity** — 1-D/2-D facet Figure headings, shared labels, titles, placement and legacy display modes (PHASE_13_99_DF) 👁 | 10 | 10 | 0 | 0 | 1 |
+| ☑️ | **FACET.grouped_vector_quantile_legend** — Shared legend identities and actual artist styles for grouped vector-profile quantiles and facets (PHASE_13_99_DF) | 7 | 7 | 0 | 0 |  |
+| ☑️ | **FACET.explicit_anchor_and_size_geometry** — Requested legend anchor, 2-D heading clipping and Figure size preserved (PHASE_13_99_DF) 👁 | 8 | 8 | 0 | 0 | 7 |
 | | **FIT** | | | | | |
 | ✅ | **FIT.inline** — Inline fits (fit= parameter on hist/profile/scatter/draw) | 41 | 41 | 0 | 41 |  |
 | ✅ | **FIT.summary** — Summary fit — standalone table + params figure | 27 | 27 | 0 | 27 |  |
@@ -101,6 +109,8 @@
 | ☑️ | **HIST.hist_errors** — Poisson error bar overlay (hist_errors=True): √n raw / √n/N probability / √n/(N·bw_i) density (per-bin); weighted Poisson via Σw²; zero-bin masking; ungrouped+bins=int safe; Phase 13.36 color sentinel preserved — Phase 13.37.DF | 10 | 10 | 0 | 0 |  |
 | ✅ | **HIST.time_axis** — hist() time_format= pre-conversion: x_data → matplotlib date numbers BEFORE ax.hist(). Post-hoc rewrite would be no-op for Patches (lesson from Phase 13.39 v1.0 P1). CP1-1 regression-lock: §9.TA.5 uses realistic timestamps (~1.7e9), as epoch-0 made both pre-conv (0.0) and raw (0) paths pass — Phase 13.39.DF | 1 | 1 | 0 | 1 |  |
 | ✅ | **HIST.cumulative** — hist() cumulative=True/-1/False — ROOT TH1::Draw('cumulative') equivalent. Three values: True (ascending CDF/ECDF), False (default, byte-identical backward compat), -1 (descending/survival, ROOT convention). matplotlib native cumulative= forwarded explicitly at 4 internal call sites (Phase 13.39 §2.2 lesson applied recursively: DFDraw.hist → draw_hist → _draw_hist_grouped → ax.hist; ALSO through _dispatch_faceted_render for facet_by composition). Composes with: norm='probability' (→ ECDF 0-1), group_by overlaid (per-group ECDFs), group_by stacked (CP2-1 regression lock for 3rd call site), facet_by (per-facet cumulative), histtype='step' (HEP-standard step ECDF). Correctness guard (M5): hist_errors+cumulative → NotImplementedError (Poisson per-bin errors are independent; cumulative counts are correlated). Vector dispatch [x,y] propagates cumulative correctly (Phase 13.16.DF FIX1 bug class lock) — Phase 13.40.DF | 10 | 10 | 0 | 10 |  |
+| ✅ | **HIST.expression_vector_facets** — Histogram bracket-expression vectors render one facet per component through typed/draw doors, with independent counts, stable expression identity, and per-component x-axis metadata (PHASE_13_91) | 5 | 5 | 0 | 5 |  |
+| ✅ | **HIST.expression_vector_facet_guards** — Histogram expression-vector facet composition rejects duplicate identities and deferred vector/normalize cross-products before Figure allocation (PHASE_13_91) | 5 | 5 | 0 | 5 |  |
 | | **HIST2D** | | | | | |
 | ☑️ | **HIST2D.time_format_epoch** — hist2d() time_format= handles float64 epoch-second timestamps (~1.776e9) without OverflowError; mirrors draw_hist() epoch-second branch (BUG_dfdraw_20260610 close) | 3 | 3 | 0 | 0 |  |
 | | **LEGEND** | | | | | |
@@ -120,6 +130,12 @@
 | ✅ | **NORMALIZE.validation** — normalize input validation: wrong vector count, invalid mode, same=True conflict — Phase 13.33 M1 | 3 | 3 | 0 | 3 |  |
 | ✅ | **NORMALIZE.group_by_compose** — group_by + normalize: per-group differential rendering — Phase 13.33 M2 | 3 | 3 | 0 | 3 |  |
 | ✅ | **NORMALIZE.facet_by_compose** — facet_by + normalize: K x 2 grid with per-facet independent differential; facet_by_bins/_quantiles raises (NF.3 workaround-hint lock) — Phase 13.33 M2 + FIX1 | 3 | 3 | 0 | 3 |  |
+| ✅ | **NORMALIZE.hist_shared_autorange** — Histogram ratio normalization resolves one canonical pooled range before branch rendering; explicit ranges remain exact and edge compatibility stays guarded (PHASE_13_88 Bug A) | 6 | 6 | 0 | 6 |  |
+| ✅ | **NORMALIZE.profile_expression_materialization** — Normalized profiles materialize supported computed x/y positional expressions on the active plain/grouped/faceted curve frame before low-level rendering (PHASE_13_88 Bug B) | 7 | 7 | 0 | 7 |  |
+| ✅ | **NORMALIZE.profile_shared_autorange** — Plain, grouped and faceted normalized-profile owners share the canonical configured 1-D autorange instead of local raw min/max (PHASE_13_88 F7) | 3 | 3 | 0 | 3 |  |
+| ✅ | **NORMALIZE.hist_draw_parity** — Public draw() preserves atomic two-expression histogram normalize semantics and computed branch expressions exactly as the typed hist() owner (PHASE_13_88 Bug C/follow-up) | 2 | 2 | 0 | 2 |  |
+| ✅ | **NORMALIZE.profile_explicit_ax_embedding** — Plain normalized profiles embed into caller-owned subplot Axes without changing numerical normalization or unrelated Figure ownership (PHASE_13_89) | 9 | 9 | 0 | 9 |  |
+| ✅ | **NORMALIZE.explicit_ax_refusal_guards** — Unsupported normalize + explicit-Axes ownership combinations refuse before caller mutation or persistent Figure leakage (PHASE_13_89) | 7 | 7 | 0 | 7 |  |
 | | **OVERLAY** | | | | | |
 | ☑️ | **OVERLAY.engine_layers_form** — overlay() engine with explicit layers=[...] (density base + overlays on one shared axes) | 4 | 4 | 0 | 0 |  |
 | ☑️ | **OVERLAY.engine_guards** — engine ValueError guards (empty, non-method type, non-allowed type, >1 density, non-density base, 3D) raise BEFORE any draw | 7 | 7 | 0 | 0 |  |
@@ -146,6 +162,16 @@
 | ✅ | **PROFILE.time_axis** — profile() time_format= pre-conversion: x_data converted to matplotlib date numbers via mdates.date2num() before binning. CP1-4 auto-detect: datetime64 column dtype detected BEFORE astype(float) (else int64-nanosecond cast becomes ~1.7e15 → pd.to_datetime crashes 'year out of range'). DateFormatter / AutoDateFormatter applied post-render — Phase 13.39.DF | 5 | 5 | 0 | 5 |  |
 | ✅ | **PROFILE.central_median_1d** — profile() central='median' renders the median line on the 1D non-grouped path (Phase 13.51 V-3 fix at profile.py:879; bin_means → _central_values) | 1 | 1 | 0 | 1 |  |
 | ✅ | **PROFILE.central_median_fit** — profile() central='median', fit=… — fit center reflects median data, not mean (Phase 13.51 P1-B fix at profile.py:907 fit curve _central_values) | 1 | 1 | 0 | 1 |  |
+| ✅ | **PROFILE.expression_vector_nd_facet** — Profile expression-vectors compose with N-D facet partitions and group overlays, global selected-frame group bins, stable physical group/vector identity and one Figure-level legend; preserve independent scalar numerical oracle and neighboring refusals (PHASE_13_94_DF) 👁 | 24 | 24 | 0 | 22 | 2 |
+| ✅ | **PROFILE.group_by_scope** — Public deterministic auto/global/facet group-by domain for 1-D and 2-D grouped profiles; selected-frame bins and quantiles, global physical identities, truthful legends and legacy compatibility (PHASE_13_95_DF) 👁 | 27 | 27 | 0 | 24 | 3 |
+| ✅ | **PROFILE.median_resolved_bin_edges** — Existing median uses precisely the resolved profile x-bin edges (PHASE_13_96 Stage A) | 3 | 3 | 0 | 3 |  |
+| ✅ | **PROFILE.stat_list_basic** — Mean/std/SEM statistic curves from one profile computation; independent numerical truth, compatibility and supported boundaries (PHASE_13_96) 👁 | 15 | 15 | 0 | 8 | 2 |
+| ✅ | **PROFILE.stat_list_median_quantiles** — Median and existing quantile bundles in independent profile statistic curves; exact-bin NumPy truth, central-line de-duplication, unsupported combinations fail-loud (PHASE_13_96 Stage C) 👁 | 18 | 18 | 0 | 9 | 3 |
+| ✅ | **PROFILE.stat_list_vector_composition** — Existing vector branches B compose independently with statistic curves S, preserving B × S identity, numerical truth, one Figure legend and fail-loud finite channels (PHASE_13_96 Stage D) 👁 | 12 | 12 | 0 | 5 | 3 |
+| ✅ | **PROFILE.stat_list_group_facet** — Statistic curves mean/std/SEM reuse existing grouped and faceted profile owners with independent numerical truth, stable global group colors, finite legends, compute-once and explicit unsupported-surface refusals (PHASE_13_96 Stage E) 👁 | 18 | 18 | 0 | 11 | 4 |
+| ✅ | **PROFILE.stat_list_vector_groupfacet_single_std** — Two expression profile branches compose with five Figure-global groups, 2-D facets and singleton std using group colors, expression markers, factored Figure legend and independent NumPy/pandas truth (PHASE_13_96 Stage F) 👁 | 17 | 17 | 0 | 5 | 4 |
+| ✅ | **PROFILE.grouped_facet_quantile_numeric_oracle** — Discrete grouped facet quantiles equal independent raw-data bin percentiles (PHASE_13_99_DF) | 1 | 1 | 0 | 1 |  |
+| ✅ | **PROFILE.paired_xy_expression_vector** — Positional [y0,y1]:[x0,x1] profile pairing, branch-local valid rows and X bins, scalar equivalence and 1-D ordinary facets (PHASE_13_100_DF) | 10 | 10 | 0 | 4 |  |
 | | **PROFILE2D** | | | | | |
 | ✅ | **PROFILE2D.central_median_mesh** — profile2d() central='median' produces a mesh that differs from mean (Phase 13.51 R-2: conditional central= forward into draw_profile2d) | 1 | 1 | 0 | 1 |  |
 | | **PYARROW** | | | | | |
@@ -179,11 +205,16 @@
 | ✅ | **SCATTER.time_axis** — scatter() time_format= pre-conversion: x_data → matplotlib date numbers BEFORE ax.scatter/ax.errorbar — Phase 13.39.DF | 1 | 1 | 0 | 1 |  |
 | ✅ | **SCATTER.scatter3d** — draw('z:y:x', type='scatter3d') → 3D point cloud via mpl_toolkits.mplot3d. Reuses Phase 13.38 _process_color() + _process_size() unchanged. color=/size= accept column names or df.eval() expressions. elev=/azim= for ax.view_init(). Stats dict locks mean_x AND mean_y AND mean_z to 1e-9 (CP1-3). Scope boundaries: group_by + scatter3d raises (CP2-1); same=True onto non-3D axes raises (CP2-2). 'y:x' (colon!=2) with type='scatter3d' raises with actionable message — Phase 13.39.DF | 8 | 8 | 0 | 8 |  |
 | ☑️ | **SCATTER.auto_title** — DFDraw.scatter() / draw(type='scatter') honors auto_title= without crashing PathCollection.set() — symmetry with hist/profile/scatter3d (BUG_dfdraw_20260609 close) | 3 | 3 | 0 | 0 |  |
+| ✅ | **SCATTER.mapped_color_errorbars** — Numeric mapped scatter color composes with x/y error bars while preserving one common row domain, scatter-owned colorbar/marker semantics, lower-zorder marker-free uncertainty geometry, per-point marker composition, full-domain shared color normalization, categorical fail-loud behavior, and legacy neighboring owners (PHASE_13_92) | 15 | 15 | 0 | 15 |  |
+| ✅ | **SCATTER.figure_categorical_color_legend** — Opt-in N-D mapped numeric scatter colors yield one figure-level categorical legend with stable category colors and equivalent markers across facets and 3-D figure pages; keep point/error-bar geometry, legacy colorbars, explicit colorbar choice and strict refusal boundaries (PHASE_13_93 Stage B) | 25 | 25 | 0 | 25 |  |
 | | **STATS** | | | | | |
 | ☑️ | **STATS.default_fields** — Auto-detect default stats fields by plot type | 1 | 1 | 0 | 0 |  |
 | ☑️ | **STATS.range_aware** — Range-aware statistics (range_x, range_y) | 3 | 3 | 0 | 0 |  |
 | ☑️ | **STATS.robust** — Robust statistics (median, MAD) | 2 | 2 | 0 | 0 |  |
 | ✅ | **STATS.y_central** — profile_data y_central column = rendered central values (E-2/D5 additive fix; y_mean unchanged forever; grouped path mirrors render, FX-1 documented) | 4 | 4 | 0 | 3 |  |
+| ✅ | **STATS.retained_histogram_state** — Internal generic sparse weighted histogram retained state, named categorical coordinates and strict edge/provenance/schema guards (first-slice candidate) | 8 | 8 | 0 | 8 |  |
+| ✅ | **STATS.retained_profile_state** — Internal generic weighted profile retained moments and logical payload round-trip with corruption guards (first-slice candidate) | 5 | 5 | 0 | 5 |  |
+| ✅ | **STATS.exact_retained_state_merge** — Exact pooled merge of compatible retained histogram/profile state, with duplicate-partition protection, categorical outer alignment, provenance retention and pooled-data/finalization equivalence (PHASE_13_82 continuation) | 13 | 13 | 0 | 13 |  |
 | | **STYLE** | | | | | |
 | ☑️ | **STYLE.predefined** — Predefined styles (default, publication, presentation) | 3 | 3 | 0 | 0 |  |
 | ☑️ | **STYLE.custom** — Custom style dict and JSON persistence | 4 | 4 | 0 | 0 |  |
@@ -193,9 +224,12 @@
 | | **TITLE** | | | | | |
 | ☑️ | **TITLE.auto_title** — Automatic title from plot parameters | 10 | 10 | 0 | 0 |  |
 | ✅ | **TITLE.get_suptitle** — _get_suptitle public-API helper (mpl >= 3.8 + fallback) | 1 | 1 | 0 | 1 |  |
+| ✅ | **TITLE.width_aware_selection** — Automatic-title selection text is preserved semantically and fitted at render time to physical figure width; no fixed 72-character cutoff (Stage C-a) 👁 | 4 | 4 | 0 | 2 | 2 |
+| ✅ | **TITLE.profile_quantile_semantics** — Automatic profile title reports non-default two-value and multi-value quantiles once, preserving explicit titles and auto_title=False (PHASE_13_95_DF) | 3 | 3 | 0 | 3 |  |
+| ☑️ | **TITLE.facet_auto_title_fit_ownership** — No discarded per-cell title fitting; one Figure title owner and explicit title precedence (PHASE_13_98_DF) | 7 | 7 | 0 | 0 |  |
 | | **VECTOR** | | | | | |
 | ☑️ | **VECTOR.parse** — Bracket syntax parsing with paren-aware split | 8 | 8 | 0 | 0 |  |
-| ☑️ | **VECTOR.dispatch** — Vector dispatch across profile/hist/scatter/draw | 5 | 5 | 0 | 0 |  |
+| ✅ | **VECTOR.dispatch** — Vector dispatch across profile/hist/scatter/draw | 6 | 6 | 0 | 1 |  |
 | ☑️ | **VECTOR.fail_fast** — Fail-fast guards on hist2d/hexbin; per-pair for stats | 3 | 3 | 0 | 0 |  |
 | ☑️ | **VECTOR.style_channels** — Vector + group_by style channel decomposition (P1-2) | 4 | 4 | 0 | 0 |  |
 | ☑️ | **VECTOR.contract** — Return contract: stats_list, ylabel, auto_title | 3 | 3 | 0 | 0 |  |
@@ -205,6 +239,9 @@
 | ✅ | **VECTOR.kwarg_propagation** — Vector path forwards all scalar-mode kwargs (FIX1) | 7 | 7 | 0 | 7 |  |
 | ☑️ | **VECTOR.groupby_polish** — Vector + group_by deduplicated legend, title, layout (FIX1) | 5 | 5 | 0 | 0 |  |
 | ☑️ | **VECTOR.kwarg_surface** — Vector dispatch forwards named-parameter surface + facet guard (FIX1) | 6 | 6 | 0 | 0 |  |
+| ✅ | **VECTOR.facet_routing** — Profile expression-vector facet_by="vector" routing preserves intact expression and draw()≡typed-owner semantics (Stage B-a) | 4 | 4 | 0 | 4 |  |
+| ✅ | **VECTOR.ordinary_facet_compose** — Profile expression vectors compose inside ordinary facets with group/selection/weights channels; unsupported neighboring compositions refuse loudly (Stage B-b) 👁 | 15 | 15 | 0 | 14 | 1 |
+| ✅ | **VECTOR.expression_components** — Computed y components and shared x expressions are materialized correctly in vector and ordinary profile facets through typed/draw doors (Stage B-c) | 8 | 8 | 0 | 8 |  |
 | | **VISUAL** | | | | | |
 | ☑️ | **VISUAL.data_bounds** — plotted points lie within axes limits (C-9 regression lock) 👁 | 1 | 1 | 0 | 0 | 1 |
 | ☑️ | **VISUAL.cell_population** — every visible facet cell drew data; ragged-grid padding excluded 👁 | 2 | 2 | 0 | 0 | 2 |
@@ -218,9 +255,9 @@
 | ☑️ | **VISUAL.facet_r2_hist2d** — draw(type='hist2d', facet_by=) populates every panel — R-2 forwarding visual check (Phase 13.51 S-3 closure) 👁 | 1 | 1 | 0 | 0 | 1 |
 | ☑️ | **VISUAL.hist2d_datetime_labels** — hist2d() time_format='auto' renders readable date tick labels on the appropriate axis (Phase 13.51 S-8 symmetry with hist/scatter/profile) 👁 | 1 | 1 | 0 | 0 | 1 |
 
-## Unmatched Tests (486)
+## Unmatched Tests (645)
 
-486 tests pytest collected that no feature claims.
+645 tests pytest collected that no feature claims.
 Grouped by test-file prefix.
 
 <details><summary><code>test_adf_integration.py</code> (14)</summary>
@@ -242,13 +279,12 @@ Grouped by test-file prefix.
 
 </details>
 
-<details><summary><code>test_auto_title.py</code> (17)</summary>
+<details><summary><code>test_auto_title.py</code> (16)</summary>
 
 - `test_auto_title.py::TestAutoTitleHexbin::test_auto_title_hexbin`
 - `test_auto_title.py::TestAutoTitleParts::test_callable_selection_skipped`
 - `test_auto_title.py::TestAutoTitleParts::test_expr_only`
 - `test_auto_title.py::TestAutoTitleParts::test_expr_plus_group`
-- `test_auto_title.py::TestAutoTitleParts::test_long_selection_truncated`
 - `test_auto_title.py::TestAutoTitleProfile::test_auto_title_with_group`
 - `test_auto_title.py::TestAutoTitleProfile::test_auto_title_with_selection`
 - `test_auto_title.py::TestAutoTitleProfile::test_auto_title_with_weights`
@@ -294,6 +330,53 @@ Grouped by test-file prefix.
 <details><summary><code>test_batch_groups.py</code> (1)</summary>
 
 - `test_batch_groups.py::test_return_structure`
+
+</details>
+
+<details><summary><code>test_bug_vector_facet_channel_fit.py</code> (15)</summary>
+
+- `test_bug_vector_facet_channel_fit.py::test_T10_explicit_range_respected_in_vector_facet`
+- `test_bug_vector_facet_channel_fit.py::test_T10b_no_range_still_autoranges`
+- `test_bug_vector_facet_channel_fit.py::test_T1_assign_channels_called_at_most_once_vector_facet`
+- `test_bug_vector_facet_channel_fit.py::test_T1b_assign_channels_at_most_once_weights_vector`
+- `test_bug_vector_facet_channel_fit.py::test_T2_selection_vector_facet_returns_vector_major_list`
+- `test_bug_vector_facet_channel_fit.py::test_T2b_selection_branch_order_matches_selection_order`
+- `test_bug_vector_facet_channel_fit.py::test_T3_weights_vector_facet_returns_vector_major_list`
+- `test_bug_vector_facet_channel_fit.py::test_T4_ordinary_facet_still_returns_dict`
+- `test_bug_vector_facet_channel_fit.py::test_T4b_ordinary_facet_fit_still_lands_at_top_level`
+- `test_bug_vector_facet_channel_fit.py::test_T5_resolved_assignment_matches_unfaceted_resolution`
+- `test_bug_vector_facet_channel_fit.py::test_T5b_line_styles_identical_across_panels`
+- `test_bug_vector_facet_channel_fit.py::test_T6_selection_vector_facet_fit_present_per_branch`
+- `test_bug_vector_facet_channel_fit.py::test_T7_weights_vector_facet_fit_present_per_branch`
+- `test_bug_vector_facet_channel_fit.py::test_T8_selection_vector_facet_fit_summary_fit_consumable`
+- `test_bug_vector_facet_channel_fit.py::test_T9_weights_vector_facet_fit_summary_fit_consumable`
+
+</details>
+
+<details><summary><code>test_bug_vector_facet_semantic_dimension_oracle.py</code> (7)</summary>
+
+- `test_bug_vector_facet_semantic_dimension_oracle.py::test_SDO_1_branch_identity_bound_to_raw_counts`
+- `test_bug_vector_facet_semantic_dimension_oracle.py::test_SDO_2_every_branch_has_a_fit_for_every_facet`
+- `test_bug_vector_facet_semantic_dimension_oracle.py::test_SDO_3_summary_payload_real_and_exact_row_count`
+- `test_bug_vector_facet_semantic_dimension_oracle.py::test_SDO_4_exact_semantic_coordinate_product`
+- `test_bug_vector_facet_semantic_dimension_oracle.py::test_SDO_5_fit_params_match_generated_truth_per_coordinate`
+- `test_bug_vector_facet_semantic_dimension_oracle.py::test_SDO_6_rendered_table_identities_match_validated_rows`
+- `test_bug_vector_facet_semantic_dimension_oracle.py::test_SDO_9_grouped_keeps_three_dimensions_separate`
+
+</details>
+
+<details><summary><code>test_bug_vector_facet_summary_fit_semantics.py</code> (10)</summary>
+
+- `test_bug_vector_facet_summary_fit_semantics.py::test_branch_identity_is_present_and_distinct`
+- `test_bug_vector_facet_summary_fit_semantics.py::test_every_actual_facet_value_appears_in_the_facet_label`
+- `test_bug_vector_facet_summary_fit_semantics.py::test_fit_payload_survives_alongside_correct_labels`
+- `test_bug_vector_facet_summary_fit_semantics.py::test_fixture_cardinalities_are_asymmetric`
+- `test_bug_vector_facet_summary_fit_semantics.py::test_group_by_populates_group_without_corrupting_facet`
+- `test_bug_vector_facet_summary_fit_semantics.py::test_group_is_unset_when_no_group_by_requested`
+- `test_bug_vector_facet_summary_fit_semantics.py::test_ordinary_facet_summary_fit_unchanged_by_the_fix`
+- `test_bug_vector_facet_summary_fit_semantics.py::test_plain_vector_summary_fit_unchanged_by_the_fix`
+- `test_bug_vector_facet_summary_fit_semantics.py::test_row_count_is_the_full_facet_by_branch_cross_product`
+- `test_bug_vector_facet_summary_fit_semantics.py::test_summary_fit_is_a_real_payload_not_a_note`
 
 </details>
 
@@ -626,6 +709,156 @@ Grouped by test-file prefix.
 
 </details>
 
+<details><summary><code>test_phase_13_82_semantic_explain.py</code> (58)</summary>
+
+- `test_phase_13_82_semantic_explain.py::test_B10_public_explain_does_not_change_later_draw`
+- `test_phase_13_82_semantic_explain.py::test_B1_public_explain_default_is_machine_readable_dict`
+- `test_phase_13_82_semantic_explain.py::test_B2_public_explain_pretty_is_same_description`
+- `test_phase_13_82_semantic_explain.py::test_B3_public_explain_dict_matches_private_description`
+- `test_phase_13_82_semantic_explain.py::test_B4a_public_explain_supplied_view_is_available`
+- `test_phase_13_82_semantic_explain.py::test_B4b_public_explain_reserved_resolved_views_fail_loudly[all]`
+- `test_phase_13_82_semantic_explain.py::test_B4b_public_explain_reserved_resolved_views_fail_loudly[resolved]`
+- `test_phase_13_82_semantic_explain.py::test_B5_public_explain_unknown_view_is_rejected`
+- `test_phase_13_82_semantic_explain.py::test_B6_public_explain_unknown_format_is_rejected`
+- `test_phase_13_82_semantic_explain.py::test_B7_public_explain_refuses_unsupported_type_loudly`
+- `test_phase_13_82_semantic_explain.py::test_B8_public_explain_draws_nothing_and_leaves_frame_unchanged`
+- `test_phase_13_82_semantic_explain.py::test_B9_public_explain_does_not_mutate_global_configuration`
+- `test_phase_13_82_semantic_explain.py::test_G1A_S1_effective_global_then_explicit_override`
+- `test_phase_13_82_semantic_explain.py::test_G1A_S1_supplied_omits_unsupplied_defaults`
+- `test_phase_13_82_semantic_explain.py::test_G1A_S2_same_effective_marker_can_preserve_different_explicitness`
+- `test_phase_13_82_semantic_explain.py::test_G1A_S3_multibranch_selection_vector_has_named_branch_coordinate`
+- `test_phase_13_82_semantic_explain.py::test_G1A_S3_one_element_vector_combines_with_global_selection`
+- `test_phase_13_82_semantic_explain.py::test_G1A_S3_one_element_vector_lowers_to_scalar_without_branch`
+- `test_phase_13_82_semantic_explain.py::test_G1A_S6_group_coordinate_is_named_without_resolving_membership`
+- `test_phase_13_82_semantic_explain.py::test_G1A_S7_declared_profile_doors_share_contract_semantics`
+- `test_phase_13_82_semantic_explain.py::test_G1A_S7_does_not_overgeneralize_delta_evidence`
+- `test_phase_13_82_semantic_explain.py::test_G1A_S7_unknown_door_is_rejected`
+- `test_phase_13_82_semantic_explain.py::test_G1A_pretty_and_dict_are_same_semantic_owner`
+- `test_phase_13_82_semantic_explain.py::test_G1A_status_vocabulary_is_ratified_two_axis_model`
+- `test_phase_13_82_semantic_explain.py::test_G1A_unmodeled_kwarg_refuses_instead_of_returning_partial_answer`
+- `test_phase_13_82_semantic_explain.py::test_G1A_v11_dependent_group_bins_without_group_is_explicit`
+- `test_phase_13_82_semantic_explain.py::test_G1A_v11_refusal_is_terminal_and_drops_downstream_gap_evidence`
+- `test_phase_13_82_semantic_explain.py::test_G1A_v11_status_known_gap_is_not_weakened_by_unmeasured`
+- `test_phase_13_82_semantic_explain.py::test_G1A_v11_status_multiple_known_gap_evidence_coexists`
+- `test_phase_13_82_semantic_explain.py::test_G1A_v11_vector_owner_empty_selection_refusal`
+- `test_phase_13_82_semantic_explain.py::test_G1A_v11_vector_owner_scalar_y_two_selection_inner_refuses`
+- `test_phase_13_82_semantic_explain.py::test_G1A_v11_vector_owner_scalar_y_two_selection_outer`
+- `test_phase_13_82_semantic_explain.py::test_G1A_v11_vector_owner_two_y_two_selection_inner`
+- `test_phase_13_82_semantic_explain.py::test_P1_1_both_callers_consume_the_same_declarations`
+- `test_phase_13_82_semantic_explain.py::test_P1_1_field_contracts_are_declared_in_exactly_one_place`
+- `test_phase_13_82_semantic_explain.py::test_T11_explanation_agrees_with_execution[explicit bins-kwargs3]`
+- `test_phase_13_82_semantic_explain.py::test_T11_explanation_agrees_with_execution[explicit marker-kwargs1]`
+- `test_phase_13_82_semantic_explain.py::test_T11_explanation_agrees_with_execution[explicit markersize-kwargs2]`
+- `test_phase_13_82_semantic_explain.py::test_T11_explanation_agrees_with_execution[plain call-kwargs0]`
+- `test_phase_13_82_semantic_explain.py::test_T11b_explain_surface_agrees_with_the_draw_path`
+- `test_phase_13_82_semantic_explain.py::test_T11c_drift_would_be_caught`
+- `test_phase_13_82_semantic_explain.py::test_T1_resolve_matches_the_inline_pattern_it_replaced`
+- `test_phase_13_82_semantic_explain.py::test_T1b_no_config_key_means_the_fallback_applies`
+- `test_phase_13_82_semantic_explain.py::test_T2_explain_draws_nothing`
+- `test_phase_13_82_semantic_explain.py::test_T2b_explain_does_not_mutate_global_configuration`
+- `test_phase_13_82_semantic_explain.py::test_T2c_explain_does_not_mutate_the_frame`
+- `test_phase_13_82_semantic_explain.py::test_T2d_explain_does_not_affect_a_later_draw`
+- `test_phase_13_82_semantic_explain.py::test_T4_explicitness_is_recorded_for_origin_sensitive_fields`
+- `test_phase_13_82_semantic_explain.py::test_T4b_non_origin_sensitive_fields_do_not_claim_explicitness`
+- `test_phase_13_82_semantic_explain.py::test_T5_value_equal_to_shipped_default_is_reported_as_unknown`
+- `test_phase_13_82_semantic_explain.py::test_T5b_changed_registry_value_is_reported_as_changed`
+- `test_phase_13_82_semantic_explain.py::test_T5c_explicit_call_argument_carries_no_origin_detail`
+- `test_phase_13_82_semantic_explain.py::test_T5d_an_invented_origin_is_rejected`
+- `test_phase_13_82_semantic_explain.py::test_T_CAL_01_oracle01_one_element_selection_vector_product_equivalence`
+- `test_phase_13_82_semantic_explain.py::test_T_CAL_05_oracle05_draw_profile_normalize_product_equivalence`
+- `test_phase_13_82_semantic_explain.py::test_explain_is_deterministic`
+- `test_phase_13_82_semantic_explain.py::test_explain_refuses_unsupported_types_loudly`
+- `test_phase_13_82_semantic_explain.py::test_phase_13_83_fixed_oracles_are_passing_regressions`
+
+</details>
+
+<details><summary><code>test_phase_13_83_bug01_bug05.py</code> (11)</summary>
+
+- `test_phase_13_83_bug01_bug05.py::test_B01_empty_selection_vector_still_refuses`
+- `test_phase_13_83_bug01_bug05.py::test_B01_selection_singleton_composes_with_global_selection`
+- `test_phase_13_83_bug01_bug05.py::test_B01_selection_singleton_matches_scalar_selection_with_facet`
+- `test_phase_13_83_bug01_bug05.py::test_B01_singleton_selection_hist_matches_scalar_selection`
+- `test_phase_13_83_bug01_bug05.py::test_B01_singleton_selection_label_refuses_explicitly`
+- `test_phase_13_83_bug01_bug05.py::test_B01_weights_singleton_matches_scalar_weights`
+- `test_phase_13_83_bug01_bug05.py::test_B01_weights_singleton_multiplies_global_weights`
+- `test_phase_13_83_bug01_bug05.py::test_B05_draw_bracket_vector_callable_matches_typed_profile`
+- `test_phase_13_83_bug01_bug05.py::test_B05_draw_bracket_vector_delta_matches_typed_profile`
+- `test_phase_13_83_bug01_bug05.py::test_B05_draw_bracket_vector_ratio_matches_typed_profile`
+- `test_phase_13_83_bug01_bug05.py::test_B05_no_normalize_bracket_vector_draw_keeps_existing_vector_shape`
+
+</details>
+
+<details><summary><code>test_phase_13_83_bug02.py</code> (4)</summary>
+
+- `test_phase_13_83_bug02.py::test_B02_CONTROL_facet_only_hist_is_already_correct`
+- `test_phase_13_83_bug02.py::test_B02_CONTROL_nonfaceted_outer_vector_hist_is_already_correct`
+- `test_phase_13_83_bug02.py::test_B02_RED_default_inner_refuses_instead_of_silently_dropping_vector`
+- `test_phase_13_83_bug02.py::test_B02_RED_outer_hist_selection_vector_facet_matches_independent_numpy`
+
+</details>
+
+<details><summary><code>test_phase_13_84_hist_ratio.py</code> (23)</summary>
+
+- `test_phase_13_84_hist_ratio.py::test_hist_ratio_auto_title_is_applied_like_plain_hist`
+- `test_phase_13_84_hist_ratio.py::test_hist_ratio_creates_no_stray_figures`
+- `test_phase_13_84_hist_ratio.py::test_hist_ratio_diff_only_layout`
+- `test_phase_13_84_hist_ratio.py::test_hist_ratio_draw_door_equals_typed_hist_door`
+- `test_phase_13_84_hist_ratio.py::test_hist_ratio_lower_panel_rendered_values_match_independent_truth`
+- `test_phase_13_84_hist_ratio.py::test_hist_ratio_payload_values_and_errors_match_profile_convention`
+- `test_phase_13_84_hist_ratio.py::test_hist_ratio_refuses_outside_domain[bad0-NotImplementedError]`
+- `test_phase_13_84_hist_ratio.py::test_hist_ratio_refuses_outside_domain[bad1-NotImplementedError]`
+- `test_phase_13_84_hist_ratio.py::test_hist_ratio_refuses_outside_domain[bad2-NotImplementedError]`
+- `test_phase_13_84_hist_ratio.py::test_hist_ratio_refuses_outside_domain[bad3-NotImplementedError]`
+- `test_phase_13_84_hist_ratio.py::test_hist_ratio_refuses_outside_domain[bad4-NotImplementedError]`
+- `test_phase_13_84_hist_ratio.py::test_hist_ratio_refuses_outside_domain[bad5-ValueError]`
+- `test_phase_13_84_hist_ratio.py::test_hist_ratio_refuses_wrong_branch_count[bad0]`
+- `test_phase_13_84_hist_ratio.py::test_hist_ratio_refuses_wrong_branch_count[bad1]`
+- `test_phase_13_84_hist_ratio.py::test_hist_ratio_selection_vector_two_branches`
+- `test_phase_13_84_hist_ratio.py::test_hist_ratio_step_histtype_acceptance_form`
+- `test_phase_13_84_hist_ratio.py::test_hist_ratio_upper_panel_branches_have_distinct_colors[bar]`
+- `test_phase_13_84_hist_ratio.py::test_hist_ratio_upper_panel_branches_have_distinct_colors[step]`
+- `test_phase_13_84_hist_ratio.py::test_hist_ratio_upper_panel_branches_have_distinct_colors[stepfilled]`
+- `test_phase_13_84_hist_ratio.py::test_hist_ratio_upper_panel_histograms_unchanged`
+- `test_phase_13_84_hist_ratio.py::test_hist_ratio_user_color_applies_to_both_branches`
+- `test_phase_13_84_hist_ratio.py::test_hist_ratio_zero_denominator_is_masked_like_profile`
+- `test_phase_13_84_hist_ratio.py::test_positive_control_two_weighted_histograms_without_normalize`
+
+</details>
+
+<details><summary><code>test_phase_13_86_stage_a_red.py</code> (1)</summary>
+
+- `test_phase_13_86_stage_a_red.py::TestStageAStructuralBoundaryInventory::test_A10g_draw_to_typed_refused_names_fail_loudly[profile2d-group_by_scope-global]`
+
+</details>
+
+<details><summary><code>test_phase_13_90_single_layout_owner_red.py</code> (9)</summary>
+
+- `test_phase_13_90_single_layout_owner_red.py::test_R1_faceted_plot_has_exactly_one_final_layout_pass[hist-y]`
+- `test_phase_13_90_single_layout_owner_red.py::test_R1_faceted_plot_has_exactly_one_final_layout_pass[hist2d-y:x]`
+- `test_phase_13_90_single_layout_owner_red.py::test_R1_faceted_plot_has_exactly_one_final_layout_pass[profile-y:x]`
+- `test_phase_13_90_single_layout_owner_red.py::test_R1_faceted_plot_has_exactly_one_final_layout_pass[scatter-y:x]`
+- `test_phase_13_90_single_layout_owner_red.py::test_R2_new_phase_13_91_hist_vector_facets_have_one_layout_pass`
+- `test_phase_13_90_single_layout_owner_red.py::test_R3_standalone_nonfaceted_layout_behavior_is_unchanged[hist-y]`
+- `test_phase_13_90_single_layout_owner_red.py::test_R3_standalone_nonfaceted_layout_behavior_is_unchanged[hist2d-y:x]`
+- `test_phase_13_90_single_layout_owner_red.py::test_R3_standalone_nonfaceted_layout_behavior_is_unchanged[profile-y:x]`
+- `test_phase_13_90_single_layout_owner_red.py::test_R3_standalone_nonfaceted_layout_behavior_is_unchanged[scatter-y:x]`
+
+</details>
+
+<details><summary><code>test_phase_13_96_preclosure_presentation_red.py</code> (9)</summary>
+
+- `test_phase_13_96_preclosure_presentation_red.py::test_PC01_2d_facet_auto_title_includes_effective_selection`
+- `test_phase_13_96_preclosure_presentation_red.py::test_PC02_2d_facet_auto_title_reuses_width_fit_helper`
+- `test_phase_13_96_preclosure_presentation_red.py::test_PC03_auto_title_false_does_not_inject_selection_title`
+- `test_phase_13_96_preclosure_presentation_red.py::test_PC04_explicit_title_remains_owner`
+- `test_phase_13_96_preclosure_presentation_red.py::test_PC05_selection_title_preserves_shared_stagef_legend_and_shape`
+- `test_phase_13_96_preclosure_presentation_red.py::test_PC06_legacy_no_stat_legend_order_matches_pre_stagef`
+- `test_phase_13_96_preclosure_presentation_red.py::test_PC07_legacy_marker_request_keeps_historical_expression_proxy_identity`
+- `test_phase_13_96_preclosure_presentation_red.py::test_PC08_stagef_legend_order_and_marker_proxies_remain_new_contract`
+- `test_phase_13_96_preclosure_presentation_red.py::test_PC09_presentation_paths_preserve_public_stats_shape`
+
+</details>
+
 <details><summary><code>test_profile.py</code> (24)</summary>
 
 - `test_profile.py::TestBasicProfile::test_profile_requires_2d_expr`
@@ -813,6 +1046,24 @@ Grouped by test-file prefix.
 - `test_style.py::TestSetStyle::test_set_style_invalid_key_raises`
 - `test_style.py::TestSetStyle::test_set_style_invalid_name_raises`
 - `test_style.py::TestSetStyle::test_set_style_invalid_type_raises`
+
+</details>
+
+<details><summary><code>test_time_coords_perf.py</code> (13)</summary>
+
+- `test_time_coords_perf.py::test_T1_float_epoch_seconds_matches_legacy`
+- `test_time_coords_perf.py::test_T2_integer_epoch_seconds_matches_legacy`
+- `test_time_coords_perf.py::test_T3_realistic_epoch_is_not_left_as_raw_coordinate`
+- `test_time_coords_perf.py::test_T4_datetime64_input_unchanged`
+- `test_time_coords_perf.py::test_T5_sub_second_and_negative_epochs`
+- `test_time_coords_perf.py::test_T6_nan_propagates_and_empty_is_safe`
+- `test_time_coords_perf.py::test_T6b_list_input_accepted`
+- `test_time_coords_perf.py::test_T6c_matplotlib_epoch_setting_is_honoured`
+- `test_time_coords_perf.py::test_T7_no_plot_family_reimplements_the_conversion`
+- `test_time_coords_perf.py::test_T7b_each_time_family_calls_the_owner`
+- `test_time_coords_perf.py::test_T8_falsifier_actually_fails_on_the_old_implementation`
+- `test_time_coords_perf.py::test_T8_no_object_dtype_datetime_materialisation`
+- `test_time_coords_perf.py::test_T8b_large_vector_conversion_is_fast`
 
 </details>
 

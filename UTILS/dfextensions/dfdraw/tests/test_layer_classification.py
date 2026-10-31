@@ -1086,4 +1086,19 @@ TEST_LAYERS = {
     "test_phase_13_97_facet_interval_label_format_red.py::test_C08_style_state_resets_without_cross_test_leakage": "invariance",
     "test_phase_13_97_facet_interval_label_format_red.py::test_C09_nonlegacy_explicit_policy_rejects_unsupported_1d_and_3d_facets": "smoke",
 
+    # PHASE_13_99 — independent percentile oracle and rendered geometry.
+    'test_phase_13_100_paired_xy_profile_facets_red.py::test_PXY03_pair_with_ordinary_facet_is_scalar_equivalent[typed]': 'invariance',
+    'test_phase_13_100_paired_xy_profile_facets_red.py::test_PXY03_pair_with_ordinary_facet_is_scalar_equivalent[draw]': 'invariance',
+    'test_phase_13_100_paired_xy_profile_facets_red.py::test_PXY04_asymmetric_finiteness_and_selection_are_branch_local': 'invariance',
+    'test_phase_13_100_paired_xy_profile_facets_red.py::test_PXY05_independent_auto_ranges_reused_in_every_facet': 'invariance',
+    'test_phase_13_99_group_quantile_semantic_red.py::test_FP07_grouped_quantiles_agree_with_independent_raw_percentiles': 'invariance',
+    'test_phase_13_99_facet_presentation_parity_red.py::test_FP13_1d_legend_does_not_intersect_axes_or_panel_headings': 'visual_primitive',
+    'test_phase_13_99_v5_anchor_geometry_red.py::test_FP06_user_bbox_anchor_preserved_after_figure_positioning[anchor_only-one_dim]': 'visual_primitive',
+    'test_phase_13_99_v5_anchor_geometry_red.py::test_FP06_user_bbox_anchor_preserved_after_figure_positioning[anchor_only-two_dim]': 'visual_primitive',
+    'test_phase_13_99_v5_anchor_geometry_red.py::test_FP06_user_bbox_anchor_preserved_after_figure_positioning[loc_and_anchor-one_dim]': 'visual_primitive',
+    'test_phase_13_99_v5_anchor_geometry_red.py::test_FP06_user_bbox_anchor_preserved_after_figure_positioning[loc_and_anchor-two_dim]': 'visual_primitive',
+    'test_phase_13_99_v5_anchor_geometry_red.py::test_FP13_2d_real_range_row_headings_not_clipped_by_figure_edge': 'visual_primitive',
+    'test_phase_13_99_v5_anchor_geometry_red.py::test_FP10_requested_figsize_is_effective_before_facet_artist_render[one_dim]': 'visual_primitive',
+    'test_phase_13_99_v5_anchor_geometry_red.py::test_FP10_requested_figsize_is_effective_before_facet_artist_render[two_dim]': 'visual_primitive',
+
 }
