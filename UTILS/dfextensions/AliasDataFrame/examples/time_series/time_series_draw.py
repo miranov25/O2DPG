@@ -4,6 +4,8 @@ time_series_draw.py  — dfdraw full coverage gallery (v2.2, PHASE_13_56_ADF)
 Usage from IPython:
     adf = build_adf("time_series_tracks_0.root")          # full, ~4 min
     adf = build_adf("time_series_tracks_0.root", 0.2)     # 20% sample, ~1 min
+    adf = build_adf("time_series_tracks_0.root", entry_stop=1_000_000)
+    # bounded eager read: first million ROOT entries, no post-read sampling
 
     fig07_profile_dca_sector(adf)    # run one figure
     run_all_pdf(adf)                  # save all to ts_draw_gallery.pdf
@@ -53,7 +55,7 @@ BASE_SEL = "(ncl>60)&(abs(dcar_tpc_vertex)<10)"
 ITS_SEL  = f"{BASE_SEL}&(hasITSTPC)"
 
 
-def build_adf(root_path, sample=None, lazy=False, tree_name="tree"):
+def build_adf(root_path, sample=None, lazy=False, tree_name="tree", *, entry_stop=None):
     """Load ADF. build_adf(path, 0.2) gives ~1 min dev run (20% sample).
 
     Phase 13.58.ADF (D4): the additive ``lazy=`` parameter swaps ONLY the constructor --
@@ -65,7 +67,25 @@ def build_adf(root_path, sample=None, lazy=False, tree_name="tree"):
     out of scope (Phase 13.58 §2). ``tree_name`` is used only by the lazy path (the eager
     default resolution is untouched); pass the gallery file's tree name if it is not
     ``"tree"``.
+
+    PHASE_13_101_ADF FAST development: ``entry_stop=N`` reads only the first
+    N ROOT entries in the existing eager ``root_to_adf`` reader, *before* alias
+    construction and time-quantile processing.  With ``sample=None``, retain
+    all N rows; ``sample`` still optionally samples the bounded read.  The
+    default ``entry_stop=None`` preserves the original full-source behavior.
+    The lazy loader has no entry-range contract, so this option refuses lazy
+    mode rather than silently reading the whole file.
     """
+    if entry_stop is not None:
+        if (isinstance(entry_stop, (bool, np.bool_))
+                or not isinstance(entry_stop, (int, np.integer))
+                or entry_stop <= 0):
+            raise ValueError(
+                "build_adf(entry_stop=) requires a positive integer or None")
+        if lazy:
+            raise ValueError(
+                "build_adf(entry_stop=) supports eager reading only; "
+                "lazy entry-range reading is not implemented")
     if lazy:
         if sample is not None:
             raise ValueError(
@@ -75,7 +95,10 @@ def build_adf(root_path, sample=None, lazy=False, tree_name="tree"):
             )
         adf = AliasDataFrame.read_tree_lazy(root_path, tree_name)
     else:
-        adf = root_to_adf(root_path)
+        # Do not change the historical unbounded call (also used by existing
+        # test doubles). root_to_adf already supports entry_stop for uproot.
+        adf = (root_to_adf(root_path, entry_stop=int(entry_stop))
+               if entry_stop is not None else root_to_adf(root_path))
     adf.draw_lazy = True
     apply_meta(adf, df_TimeSeriesAliases)
     apply_meta(adf, df_TimeSeriesMeta)
@@ -90,6 +113,8 @@ def build_adf(root_path, sample=None, lazy=False, tree_name="tree"):
     adf.materialize_aliases(names=["sector", "time_s"])
     print(f"ADF ready: {len(adf.df):,} tracks"
           + (f" ({int(sample*100)}% sample)" if sample else "")
+          + (f" [first {int(entry_stop):,} ROOT entries]"
+             if entry_stop is not None else "")
           + (" [lazy]" if lazy else ""))
     return adf
 
