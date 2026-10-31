@@ -1,7 +1,8 @@
 """Experimental internal retained-state node for dfdraw N-dimensional statistics.
 
 First additive slice only: weighted 1-D histogram/profile with optional named
-categorical coordinates. No executor integration, merge or physical storage.
+categorical coordinates. Exact collapsed merge is supported; no executor
+integration, partition-preserving merge, or physical storage.
 The logical payload is a *candidate* schema awaiting phase-owner review; it
 must not yet be treated as a stable public or on-disk serialization format.
 """
@@ -83,6 +84,30 @@ def _validate_node(node: 'StatisticalNode') -> None:
     partition_id = node.provenance.get('partition_id')
     if not isinstance(partition_id, str) or not partition_id.strip():
         raise ValueError('partition_id must be a nonempty stable string')
+    # The builder owns leaf partition identity. A merged node must carry a
+    # coherent, flattened contributor ledger; metadata cannot replace truth.
+    contributor_keys = ('contributing_partition_ids', 'contributing_provenance')
+    has_ids, has_records = (key in node.provenance for key in contributor_keys)
+    if has_ids != has_records:
+        raise ValueError('contributing_partition_ids and contributing_provenance must be paired')
+    if has_ids:
+        ids = node.provenance['contributing_partition_ids']
+        records = node.provenance['contributing_provenance']
+        if (not isinstance(ids, list) or len(ids) < 2
+                or any(not isinstance(item, str) or not item.strip() for item in ids)
+                or len(set(ids)) != len(ids)):
+            raise ValueError('invalid contributing_partition_ids in merged provenance')
+        if (not isinstance(records, list) or len(records) != len(ids)
+                or any(not isinstance(item, dict) for item in records)):
+            raise ValueError('contributing_provenance must match contributing_partition_ids')
+        if partition_id in ids:
+            raise ValueError('merged output partition_id cannot be its own contributor')
+        if set(node.provenance) != {'partition_id', *contributor_keys}:
+            raise ValueError('merged provenance contains unsupported fields')
+        for identifier, record in zip(ids, records):
+            if (record.get('partition_id') != identifier
+                    or any(key in record for key in contributor_keys)):
+                raise ValueError('contributing_provenance identity or nesting inconsistent')
     if (not isinstance(node.dimensions, list) or not node.dimensions
             or node.dimensions[0] != 'x_bin' or len(set(node.dimensions)) != len(node.dimensions)):
         raise ValueError('dimensions must begin with unique x_bin')
@@ -282,6 +307,18 @@ def merge_exact(nodes: Sequence['StatisticalNode'], *, partition_id: str) -> 'St
 
     merged_axes = _validate_exact_merge_compatibility(nodes)
 
+    # Direct identities matter even when an input is already pooled. Two
+    # merged states with distinct leaf ledgers must not share a pooled name.
+    direct_ids = [node.provenance['partition_id'] for node in nodes]
+    if len(set(direct_ids)) != len(direct_ids):
+        raise ValueError('duplicate partition_id among direct inputs in exact merge')
+    if partition_id in direct_ids:
+        raise ValueError('output partition_id must differ from direct input partition_id values')
+    for i, node in enumerate(nodes):
+        ids = set(_partition_ids_for_merge(node))
+        if any(other_id in ids for j, other_id in enumerate(direct_ids) if j != i):
+            raise ValueError('duplicate partition identity between pooled contributor and direct input')
+
     contributing_ids: list[str] = []
     contributing_provenance: list[dict[str, Any]] = []
     seen_ids: set[str] = set()
@@ -428,6 +465,8 @@ def _build(kind, x, *, edges, name, partition_id, y=None, weights=None,
     rows = [list(key) + accumulated[key] for key in keys]
     frame = _typed_frame(rows, dimensions, schema)
     prov = {} if provenance is None else dict(provenance)
+    if any(key in prov for key in ('contributing_partition_ids', 'contributing_provenance')):
+        raise ValueError('reserved contributing provenance keys are owned by merge_exact')
     if 'partition_id' in prov and prov['partition_id'] != partition_id:
         raise ValueError('partition_id in provenance conflicts with explicit argument')
     prov['partition_id'] = partition_id
