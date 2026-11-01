@@ -121,6 +121,11 @@ def _validate_node(node: 'StatisticalNode') -> None:
         values = axis.get('values')
         if axis.get('kind') != 'categorical' or not isinstance(values, list):
             raise ValueError(f'coordinate {dim}: categorical axis and values required')
+        # Check the *complete* declared domain, even unoccupied labels.
+        # Python equality aliases 0/False and 1/True/1.0, but they denote
+        # distinct JSON scalar types and must not share a categorical axis.
+        if len({type(v) for v in values}) > 1:
+            raise ValueError(f'coordinate {dim}: mixed category types are unsupported')
         if len(values) != len({json.dumps(v, sort_keys=True) for v in values}):
             raise ValueError(f'coordinate {dim}: duplicate declared values')
     expected_schema = dict(_COMMON_STATE)
@@ -433,6 +438,13 @@ def _build(kind, x, *, edges, name, partition_id, y=None, weights=None,
         }
     }
     for dim, arr in cat_arrays.items():
+        # Inspect accepted input labels BEFORE pd.unique: Pandas and Python
+        # consider e.g. 0 == False and 1 == 1.0, silently combining cells.
+        # Normalize NumPy scalar wrappers for the JSON scalar-type contract.
+        accepted_types = {type(v.item() if isinstance(v, np.generic) else v)
+                          for v in arr[accepted]}
+        if len(accepted_types) > 1:
+            raise ValueError(f'coordinate {dim}: mixed category types are unsupported')
         # Category order determined from accepted rows, never from layout position.
         values = [v.item() if isinstance(v, np.generic) else v
                   for v in pd.unique(arr[accepted])]
