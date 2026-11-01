@@ -25,11 +25,17 @@ def test_p1_01_leaf_builder_rejects_reserved_contributor_keys():
 
 
 def test_p1_02_direct_merge_cannot_double_count_spoofed_true_partition():
+    # The builder rejects forged provenance before any merge can occur.
     with pytest.raises(ValueError, match='reserved|contributing'):
-        forged = _hist('TRUE_A', provenance={
+        _hist('TRUE_A', provenance={
             'contributing_partition_ids': ['FAKE_A'],
-            'contributing_provenance': [{'partition_id':'FAKE_A'}]})
-        ss.merge_exact([forged, _hist('TRUE_A')], partition_id='OUT')
+            'contributing_provenance': [{'partition_id': 'FAKE_A'}]})
+
+    # Separate reachable assertion: merging genuine repeated source IDs refuses.
+    a = _hist('TRUE_A')
+    another_a = _hist('TRUE_A')
+    with pytest.raises(ValueError, match='duplicate.*partition|partition.*duplicate'):
+        ss.merge_exact([a, another_a], partition_id='OUT')
 
 
 def test_p1_03_payload_rejects_inconsistent_contributor_identifiers():
@@ -83,6 +89,66 @@ def test_p1_07_duplicate_direct_input_identity_rejected_when_not_leaf_contributo
     with pytest.raises(ValueError, match='duplicate.*partition|partition.*duplicate'):
         ss.merge_exact([ab,cd],partition_id='FINAL')
 
+
+
+
+# Independent reviewer Opuse5_6:draw, Appendix A — six previously unpinned
+# provenance guards G1/G2/G3b/G5/G6/G10; all tests are refusal/contract oracles.
+LEDGER = ('contributing_partition_ids', 'contributing_provenance')
+
+
+def _merged_payload():
+    return ss.merge_exact([_hist('A'), _hist('B')], partition_id='AB').to_payload()
+
+
+def test_p1_08_builder_refuses_clean_two_entry_forged_ledger():
+    # Internally consistent ledger, no extra keys: only the builder guard stops it.
+    forged = {'contributing_partition_ids': ['FAKE1', 'FAKE2'],
+              'contributing_provenance': [{'partition_id': 'FAKE1'},
+                                          {'partition_id': 'FAKE2'}]}
+    with pytest.raises(ValueError, match='reserved contributing provenance keys'):
+        _hist('TRUE_A', provenance=copy.deepcopy(forged))
+    with pytest.raises(ValueError, match='reserved contributing provenance keys'):
+        ss.build_profile_state([0.3], [1.0], edges=[0., 1.], name='qa/p1',
+                               partition_id='TRUE_A', provenance=copy.deepcopy(forged))
+
+
+@pytest.mark.parametrize('present', LEDGER)
+def test_p1_09_payload_refuses_unpaired_ledger_field(present):
+    payload = _hist('A').to_payload()
+    payload['provenance'][present] = (['X', 'Y'] if present == LEDGER[0] else
+                                      [{'partition_id': 'X'}, {'partition_id': 'Y'}])
+    with pytest.raises(ValueError, match='must be paired'):
+        ss.StatisticalNode.from_payload(payload)
+
+
+def test_p1_10_payload_refuses_repeated_id_inside_ledger():
+    payload = _merged_payload()
+    payload['provenance']['contributing_partition_ids'] = ['A', 'A']
+    payload['provenance']['contributing_provenance'][1]['partition_id'] = 'A'
+    with pytest.raises(ValueError, match='invalid contributing_partition_ids'):
+        ss.StatisticalNode.from_payload(payload)
+
+
+def test_p1_11_payload_refuses_output_id_among_own_contributors():
+    payload = _merged_payload()
+    payload['provenance']['partition_id'] = 'A'
+    with pytest.raises(ValueError, match='cannot be its own contributor'):
+        ss.StatisticalNode.from_payload(payload)
+
+
+def test_p1_12_payload_refuses_extra_key_in_merged_provenance():
+    payload = _merged_payload()
+    payload['provenance']['operator'] = 'qa'
+    with pytest.raises(ValueError, match='unsupported fields'):
+        ss.StatisticalNode.from_payload(payload)
+
+
+def test_p1_13_pooled_name_cannot_equal_leaf_name_in_other_input():
+    x = ss.merge_exact([_hist('A'), _hist('B')], partition_id='P')
+    y = ss.merge_exact([_hist('P'), _hist('D')], partition_id='Q')
+    with pytest.raises(ValueError, match='pooled contributor and direct input'):
+        ss.merge_exact([x, y], partition_id='OUT')
 
 @pytest.mark.parametrize('integer,boolean', [(0,False),(1,True)])
 def test_m14_integer_boolean_category_identity_is_not_silently_collapsed(integer, boolean):

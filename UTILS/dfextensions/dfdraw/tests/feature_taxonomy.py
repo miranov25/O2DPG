@@ -2481,6 +2481,38 @@ FEATURES = [
     },
 
 
+    # PHASE_13_82_DF S6 — provenance hardening refusal coverage, separate M14 diagnostic.
+    {
+        "id": "STATS.exact_merge_provenance_integrity",
+        "name": "ExactMerge declared contributor ledger, reserved builder metadata, direct and nested partition identity refusal (P1 hardening; not external source authentication)",
+        "category": "STATS",
+        "tests": [
+            'test_phase_13_82_provenance_p1_red.py::test_p1_01_leaf_builder_rejects_reserved_contributor_keys',
+            'test_phase_13_82_provenance_p1_red.py::test_p1_02_direct_merge_cannot_double_count_spoofed_true_partition',
+            'test_phase_13_82_provenance_p1_red.py::test_p1_03_payload_rejects_inconsistent_contributor_identifiers',
+            'test_phase_13_82_provenance_p1_red.py::test_p1_04_payload_rejects_leaf_with_contributor_spoof',
+            'test_phase_13_82_provenance_p1_red.py::test_p1_05_output_identity_cannot_reuse_direct_merged_input_identity',
+            'test_phase_13_82_provenance_p1_red.py::test_p1_06_nested_roundtrip_preserves_truth_and_refuses_duplicate',
+            'test_phase_13_82_provenance_p1_red.py::test_p1_07_duplicate_direct_input_identity_rejected_when_not_leaf_contributor',
+            'test_phase_13_82_provenance_p1_red.py::test_p1_08_builder_refuses_clean_two_entry_forged_ledger',
+            'test_phase_13_82_provenance_p1_red.py::test_p1_09_payload_refuses_unpaired_ledger_field[contributing_partition_ids]',
+            'test_phase_13_82_provenance_p1_red.py::test_p1_09_payload_refuses_unpaired_ledger_field[contributing_provenance]',
+            'test_phase_13_82_provenance_p1_red.py::test_p1_10_payload_refuses_repeated_id_inside_ledger',
+            'test_phase_13_82_provenance_p1_red.py::test_p1_11_payload_refuses_output_id_among_own_contributors',
+            'test_phase_13_82_provenance_p1_red.py::test_p1_12_payload_refuses_extra_key_in_merged_provenance',
+            'test_phase_13_82_provenance_p1_red.py::test_p1_13_pooled_name_cannot_equal_leaf_name_in_other_input',
+        ],
+    },
+    {
+        "id": "STATS.m14_mixed_category_merge_diagnostic",
+        "name": "Mixed integer/Boolean categorical identity cross-node refusal diagnostic only; same-builder M14 defect OPEN",
+        "category": "STATS",
+        "tests": [
+            'test_phase_13_82_provenance_p1_red.py::test_m14_integer_boolean_category_identity_is_not_silently_collapsed[0-False]',
+            'test_phase_13_82_provenance_p1_red.py::test_m14_integer_boolean_category_identity_is_not_silently_collapsed[1-True]',
+        ],
+    },
+
     # ── PHASE_13_94_DF — profile expression-vector × 2D N-D facet ──
     {
         "id": "PROFILE.expression_vector_nd_facet",

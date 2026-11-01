@@ -894,6 +894,24 @@ TEST_LAYERS = {
     'test_phase_13_82_retained_state_red.py::test_t12_corrupt_payload_fractional_entries_refused': 'invariance',
     'test_phase_13_82_retained_state_red.py::test_t13_two_named_categorical_dimensions_form_sparse_product': 'invariance',
 
+    # PHASE_13_82_DF S6 — contributor-identity refusals; M14 is still OPEN.
+    'test_phase_13_82_provenance_p1_red.py::test_p1_01_leaf_builder_rejects_reserved_contributor_keys': 'smoke',
+    'test_phase_13_82_provenance_p1_red.py::test_p1_02_direct_merge_cannot_double_count_spoofed_true_partition': 'smoke',
+    'test_phase_13_82_provenance_p1_red.py::test_p1_03_payload_rejects_inconsistent_contributor_identifiers': 'smoke',
+    'test_phase_13_82_provenance_p1_red.py::test_p1_04_payload_rejects_leaf_with_contributor_spoof': 'smoke',
+    'test_phase_13_82_provenance_p1_red.py::test_p1_05_output_identity_cannot_reuse_direct_merged_input_identity': 'smoke',
+    'test_phase_13_82_provenance_p1_red.py::test_p1_06_nested_roundtrip_preserves_truth_and_refuses_duplicate': 'smoke',
+    'test_phase_13_82_provenance_p1_red.py::test_p1_07_duplicate_direct_input_identity_rejected_when_not_leaf_contributor': 'smoke',
+    'test_phase_13_82_provenance_p1_red.py::test_p1_08_builder_refuses_clean_two_entry_forged_ledger': 'smoke',
+    'test_phase_13_82_provenance_p1_red.py::test_p1_09_payload_refuses_unpaired_ledger_field[contributing_partition_ids]': 'smoke',
+    'test_phase_13_82_provenance_p1_red.py::test_p1_09_payload_refuses_unpaired_ledger_field[contributing_provenance]': 'smoke',
+    'test_phase_13_82_provenance_p1_red.py::test_p1_10_payload_refuses_repeated_id_inside_ledger': 'smoke',
+    'test_phase_13_82_provenance_p1_red.py::test_p1_11_payload_refuses_output_id_among_own_contributors': 'smoke',
+    'test_phase_13_82_provenance_p1_red.py::test_p1_12_payload_refuses_extra_key_in_merged_provenance': 'smoke',
+    'test_phase_13_82_provenance_p1_red.py::test_p1_13_pooled_name_cannot_equal_leaf_name_in_other_input': 'smoke',
+    'test_phase_13_82_provenance_p1_red.py::test_m14_integer_boolean_category_identity_is_not_silently_collapsed[0-False]': 'smoke',
+    'test_phase_13_82_provenance_p1_red.py::test_m14_integer_boolean_category_identity_is_not_silently_collapsed[1-True]': 'smoke',
+
     # PHASE_13_82_DF — exact retained-state merge / pooled-data oracle.
     'test_phase_13_82_exact_merge_red.py::test_m1_weighted_histogram_merge_equals_direct_pooled_state': 'invariance',
     'test_phase_13_82_exact_merge_red.py::test_m2_weighted_profile_merge_equals_direct_pooled_state': 'invariance',
