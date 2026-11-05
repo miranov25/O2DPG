@@ -37,6 +37,56 @@ def _json_copy(value: Any, label: str) -> Any:
         raise ValueError(f'{label} must be JSON-safe and finite: {exc}') from exc
 
 
+def _normalize_category_value(value: Any) -> Any:
+    """Canonical JSON scalar label: notably -0.0 and +0.0 have one identity."""
+    if isinstance(value, np.generic):
+        value = value.item()
+    if isinstance(value, float) and value == 0.0:
+        return 0.0
+    return value
+
+
+def _category_key(value: Any) -> str:
+    return json.dumps(_normalize_category_value(value), sort_keys=True, allow_nan=False)
+
+
+def _canonical_category_sort_key(value: Any):
+    """S8-only ordering for unordered, supported homogeneous scalar domains."""
+    value = _normalize_category_value(value)
+    if type(value) is bool:
+        return (0, int(value))
+    if type(value) is int:
+        return (1, value)
+    if type(value) is float and np.isfinite(value):
+        return (2, value)
+    if type(value) is str:
+        return (3, value)
+    raise ValueError('S8 canonical category ordering requires finite bool/int/float/string labels')
+
+
+def _normalize_signed_zero_node(node: 'StatisticalNode') -> None:
+    """Canonicalize signed-zero labels without combining ambiguous restored cells.
+
+    Applied at construction/restore; not a rewrite of arbitrary categorical
+    domains. Both 0.0 and -0.0 explicitly declared are ambiguous and refused.
+    """
+    for dim in node.dimensions[1:]:
+        axis = node.axes.get(dim)
+        if not isinstance(axis, dict) or not isinstance(axis.get('values'), list):
+            continue  # regular validator reports malformed axes
+        values = axis['values']
+        normalized = [_normalize_category_value(v) for v in values]
+        # Catch aliased labels BEFORE either the axis or its state is rewritten.
+        if len({_category_key(v) for v in normalized}) != len(normalized):
+            if len({json.dumps(v, sort_keys=True) for v in values}) == len(values):
+                raise ValueError(f'coordinate {dim}: ambiguous signed-zero categorical domain')
+        axis['values'] = normalized
+        # Avoid an O(number-of-rows) map on ordinary string/int/bool axes.
+        if (dim in node.state and any(type(v) is float and v == 0.0
+                                      for v in normalized)):
+            node.state[dim] = node.state[dim].map(_normalize_category_value)
+
+
 def _validate_edges(edges: Any) -> list[float]:
     try:
         arr = np.asarray(edges, dtype=np.float64)
@@ -174,6 +224,7 @@ class StatisticalNode:
     provenance: dict[str, Any]
 
     def __post_init__(self):
+        _normalize_signed_zero_node(self)
         _validate_node(self)
 
     def to_payload(self) -> dict[str, Any]:
@@ -387,7 +438,7 @@ def merge_exact(nodes: Sequence['StatisticalNode'], *, partition_id: str) -> 'St
     )
 
 def _build(kind, x, *, edges, name, partition_id, y=None, weights=None,
-           categories=None, category_sources=None, x_source='x', y_source='y',
+           categories=None, category_sources=None, category_orders=None, x_source='x', y_source='y',
            weights_source=None, semantic_description=None, semantic_roles=None,
            metadata=None, provenance=None):
     if not isinstance(name, str) or not name.strip():
@@ -410,6 +461,21 @@ def _build(kind, x, *, edges, name, partition_id, y=None, weights=None,
         y_arr = None
     categories = {} if categories is None else dict(categories)
     category_sources = {} if category_sources is None else dict(category_sources)
+    category_orders = {} if category_orders is None else dict(category_orders)
+    if set(category_orders) - set(categories):
+        raise ValueError('category_orders must reference existing categorical coordinates')
+    # Preserve scientific categorical order *before* pandas-to-object coercion.
+    ordered_domains = {}
+    for dim, values in categories.items():
+        dtype = getattr(values, 'dtype', None)
+        if isinstance(dtype, pd.CategoricalDtype) and dtype.ordered:
+            ordered_domains[dim] = list(dtype.categories)
+        if dim in category_orders:
+            user_order = list(category_orders[dim])
+            if dim in ordered_domains and [ _category_key(v) for v in user_order ] != [
+                    _category_key(v) for v in ordered_domains[dim]]:
+                raise ValueError(f'coordinate {dim}: conflicting explicit categorical order')
+            ordered_domains[dim] = user_order
     if ('x_bin' in categories or any(not isinstance(k, str) or not k or k in _COMMON_STATE
                                      or k in _PROFILE_EXTRA for k in categories)):
         raise ValueError('categorical coordinate names collide with state fields')
@@ -419,7 +485,8 @@ def _build(kind, x, *, edges, name, partition_id, y=None, weights=None,
         a = np.asarray(values, dtype=object)
         if a.ndim != 1 or len(a) != n:
             raise ValueError(f'coordinate {dim}: input length must equal x length')
-        cat_arrays[dim] = a
+        # Normalize signed-zero BEFORE deduplication and dictionary cell keys.
+        cat_arrays[dim] = np.asarray([_normalize_category_value(v) for v in a], dtype=object)
     edge_arr = np.asarray(resolved_edges)
     accepted = np.isfinite(x_arr) & np.isfinite(w_arr)
     if y_arr is not None:
@@ -450,9 +517,22 @@ def _build(kind, x, *, edges, name, partition_id, y=None, weights=None,
                   for v in pd.unique(arr[accepted])]
         if len({type(v) for v in values}) > 1:
             raise ValueError(f'coordinate {dim}: mixed category types are unsupported')
-        axes[dim] = {'kind':'categorical','source':category_sources.get(dim,dim),
-                     'values':_json_copy(values, f'category {dim}'),
-                     'row_membership':'partition'}
+        axis = {'kind':'categorical','source':category_sources.get(dim,dim),
+                'values':_json_copy(values, f'category {dim}'),
+                'row_membership':'partition'}
+        if dim in ordered_domains:
+            declared = [_normalize_category_value(v) for v in ordered_domains[dim]]
+            declared = _json_copy(declared, f'ordered category {dim}')
+            if len({_category_key(v) for v in declared}) != len(declared):
+                raise ValueError(f'coordinate {dim}: duplicate explicit category labels')
+            if len({type(v) for v in declared + values}) > 1:
+                raise ValueError(f'coordinate {dim}: mixed category types are unsupported')
+            if not {_category_key(v) for v in values} <= {_category_key(v) for v in declared}:
+                raise ValueError(f'coordinate {dim}: accepted category absent from declared order')
+            axis['values'] = declared  # includes explicitly declared unoccupied labels
+            axis['ordered'] = True
+            axis['order_origin'] = 'explicit'
+        axes[dim] = axis
     schema = dict(_COMMON_STATE)
     if kind == 'profile':
         schema.update(_PROFILE_EXTRA)
@@ -497,24 +577,26 @@ def _build(kind, x, *, edges, name, partition_id, y=None, weights=None,
 
 
 def build_histogram_state(x, *, edges, name, partition_id, weights=None,
-                          categories=None, category_sources=None, x_source='x',
+                          categories=None, category_sources=None, category_orders=None, x_source='x',
                           weights_source=None, semantic_description=None,
                           semantic_roles=None, metadata=None, provenance=None):
     """Accumulate retained weighted histogram state without rendering."""
     return _build('histogram', x, edges=edges, name=name, partition_id=partition_id,
                   weights=weights, categories=categories, category_sources=category_sources,
+                  category_orders=category_orders,
                   x_source=x_source, weights_source=weights_source,
                   semantic_description=semantic_description, semantic_roles=semantic_roles,
                   metadata=metadata, provenance=provenance)
 
 
 def build_profile_state(x, y, *, edges, name, partition_id, weights=None,
-                        categories=None, category_sources=None, x_source='x',
+                        categories=None, category_sources=None, category_orders=None, x_source='x',
                         y_source='y', weights_source=None, semantic_description=None,
                         semantic_roles=None, metadata=None, provenance=None):
     """Accumulate sufficient weighted profile moments without rendering."""
     return _build('profile', x, y=y, edges=edges, name=name, partition_id=partition_id,
                   weights=weights, categories=categories, category_sources=category_sources,
+                  category_orders=category_orders,
                   x_source=x_source, y_source=y_source, weights_source=weights_source,
                   semantic_description=semantic_description, semantic_roles=semantic_roles,
                   metadata=metadata, provenance=provenance)

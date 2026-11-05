@@ -68,6 +68,9 @@ def test_m14_green_01_homogeneous_integer_domain_roundtrip(kind):
     restored = ss.StatisticalNode.from_payload(node.to_payload())
     assert restored.axes['flag']['values'] == [0, 1]
     assert int(restored.state['entries'].sum()) == 3
+    assert all(type(value) is int for value in restored.axes['flag']['values'])
+    assert all(type(value) is int for value in restored.state['flag'])
+    assert restored.to_payload() == node.to_payload()
 
 
 @pytest.mark.parametrize('kind', ['histogram', 'profile'])
@@ -76,6 +79,9 @@ def test_m14_green_02_homogeneous_boolean_domain_roundtrip(kind):
     restored = ss.StatisticalNode.from_payload(node.to_payload())
     assert restored.axes['flag']['values'] == [False, True]
     assert int(restored.state['entries'].sum()) == 3
+    assert all(type(value) is bool for value in restored.axes['flag']['values'])
+    assert all(type(value) is bool for value in restored.state['flag'])
+    assert restored.to_payload() == node.to_payload()
 
 
 @pytest.mark.parametrize('kind', ['histogram', 'profile'])
@@ -84,6 +90,9 @@ def test_m14_green_03_homogeneous_float_domain_roundtrip(kind):
     restored = ss.StatisticalNode.from_payload(node.to_payload())
     assert restored.axes['flag']['values'] == [0.0, 1.0]
     assert int(restored.state['entries'].sum()) == 3
+    assert all(type(value) is float for value in restored.axes['flag']['values'])
+    assert all(type(value) is float for value in restored.state['flag'])
+    assert restored.to_payload() == node.to_payload()
 
 
 @pytest.mark.parametrize('kind', ['histogram', 'profile'])
