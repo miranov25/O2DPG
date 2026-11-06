@@ -11,6 +11,31 @@ Phase 13.15.DF — DRAFT for team vote
 
 FEATURES = [
     {
+        "id": "INTEGRATION.histo_vector_alias_dispatch",
+        "name": "PHASE_13_103_DF B5-A: ROOT histo alias resolved before expression-vector dispatch; preserves histogram vector owners and B5-B refusal",
+        "category": "INTEGRATION",
+        "tests": [
+            'test_phase_13_103_b5a_histo_alias_red.py::test_B5A_01_vector_alias_matches_hist_dispatch_and_numerics[overlay]',
+            'test_phase_13_103_b5a_histo_alias_red.py::test_B5A_01_vector_alias_matches_hist_dispatch_and_numerics[ratio]',
+            'test_phase_13_103_b5a_histo_alias_red.py::test_B5A_01_vector_alias_matches_hist_dispatch_and_numerics[vector-facet]',
+            'test_phase_13_103_b5a_histo_alias_red.py::test_B5A_02_scalar_alias_parity_remains_unchanged[scalar]',
+            'test_phase_13_103_b5a_histo_alias_red.py::test_B5A_02_scalar_alias_parity_remains_unchanged[ordinary-facet]',
+            'test_phase_13_103_b5a_histo_alias_red.py::test_B5A_03_unsupported_ordinary_hist_vector_facet_refuses_like_hist[ordinary-facet]',
+            'test_phase_13_103_b5a_histo_alias_red.py::test_B5A_03_unsupported_ordinary_hist_vector_facet_refuses_like_hist[quantiles]',
+            'test_phase_13_103_b5a_histo_alias_red.py::test_B5A_03_unsupported_ordinary_hist_vector_facet_refuses_like_hist[normalize]',
+            'test_phase_13_103_b5a_histo_alias_red.py::test_B5A_04_draw_batch_histo_alias_matches_hist[scalar]',
+            'test_phase_13_103_b5a_histo_alias_red.py::test_B5A_04_draw_batch_histo_alias_matches_hist[vector]',
+            'test_phase_13_103_b5a_histo_alias_red.py::test_B5A_05_canonical_hist_vector_routes_stay_supported[overlay]',
+            'test_phase_13_103_b5a_histo_alias_red.py::test_B5A_05_canonical_hist_vector_routes_stay_supported[ratio]',
+            'test_phase_13_103_b5a_histo_alias_red.py::test_B5A_05_canonical_hist_vector_routes_stay_supported[vector-facet]',
+            'test_phase_13_103_b5a_histo_alias_red.py::test_B5A_06_other_vector_plot_types_remain_unchanged[profile]',
+            'test_phase_13_103_b5a_histo_alias_red.py::test_B5A_06_other_vector_plot_types_remain_unchanged[scatter]',
+            'test_phase_13_103_b5a_histo_alias_red.py::test_B5A_08_adf_histo_alias_matches_dfdraw[overlay]',
+            'test_phase_13_103_b5a_histo_alias_red.py::test_B5A_08_adf_histo_alias_matches_dfdraw[ordinary-facet]',
+        ],
+    },
+
+    {
         "id": "INTEGRATION.explicit_facet_figure_geometry",
         "name": "PHASE_13_103_DF B4: explicit figsize flows from generic draw() to scalar "
                 "profile, histogram and scatter ordinary facets; defaults, "
@@ -43,6 +68,7 @@ FEATURES = [
             'test_phase_13_103_b4_figsize_forwarding_red.py::test_B4_06_margins_and_spacing_survive_generic_forwarding[2d]',
             'test_phase_13_103_b4_figsize_forwarding_red.py::test_B4_07_adf_public_path_matches_direct_dfdraw[1d]',
             'test_phase_13_103_b4_figsize_forwarding_red.py::test_B4_07_adf_public_path_matches_direct_dfdraw[2d]',
+            'test_phase_13_103_b5a_histo_alias_red.py::test_B5A_07_B4_three_dimensional_facet_figsize_refusal_before_figure',
         ],
     },
 

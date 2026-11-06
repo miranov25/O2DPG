@@ -7139,6 +7139,11 @@ class DFDraw:
                 _r3d[0].savefig(save, dpi=150, bbox_inches='tight')
             return _r3d
 
+        # PHASE_13_103_DF B5-A: normalize ROOT type aliases before vector
+        # routing. The historical scalar-only normalization was too late for
+        # expressions such as [a,b] with type='histo'. Keep one owner.
+        type = _TYPE_ALIASES.get(type, type)
+
         # Parse expression to determine dimensionality
         y_expr, x_expr = self._parse_expr(expr)
         
@@ -7376,11 +7381,8 @@ class DFDraw:
                 ax=ax, save=save,
             )
 
-        # Dispatch to specific plot method
-        # Phase 13.46.DF C-2: normalize ROOT-convention type aliases (e.g.
-        # "histo" -> "hist") before the dispatch ladder.
-        type = _TYPE_ALIASES.get(type, type)
-
+        # Dispatch to specific plot method. ROOT aliases are already
+        # normalized above, before vector and scalar routing converge.
         # Phase 13.57.DF K-3 (FB-1 fix, WARN half of the split disposition):
         # draw()'s per-type forwarding filters kwargs through the
         # _*_FORWARDED_NAMES tuples, so a dfdraw-semantic parameter that the
