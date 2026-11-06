@@ -2979,7 +2979,20 @@ class DFDraw:
             iter_kwargs['_suppress_title'] = (i < n_iter - 1)
             iter_kwargs['_suppress_layout'] = True
 
+            # B1: attach scientific expression identity to the *rendered*
+            # singleton-std curve.  The existing shared facet legend composer
+            # can then factor expression colors without guessing a proxy.
+            _prior_line_count = len(iter_kwargs['ax'].lines) if (
+                _stat_vector is not None and list(_stat_vector) == ['std']
+                and group_by is None and iter_kwargs.get('ax') is not None
+            ) else 0
             fig, ax, stats = draw_method(expr, **iter_kwargs)
+            if (_stat_vector is not None and list(_stat_vector) == ['std']
+                    and group_by is None and ax is not None):
+                for _line in ax.lines[_prior_line_count:]:
+                    _line._dfdraw_facet_semantic = {
+                        'kind': 'expression', 'expression': str(y_list[y_idx])
+                    }
             if _paired_x_strategies is not None and isinstance(stats, dict):
                 # Preserve the truthful user-requested autorange strategy.
                 # The scalar renderer receives the pre-resolved (lo, hi)
@@ -5946,7 +5959,9 @@ class DFDraw:
                 with_title=bool(title or plot_kwargs.get('auto_title')),
                 stat_list=plot_kwargs.get('stat_list'))
         elif (plot_kind == 'profile' and group_by is None
-              and plot_kwargs.get('stat_list') is not None):
+              and plot_kwargs.get('stat_list') is not None
+              and not (isinstance(y_expr, list)
+                       and plot_kwargs['stat_list'] == ['std'])):
             _scope_figure_legend(fig, axes_flat[:n_groups], [],
                 with_title=bool(title or plot_kwargs.get('auto_title')),
                 stat_list=plot_kwargs['stat_list'])
@@ -6651,9 +6666,12 @@ class DFDraw:
             # Stage F singleton std is descriptive metadata, not a third visual
             # identity dimension. Keep the Figure legend factored as five group
             # colors + two expression markers.
-            _stat_handles = ([] if _stagef_singleton_std_nd else
-                             (_statistic_legend_proxies(_stat_names)
-                              if _stat_names else []))
+            _stat_handles = ([] if (
+                _stagef_singleton_std_nd or
+                (not nd94_groups and isinstance(y_expr, list)
+                 and _stat_names == ['std'])
+            ) else (_statistic_legend_proxies(_stat_names)
+                    if _stat_names else []))
             if _stagef_singleton_std_nd:
                 # Stage F factored legend contract: physical group colors first,
                 # then expression markers; singleton std consumes no channel.
@@ -6665,7 +6683,7 @@ class DFDraw:
                 _legend_handles = _vector_proxies + _group_proxies + _stat_handles
                 _legend_names = ((list(y_expr) if isinstance(y_expr, list) else [])
                                  + list(nd94_groups)
-                                 + (list(_stat_names) if _stat_names else []))
+                                 + (list(_stat_names) if _stat_handles else []))
             legend_artist = fig.legend(
                 _legend_handles, _legend_names,
                 loc='upper center', bbox_to_anchor=(0.5, 0.95),
@@ -6683,7 +6701,9 @@ class DFDraw:
                     f"({len(nd94_groups)} global {kind})",
                     prop={'size': 8})
         if (nd94_groups is None and plot_kind == 'profile'
-                and group_by is None and plot_kwargs.get('stat_list') is not None):
+                and group_by is None and plot_kwargs.get('stat_list') is not None
+                and not (isinstance(y_expr, list)
+                         and plot_kwargs['stat_list'] == ['std'])):
             from matplotlib.legend import Legend
             for _cell_ax in axes.flat:
                 for _leg in tuple(_cell_ax.get_children()):
@@ -6715,9 +6735,12 @@ class DFDraw:
         # PHASE_13_99: use the SAME semantic Figure composer as scalar 1-D.
         # This deliberately corrects missing 2-D quantile entries; preserve
         # 13.94/13.98 globally resolved group/branch legend proxies.
-        if (plot_kind == 'profile' and quantiles and
-                _facet_legend_spec is not None and
-                _facet_legend_spec.get('mode') == 'shared'):
+        if (plot_kind == 'profile'
+                and (quantiles or (isinstance(y_expr, list)
+                                   and plot_kwargs.get('stat_list') == ['std']
+                                   and group_by is None))
+                and _facet_legend_spec is not None
+                and _facet_legend_spec.get('mode') == 'shared'):
             legend_artist = _compose_facet_semantic_legend(
                 fig, axes, expressions=y_expr if isinstance(y_expr, list) else (),
                 quantiles=quantiles, legend_spec=_facet_legend_spec,
@@ -9184,11 +9207,32 @@ class DFDraw:
                 and kwargs.get('vector_style') == 'marker'
                 and str(kwargs.get('linestyle', '')).lower() == 'none'
             )
+            # PHASE_13_103 B1: capability-based admission for the simpler
+            # expression-vector × singleton std × ordinary 1-D/2-D facets.
+            # The existing facet coordinator owns the cells and _draw_vector
+            # owns the per-cell branches/statistics.  No special Stage-F
+            # visual-channel token is needed without a group dimension.
+            _b1_simple_std_facets = (
+                isinstance(_parsed_y, list) and len(_parsed_y) > 1
+                and isinstance(_parsed_x, list)
+                and len(set(_parsed_x)) == 1
+                and list(stat_list) == ['std']
+                and group_by is None and not facet
+                and (isinstance(facet_by, str)
+                     and facet_by not in ('vector', 'group_by', 'quantiles')
+                     or isinstance(facet_by, list)
+                     and 1 <= len(facet_by) <= 2)
+                and selection_vector is None and weights_vector is None
+                and normalize is None and fit is None
+                and weights is None and color is None
+                and kwargs.get('vector_style') != 'marker'
+            )
             if ((group_by is not None or facet or facet_by is not None) and (
                     ('[' in str(expr) or
                     selection_vector is not None and len(selection_vector) > 1 or
                     weights_vector is not None and len(weights_vector) > 1))
-                    and not (_stagef_singleton_std_nd or _stagef_public)):
+                    and not (_stagef_singleton_std_nd or _stagef_public
+                             or _b1_simple_std_facets)):
                 raise NotImplementedError(
                     "stat_list with grouped/faceted vector branches exceeds "
                     "the supported Stage E visual-channel contract")

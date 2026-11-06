@@ -14,6 +14,34 @@ Phase 13.15.DF
 """
 
 TEST_LAYERS = {
+    # PHASE_13_103_DF B1: 2 independent NumPy/scalar invariance nodes;
+    # 2 visual primitives, 10 refusals, 11 integration/compatibility nodes.
+    'test_phase_13_103_b1_stat_vector_facet_red.py::test_B1_01_actual_banked_reproducer_no_group_2d': 'integration',
+    'test_phase_13_103_b1_stat_vector_facet_red.py::test_B1_02_noncommissioned_facet_counts_are_legal[2d-2x3]': 'integration',
+    'test_phase_13_103_b1_stat_vector_facet_red.py::test_B1_02_noncommissioned_facet_counts_are_legal[2d-3x5]': 'integration',
+    'test_phase_13_103_b1_stat_vector_facet_red.py::test_B1_02_noncommissioned_facet_counts_are_legal[2d-4x2]': 'integration',
+    'test_phase_13_103_b1_stat_vector_facet_red.py::test_B1_02_noncommissioned_facet_counts_are_legal[1d-2]': 'integration',
+    'test_phase_13_103_b1_stat_vector_facet_red.py::test_B1_03_scalar_decomposition_and_independent_numpy_std[1d]': 'invariance',
+    'test_phase_13_103_b1_stat_vector_facet_red.py::test_B1_03_scalar_decomposition_and_independent_numpy_std[2d]': 'invariance',
+    'test_phase_13_103_b1_stat_vector_facet_red.py::test_B1_04_shared_legend_has_actual_expression_identity[1d]': 'visual_primitive',
+    'test_phase_13_103_b1_stat_vector_facet_red.py::test_B1_04_shared_legend_has_actual_expression_identity[2d]': 'visual_primitive',
+    'test_phase_13_103_b1_stat_vector_facet_red.py::test_B1_05_typed_and_generic_public_surfaces_are_equivalent[1d]': 'integration',
+    'test_phase_13_103_b1_stat_vector_facet_red.py::test_B1_05_typed_and_generic_public_surfaces_are_equivalent[2d]': 'integration',
+    'test_phase_13_103_b1_stat_vector_facet_red.py::test_B1_06_unsupported_neighbors_refuse_before_figure[median]': 'smoke',
+    'test_phase_13_103_b1_stat_vector_facet_red.py::test_B1_06_unsupported_neighbors_refuse_before_figure[multiple-statistics]': 'smoke',
+    'test_phase_13_103_b1_stat_vector_facet_red.py::test_B1_06_unsupported_neighbors_refuse_before_figure[multi-selection]': 'smoke',
+    'test_phase_13_103_b1_stat_vector_facet_red.py::test_B1_06_unsupported_neighbors_refuse_before_figure[multi-weights]': 'smoke',
+    'test_phase_13_103_b1_stat_vector_facet_red.py::test_B1_06_unsupported_neighbors_refuse_before_figure[normalize]': 'smoke',
+    'test_phase_13_103_b1_stat_vector_facet_red.py::test_B1_06_unsupported_neighbors_refuse_before_figure[fit]': 'smoke',
+    'test_phase_13_103_b1_stat_vector_facet_red.py::test_B1_06_unsupported_neighbors_refuse_before_figure[grouped-uncommissioned]': 'smoke',
+    'test_phase_13_103_b1_stat_vector_facet_red.py::test_B1_06_unsupported_neighbors_refuse_before_figure[third-facet]': 'smoke',
+    'test_phase_13_103_b1_stat_vector_facet_red.py::test_B1_06_unsupported_neighbors_refuse_before_figure[explicit-color]': 'smoke',
+    'test_phase_13_103_b1_stat_vector_facet_red.py::test_B1_06_unsupported_neighbors_refuse_before_figure[forced-marker]': 'smoke',
+    'test_phase_13_103_b1_stat_vector_facet_red.py::test_B1_07_legacy_vector_without_stat_list_still_renders[1d]': 'integration',
+    'test_phase_13_103_b1_stat_vector_facet_red.py::test_B1_07_legacy_vector_without_stat_list_still_renders[2d]': 'integration',
+    'test_phase_13_103_b1_stat_vector_facet_red.py::test_B1_08_adf_public_path_matches_direct[1d]': 'integration',
+    'test_phase_13_103_b1_stat_vector_facet_red.py::test_B1_08_adf_public_path_matches_direct[2d]': 'integration',
+
     # PHASE_13_103_DF B5-A (ROOT histo alias; retained B4 3-D refusal review lock).
     'test_phase_13_103_b5a_histo_alias_red.py::test_B5A_01_vector_alias_matches_hist_dispatch_and_numerics[overlay]': 'integration',
     'test_phase_13_103_b5a_histo_alias_red.py::test_B5A_01_vector_alias_matches_hist_dispatch_and_numerics[ratio]': 'integration',
