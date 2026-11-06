@@ -11,6 +11,42 @@ Phase 13.15.DF — DRAFT for team vote
 
 FEATURES = [
     {
+        "id": "INTEGRATION.explicit_facet_figure_geometry",
+        "name": "PHASE_13_103_DF B4: explicit figsize flows from generic draw() to scalar "
+                "profile, histogram and scatter ordinary facets; defaults, "
+                "grouped profiles, vector profiles, margins and ADF parity remain stable",
+        "category": "INTEGRATION",
+        "tests": [
+            'test_phase_13_103_b4_figsize_forwarding_red.py::test_B4_01_explicit_figsize_through_generic_scalar_dispatch[1d-profile]',
+            'test_phase_13_103_b4_figsize_forwarding_red.py::test_B4_01_explicit_figsize_through_generic_scalar_dispatch[1d-hist]',
+            'test_phase_13_103_b4_figsize_forwarding_red.py::test_B4_01_explicit_figsize_through_generic_scalar_dispatch[1d-scatter]',
+            'test_phase_13_103_b4_figsize_forwarding_red.py::test_B4_01_explicit_figsize_through_generic_scalar_dispatch[2d-profile]',
+            'test_phase_13_103_b4_figsize_forwarding_red.py::test_B4_01_explicit_figsize_through_generic_scalar_dispatch[2d-hist]',
+            'test_phase_13_103_b4_figsize_forwarding_red.py::test_B4_01_explicit_figsize_through_generic_scalar_dispatch[2d-scatter]',
+            'test_phase_13_103_b4_figsize_forwarding_red.py::test_B4_02_omitted_figsize_matches_typed_existing_defaults[1d-profile]',
+            'test_phase_13_103_b4_figsize_forwarding_red.py::test_B4_02_omitted_figsize_matches_typed_existing_defaults[1d-hist]',
+            'test_phase_13_103_b4_figsize_forwarding_red.py::test_B4_02_omitted_figsize_matches_typed_existing_defaults[1d-scatter]',
+            'test_phase_13_103_b4_figsize_forwarding_red.py::test_B4_02_omitted_figsize_matches_typed_existing_defaults[2d-profile]',
+            'test_phase_13_103_b4_figsize_forwarding_red.py::test_B4_02_omitted_figsize_matches_typed_existing_defaults[2d-hist]',
+            'test_phase_13_103_b4_figsize_forwarding_red.py::test_B4_02_omitted_figsize_matches_typed_existing_defaults[2d-scatter]',
+            'test_phase_13_103_b4_figsize_forwarding_red.py::test_B4_03_grouped_profile_explicit_figsize[1d]',
+            'test_phase_13_103_b4_figsize_forwarding_red.py::test_B4_03_grouped_profile_explicit_figsize[2d]',
+            'test_phase_13_103_b4_figsize_forwarding_red.py::test_B4_04_typed_facet_owner_remains_correct[1d-profile]',
+            'test_phase_13_103_b4_figsize_forwarding_red.py::test_B4_04_typed_facet_owner_remains_correct[1d-hist]',
+            'test_phase_13_103_b4_figsize_forwarding_red.py::test_B4_04_typed_facet_owner_remains_correct[1d-scatter]',
+            'test_phase_13_103_b4_figsize_forwarding_red.py::test_B4_04_typed_facet_owner_remains_correct[2d-profile]',
+            'test_phase_13_103_b4_figsize_forwarding_red.py::test_B4_04_typed_facet_owner_remains_correct[2d-hist]',
+            'test_phase_13_103_b4_figsize_forwarding_red.py::test_B4_04_typed_facet_owner_remains_correct[2d-scatter]',
+            'test_phase_13_103_b4_figsize_forwarding_red.py::test_B4_05_vector_profile_facets_remain_correct[1d]',
+            'test_phase_13_103_b4_figsize_forwarding_red.py::test_B4_05_vector_profile_facets_remain_correct[2d]',
+            'test_phase_13_103_b4_figsize_forwarding_red.py::test_B4_06_margins_and_spacing_survive_generic_forwarding[1d]',
+            'test_phase_13_103_b4_figsize_forwarding_red.py::test_B4_06_margins_and_spacing_survive_generic_forwarding[2d]',
+            'test_phase_13_103_b4_figsize_forwarding_red.py::test_B4_07_adf_public_path_matches_direct_dfdraw[1d]',
+            'test_phase_13_103_b4_figsize_forwarding_red.py::test_B4_07_adf_public_path_matches_direct_dfdraw[2d]',
+        ],
+    },
+
+    {
         "id": "PROFILE.range_invariance",
         "name": "Profile per-bin statistics are range-invariant; out-of-range "
                 "rows excluded, not folded into edge bins (overflow-fold fix). "

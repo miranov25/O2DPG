@@ -7419,6 +7419,14 @@ class DFDraw:
         # was pre-existing for fit (Phase 13.42) and fit_textbox_kwargs
         # (Phase 13.42 FIX2 ADV-3); summary_fit (Phase 13.43) would have
         # silently dropped via the same route. Fixed all 3 together.
+        # PHASE_13_103_DF B4: figsize is a named draw() argument, so it is
+        # absent from **kwargs.  Scalar ordinary-facet delegates must receive
+        # it explicitly; the facet owner then creates the Figure.  Preserve
+        # the historical default when figsize is not provided.
+        _scalar_facet_size = (
+            {'figsize': figsize} if facet_by is not None and figsize is not None
+            else {}
+        )
         if type == "hist":
             return self.hist(
                 expr, selection=selection, bins=bins, stats=stats,
@@ -7452,6 +7460,7 @@ class DFDraw:
                 # Do NOT forward them here until that API collision is resolved.
                 # NOTE: time_format, cumulative are NOT in draw() signature;
                 # they reach hist() via **kwargs naturally. central also via **kwargs.
+                **_scalar_facet_size,
                 **kwargs
             )
         elif type == "scatter":
@@ -7479,6 +7488,7 @@ class DFDraw:
                 delta_facet=delta_facet,
                 nan_policy=nan_policy,
                 # NOTE: time_format reaches scatter() via **kwargs (not in draw() signature)
+                **_scalar_facet_size,
                 **kwargs
             )
         elif type == "hist2d":
@@ -7531,6 +7541,7 @@ class DFDraw:
                 # backward compatibility by leaving this semantic collision
                 # as an explicit known gap rather than forwarding blindly.
                 # NOTE: central reaches profile() via **kwargs (not in draw() signature)
+                **_scalar_facet_size,
                 **kwargs
             )
         elif type == "hexbin":

@@ -14,6 +14,34 @@ Phase 13.15.DF
 """
 
 TEST_LAYERS = {
+    # PHASE_13_103_DF B4: Figure-geometry regression and public-path parity.
+    'test_phase_13_103_b4_figsize_forwarding_red.py::test_B4_01_explicit_figsize_through_generic_scalar_dispatch[1d-profile]': 'visual_primitive',
+    'test_phase_13_103_b4_figsize_forwarding_red.py::test_B4_01_explicit_figsize_through_generic_scalar_dispatch[1d-hist]': 'visual_primitive',
+    'test_phase_13_103_b4_figsize_forwarding_red.py::test_B4_01_explicit_figsize_through_generic_scalar_dispatch[1d-scatter]': 'visual_primitive',
+    'test_phase_13_103_b4_figsize_forwarding_red.py::test_B4_01_explicit_figsize_through_generic_scalar_dispatch[2d-profile]': 'visual_primitive',
+    'test_phase_13_103_b4_figsize_forwarding_red.py::test_B4_01_explicit_figsize_through_generic_scalar_dispatch[2d-hist]': 'visual_primitive',
+    'test_phase_13_103_b4_figsize_forwarding_red.py::test_B4_01_explicit_figsize_through_generic_scalar_dispatch[2d-scatter]': 'visual_primitive',
+    'test_phase_13_103_b4_figsize_forwarding_red.py::test_B4_02_omitted_figsize_matches_typed_existing_defaults[1d-profile]': 'invariance',
+    'test_phase_13_103_b4_figsize_forwarding_red.py::test_B4_02_omitted_figsize_matches_typed_existing_defaults[1d-hist]': 'invariance',
+    'test_phase_13_103_b4_figsize_forwarding_red.py::test_B4_02_omitted_figsize_matches_typed_existing_defaults[1d-scatter]': 'invariance',
+    'test_phase_13_103_b4_figsize_forwarding_red.py::test_B4_02_omitted_figsize_matches_typed_existing_defaults[2d-profile]': 'invariance',
+    'test_phase_13_103_b4_figsize_forwarding_red.py::test_B4_02_omitted_figsize_matches_typed_existing_defaults[2d-hist]': 'invariance',
+    'test_phase_13_103_b4_figsize_forwarding_red.py::test_B4_02_omitted_figsize_matches_typed_existing_defaults[2d-scatter]': 'invariance',
+    'test_phase_13_103_b4_figsize_forwarding_red.py::test_B4_03_grouped_profile_explicit_figsize[1d]': 'visual_primitive',
+    'test_phase_13_103_b4_figsize_forwarding_red.py::test_B4_03_grouped_profile_explicit_figsize[2d]': 'visual_primitive',
+    'test_phase_13_103_b4_figsize_forwarding_red.py::test_B4_04_typed_facet_owner_remains_correct[1d-profile]': 'visual_primitive',
+    'test_phase_13_103_b4_figsize_forwarding_red.py::test_B4_04_typed_facet_owner_remains_correct[1d-hist]': 'visual_primitive',
+    'test_phase_13_103_b4_figsize_forwarding_red.py::test_B4_04_typed_facet_owner_remains_correct[1d-scatter]': 'visual_primitive',
+    'test_phase_13_103_b4_figsize_forwarding_red.py::test_B4_04_typed_facet_owner_remains_correct[2d-profile]': 'visual_primitive',
+    'test_phase_13_103_b4_figsize_forwarding_red.py::test_B4_04_typed_facet_owner_remains_correct[2d-hist]': 'visual_primitive',
+    'test_phase_13_103_b4_figsize_forwarding_red.py::test_B4_04_typed_facet_owner_remains_correct[2d-scatter]': 'visual_primitive',
+    'test_phase_13_103_b4_figsize_forwarding_red.py::test_B4_05_vector_profile_facets_remain_correct[1d]': 'visual_primitive',
+    'test_phase_13_103_b4_figsize_forwarding_red.py::test_B4_05_vector_profile_facets_remain_correct[2d]': 'visual_primitive',
+    'test_phase_13_103_b4_figsize_forwarding_red.py::test_B4_06_margins_and_spacing_survive_generic_forwarding[1d]': 'visual_primitive',
+    'test_phase_13_103_b4_figsize_forwarding_red.py::test_B4_06_margins_and_spacing_survive_generic_forwarding[2d]': 'visual_primitive',
+    'test_phase_13_103_b4_figsize_forwarding_red.py::test_B4_07_adf_public_path_matches_direct_dfdraw[1d]': 'integration',
+    'test_phase_13_103_b4_figsize_forwarding_red.py::test_B4_07_adf_public_path_matches_direct_dfdraw[2d]': 'integration',
+
     # PHASE_13_76_DF (v1.1) — B=invariance (dispatcher vs oracle), A=integration, S=smoke
     "test_phase_13_76_facet2d_bugfix.py::test_FBY16_B1_dispatch_cell_counts_match_oracle_bins": "invariance",
     "test_phase_13_76_facet2d_bugfix.py::test_FBY16_B2_dispatch_cell_counts_match_oracle_quantiles": "invariance",
