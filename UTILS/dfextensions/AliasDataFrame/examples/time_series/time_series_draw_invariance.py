@@ -30,7 +30,7 @@ import re
 import sys
 import time
 import traceback
-from dataclasses import dataclass, field, asdict
+from dataclasses import dataclass, field, asdict, replace
 from typing import Any, Callable, Mapping, Sequence
 
 import numpy as np
@@ -2651,11 +2651,12 @@ def run_a5_2_realdata(case: CaseSpec, root_path: str, *, gallery_module=None,
             res.detail = f"A5.2 runner received unexpected case {case.case_id!r}"
             return res
         if (case.purpose != "COVERAGE" or case.gate != "ENVIRONMENT_GATED"
-                or case.loading_mode != "EAGER" or case.sample_mode != "FRACTION"):
+                or case.loading_mode != "EAGER" or not _a6_4_case_matches_input(case, prepared_provenance)):
             res.status = INVALID_FIXTURE
             res.detail = "A5.2 runner requires COVERAGE/ENVIRONMENT_GATED/EAGER/FRACTION"
             return res
-        if sample_fraction != A5_2_SAMPLE_FRACTION or seed != A5_2_SAMPLE_SEED:
+        if (not _a6_4_is_bounded_fixture(prepared_provenance)
+                and (sample_fraction != A5_2_SAMPLE_FRACTION or seed != A5_2_SAMPLE_SEED)):
             res.status = INVALID_FIXTURE
             res.detail = ("A5.2 canonical sample is fixed at fraction=0.20, seed=42; "
                           f"got fraction={sample_fraction!r}, seed={seed!r}")
@@ -2775,12 +2776,16 @@ def run_a5_2_realdata(case: CaseSpec, root_path: str, *, gallery_module=None,
             "input_size_bytes": int(st.st_size),
             "input_mtime_ns": int(st.st_mtime_ns),
             "loading_mode": "EAGER",
-            "sample_mode": "FRACTION",
-            "sample_fraction": A5_2_SAMPLE_FRACTION,
-            "sample_seed": A5_2_SAMPLE_SEED,
+            "sample_mode": ("FULL" if _a6_4_is_bounded_fixture(prepared_provenance)
+                            else "FRACTION"),
+            "sample_fraction": (None if _a6_4_is_bounded_fixture(prepared_provenance)
+                                else A5_2_SAMPLE_FRACTION),
+            "sample_seed": (None if _a6_4_is_bounded_fixture(prepared_provenance)
+                            else A5_2_SAMPLE_SEED),
             "sampling_algorithm": ("pandas.DataFrame.sample(frac=0.20, "
                                    "random_state=42) observed at runtime"),
             **sample_evidence,
+            **(dict(prepared_provenance) if _a6_4_is_bounded_fixture(prepared_provenance) else {}),
         }
         res.observed["g7_32_evidence"] = {
             "gallery_function": A5_2_GALLERY_FUNCTION,
@@ -5485,7 +5490,7 @@ def run_a5_4_realdata(case: CaseSpec, root_path: str, *, gallery_module=None,
             res.status = INVALID_FIXTURE
             res.detail = f"A5.4 runner received unexpected case {case.case_id!r}"
             return res
-        if (case.loading_mode != "EAGER" or case.sample_mode != "FRACTION"
+        if (case.loading_mode != "EAGER" or not _a6_4_case_matches_input(case, prepared_provenance)
                 or sample_fraction != A5_2_SAMPLE_FRACTION
                 or seed != A5_2_SAMPLE_SEED):
             res.status = INVALID_FIXTURE
@@ -5591,13 +5596,17 @@ def run_a5_4_realdata(case: CaseSpec, root_path: str, *, gallery_module=None,
             "input_size_bytes": int(os.path.getsize(root_path)),
             "input_mtime_ns": int(os.stat(root_path).st_mtime_ns),
             "loading_mode": "EAGER",
-            "sample_mode": "FRACTION",
-            "sample_fraction": A5_2_SAMPLE_FRACTION,
-            "sample_seed": A5_2_SAMPLE_SEED,
+            "sample_mode": ("FULL" if _a6_4_is_bounded_fixture(prepared_provenance)
+                            else "FRACTION"),
+            "sample_fraction": (None if _a6_4_is_bounded_fixture(prepared_provenance)
+                                else A5_2_SAMPLE_FRACTION),
+            "sample_seed": (None if _a6_4_is_bounded_fixture(prepared_provenance)
+                            else A5_2_SAMPLE_SEED),
             "sampling_algorithm": (
                 "pandas.DataFrame.sample(frac=0.20, random_state=42) "
                 "observed at runtime"),
             **sample,
+            **(dict(prepared_provenance) if _a6_4_is_bounded_fixture(prepared_provenance) else {}),
         }
         res.observed["g7_33_evidence"] = {
             "gallery_function": A5_4_GALLERY_FUNCTION,
@@ -5797,7 +5806,7 @@ def run_a5_5_realdata(case: CaseSpec, root_path: str, *, gallery_module=None,
             res.status = INVALID_FIXTURE
             res.detail = f"A5.5 runner received unexpected case {case.case_id!r}"
             return res
-        if case.loading_mode != "EAGER" or case.sample_mode != "FRACTION":
+        if case.loading_mode != "EAGER" or not _a6_4_case_matches_input(case, prepared_provenance):
             res.status = INVALID_FIXTURE
             res.detail = "A5.5 requires exact EAGER/FRACTION mode"
             return res
@@ -5966,9 +5975,12 @@ def run_a5_5_realdata(case: CaseSpec, root_path: str, *, gallery_module=None,
             "input_size_bytes": int(os.path.getsize(root_path)),
             "input_mtime_ns": int(os.stat(root_path).st_mtime_ns),
             "loading_mode": "EAGER",
-            "sample_mode": "FRACTION",
-            "sample_fraction": A5_2_SAMPLE_FRACTION,
-            "sample_seed": A5_2_SAMPLE_SEED,
+            "sample_mode": ("FULL" if _a6_4_is_bounded_fixture(prepared_provenance)
+                            else "FRACTION"),
+            "sample_fraction": (None if _a6_4_is_bounded_fixture(prepared_provenance)
+                                else A5_2_SAMPLE_FRACTION),
+            "sample_seed": (None if _a6_4_is_bounded_fixture(prepared_provenance)
+                            else A5_2_SAMPLE_SEED),
             "sampling_algorithm": (
                 "pandas.DataFrame.sample(frac=0.20, random_state=42) "
                 "observed at runtime"),
@@ -5977,6 +5989,7 @@ def run_a5_5_realdata(case: CaseSpec, root_path: str, *, gallery_module=None,
             "ingest_entrypoint": "time_series.root_to_adf",
             "known_loader_defect": A5_5_LOADER_BUG_ID,
             **sample,
+            **(dict(prepared_provenance) if _a6_4_is_bounded_fixture(prepared_provenance) else {}),
         }
         res.observed["g7_34_evidence"] = {
             "prepare_gallery_function": A5_5_PREP_FUNCTION,
@@ -6213,7 +6226,7 @@ def run_a5_6_realdata(case: CaseSpec, root_path: str, *, gallery_module=None,
             res.status = INVALID_FIXTURE
             res.detail = f"A5.6 runner received unexpected case {case.case_id!r}"
             return res
-        if case.loading_mode != "EAGER" or case.sample_mode != "FRACTION":
+        if case.loading_mode != "EAGER" or not _a6_4_case_matches_input(case, prepared_provenance):
             res.status = INVALID_FIXTURE
             res.detail = "A5.6 requires exact EAGER/FRACTION mode"
             return res
@@ -6387,9 +6400,12 @@ def run_a5_6_realdata(case: CaseSpec, root_path: str, *, gallery_module=None,
             "input_size_bytes": int(os.path.getsize(root_path)),
             "input_mtime_ns": int(os.stat(root_path).st_mtime_ns),
             "loading_mode": "EAGER",
-            "sample_mode": "FRACTION",
-            "sample_fraction": A5_2_SAMPLE_FRACTION,
-            "sample_seed": A5_2_SAMPLE_SEED,
+            "sample_mode": ("FULL" if _a6_4_is_bounded_fixture(prepared_provenance)
+                            else "FRACTION"),
+            "sample_fraction": (None if _a6_4_is_bounded_fixture(prepared_provenance)
+                                else A5_2_SAMPLE_FRACTION),
+            "sample_seed": (None if _a6_4_is_bounded_fixture(prepared_provenance)
+                            else A5_2_SAMPLE_SEED),
             "sampling_algorithm": (
                 "pandas.DataFrame.sample(frac=0.20, random_state=42) "
                 "observed at runtime"),
@@ -6398,6 +6414,7 @@ def run_a5_6_realdata(case: CaseSpec, root_path: str, *, gallery_module=None,
             "ingest_entrypoint": "time_series.root_to_adf",
             "known_loader_defect": A5_5_LOADER_BUG_ID,
             **sample,
+            **(dict(prepared_provenance) if _a6_4_is_bounded_fixture(prepared_provenance) else {}),
         }
         res.observed["g7_34_logical_state_evidence"] = {
             "definition_surface": "normalized export_definition_schema",
@@ -6786,7 +6803,7 @@ def run_a7_1_realdata(case: CaseSpec, root_path: str, *, gallery_module=None,
             return res
         if (case.purpose != "CORRECTNESS" or case.gate != "ENVIRONMENT_GATED"
                 or case.oracle_kind != "CORRECTNESS"
-                or case.loading_mode != "EAGER" or case.sample_mode != "FRACTION"):
+                or case.loading_mode != "EAGER" or not _a6_4_case_matches_input(case, prepared_provenance)):
             res.status = INVALID_FIXTURE
             res.detail = "A7 runner requires CORRECTNESS/ENVIRONMENT_GATED/EAGER/FRACTION"
             return res
@@ -9984,9 +10001,49 @@ def _run_a6_3_visual_case(case: CaseSpec, root_path: str, *, pdf_path: str,
 
 
 
+def _a6_4_is_bounded_fixture(provenance: dict | None) -> bool:
+    """Explicit unsampled first-N fixture. Never inferred from a 20% sample."""
+    return (isinstance(provenance, dict)
+            and provenance.get("sample_mode") == "FULL"
+            and provenance.get("bounded_fixture_kind") == "FIRST_N_NO_FRACTION"
+            and provenance.get("sample_fraction") is None
+            and provenance.get("sample_seed") is None
+            and provenance.get("entry_start") == 0
+            and isinstance(provenance.get("entry_stop"), int)
+            and provenance["entry_stop"] > 0)
+
+
+def _a6_4_case_matches_input(case: CaseSpec, provenance: dict | None) -> bool:
+    """Do not let a FRACTION CaseSpec silently run on a FULL input, or vice versa."""
+    if _a6_4_is_bounded_fixture(provenance):
+        return case.sample_mode == "FULL"
+    return case.sample_mode == "FRACTION"
+
+
 def _a6_4_prepared_fraction_sample_evidence(
         adf: Any, provenance: dict | None, root_path: str) -> dict:
     """Validate one shared EAGER/FRACTION build before an A5 runner reuses it."""
+    if _a6_4_is_bounded_fixture(provenance):
+        required = ("input_path", "input_size_bytes", "input_mtime_ns",
+                    "loading_mode", "sampling_algorithm", "source_rows",
+                    "selected_rows", "index_digest_sha256", "index_dtype")
+        missing = [key for key in required if key not in provenance]
+        if missing:
+            raise HarnessError(f"bounded Stage-A provenance missing: {missing}")
+        if os.path.abspath(str(provenance["input_path"])) != os.path.abspath(root_path):
+            raise HarnessError("bounded Stage-A input path mismatch")
+        n = provenance["entry_stop"]
+        if (provenance["loading_mode"] != "EAGER" or
+                provenance["source_rows"] != n or
+                provenance["selected_rows"] != n or
+                not hasattr(adf, "df") or len(adf.df) != n or
+                getattr(adf, "_lazy_reader", None) is not None):
+            raise HarnessError("bounded Stage-A entry count/loading contract mismatch")
+        if not str(provenance["index_digest_sha256"]):
+            raise HarnessError("bounded Stage-A is missing source-entry digest")
+        return {"source_rows": n, "selected_rows": n,
+                "index_digest_sha256": provenance["index_digest_sha256"],
+                "index_dtype": provenance["index_dtype"]}
     if not isinstance(provenance, dict):
         raise HarnessError("shared Stage-A FRACTION build is missing provenance")
     required = (
@@ -10154,6 +10211,93 @@ def run_stage_a_fraction_gate(root_path: str, *, manifest_path: str, pdf_path: s
     doc = write_manifest(manifest_path, results, cases, extra=extra)
     return results, doc, strict_exit_code(results, cases)
 
+
+
+def run_stage_a_bounded_gate(root_path: str, *, entry_stop: int,
+                             manifest_path: str, pdf_path: str,
+                             gallery_module=None) -> tuple[list[CaseResult], dict, int]:
+    """Run the historical 22 numerical cases + 1 visual case on first N ROOT rows.
+
+    The unchanged --sample 0.20 mode stays available for historical reproduction.
+    All oracles receive the SAME bounded, unsampled ADF. No pandas sampling.
+    """
+    if not isinstance(entry_stop, int) or entry_stop <= 0:
+        raise HarnessError("--bounded-entries must be a positive integer")
+    gallery = gallery_module if gallery_module is not None else _a5_2_import_gallery()
+    adf = gallery.build_adf(root_path, sample=None, lazy=False, entry_stop=entry_stop)
+    if not hasattr(adf, "df") or len(adf.df) != entry_stop:
+        raise HarnessError(
+            f"bounded ROOT fixture has {len(adf.df) if hasattr(adf, 'df') else 'no'} "
+            f"rows; expected {entry_stop}")
+    ids = np.asarray(adf.df.get("oracle_row_id", adf.df.index))
+    if ids.shape != (entry_stop,) or not np.array_equal(ids, np.arange(entry_stop)):
+        raise HarnessError("bounded ROOT fixture must retain original entry IDs [0,N)")
+    st = os.stat(root_path)
+    provenance_doc = {
+        "input_path": os.path.abspath(root_path),
+        "input_size_bytes": int(st.st_size),
+        "input_mtime_ns": int(st.st_mtime_ns),
+        "loading_mode": "EAGER", "sample_mode": "FULL",
+        "bounded_fixture_kind": "FIRST_N_NO_FRACTION",
+        "entry_start": 0, "entry_stop": entry_stop,
+        "sample_fraction": None, "sample_seed": None,
+        "sampling_algorithm": "none; contiguous ROOT entries [0,N)",
+        "source_rows": entry_stop, "selected_rows": entry_stop,
+        "index_digest_sha256": _a5_2_index_digest(pd.Index(ids)),
+        "index_dtype": str(ids.dtype),
+    }
+    _a6_4_prepared_fraction_sample_evidence(adf, provenance_doc, root_path)
+
+    cases = list(_a6_3_fraction_cases(root_path, gallery_module=gallery))
+    if len(cases) != 22:
+        raise HarnessError(f"bounded Stage-A expected 22 numerical cases, found {len(cases)}")
+    # Keep original case IDs and scientific observables. Only change the
+    # declared input semantics; old FRACTION labels must not masquerade as truth.
+    bounded_cases = []
+    for case in cases:
+        if case.sample_mode != "FRACTION" or case.loading_mode != "EAGER":
+            raise HarnessError(f"{case.case_id}: historical input contract drift")
+        bounded_cases.append(replace(
+            case,
+            sample_mode="FULL",
+            title=f"{case.case_id}: first {entry_stop:,} ROOT entries (unsampled)",
+            claim=(f"Exercise the historical {case.claim_id} scientific assertions "
+                   f"on first {entry_stop} ROOT entries with no post-read sampling"),
+            setup_contract=f"EAGER build of first {entry_stop} source rows, unsampled",
+            preconditions=("ROOT source is readable", "first-N source identity verified",
+                           "no post-load fractional selection of the input"),
+            non_claims=(*case.non_claims,
+                        "historical deterministic 20% sample provenance is NOT "
+                        "tested by this bounded FULL-input execution"),
+            # Do not append fixture controls to draw() keywords: some oracles
+            # pass canonical_spec directly to the public plotting interface.
+            canonical_spec={k: v for k, v in case.canonical_spec.items()
+                            if k not in ("sample_fraction", "sample_seed")},
+        ))
+    results = []
+    for runner, case in zip(_a6_3_fraction_runners(), bounded_cases):
+        result = runner(case, root_path, gallery_module=gallery,
+                        prepared_adf=adf, prepared_provenance=provenance_doc)
+        results.append(result)
+    if len(results) != 22:
+        raise HarnessError("bounded Stage-A case/result cardinality drift")
+    _shared_fraction_provenance(results)
+    visual_case = _a6_3_visual_case(sample_mode="FULL", loading_mode="EAGER")
+    visual_result = _run_a6_3_visual_case(
+        visual_case, root_path, pdf_path=pdf_path, gallery_module=gallery,
+        sample_fraction=None, prepared_adf=adf)
+    bounded_cases.append(visual_case)
+    results.append(visual_result)
+    extra = {
+        **provenance_doc,
+        "stage_a_gate": "FIRST_N_UNSAMPLED_23_CASES",
+        "stage_a_execution": {"adf_build_count": 1,
+                              "adf_reused_across_cases": True,
+                              "expected_cases": 23,
+                              "legacy_20pct_reference_unmodified": True},
+    }
+    doc = write_manifest(manifest_path, results, bounded_cases, extra=extra)
+    return results, doc, strict_exit_code(results, bounded_cases)
 
 
 def numeric_oracle_recheck_cases(root_path: str, gallery_module=None) -> tuple[CaseSpec, ...]:
@@ -10407,6 +10551,8 @@ def build_stage_a_cli_parser():
     parser.add_argument("root_path")
     mode = parser.add_mutually_exclusive_group(required=True)
     mode.add_argument("--sample", type=float)
+    mode.add_argument("--bounded-entries", type=int, metavar="N",
+                      help="run all historical 23 Stage-A cases on first N unsampled ROOT entries")
     mode.add_argument("--full", action="store_true")
     mode.add_argument("--validate-lazy-eager", action="store_true")
     mode.add_argument(
@@ -10415,6 +10561,9 @@ def build_stage_a_cli_parser():
     mode.add_argument(
         "--preclean-c4", action="store_true",
         help="run the FULL EAGER↔LAZY C4 qualified-chain PRIMARY ORACLE slow gate")
+    mode.add_argument(
+        "--adf101-fast", action="store_true",
+        help="opt-in ADF101 real-ROOT first-1M scientific slice; never replaces canonical 20% gate")
     parser.add_argument(
         "--lazy", action="store_true",
         help="with --full, use the existing unsampled lazy loader (read branches on demand)")
@@ -10545,6 +10694,23 @@ def stage_a_cli_main(argv: Sequence[str] | None = None, *, gallery_module=None) 
             results, manifest, gate_code = run_preclean_c4_full_gate(
                 args.root_path, manifest_path=args.manifest, pdf_path=args.pdf,
                 gallery_module=gallery)
+        elif args.bounded_entries is not None:
+            if args.lazy or any((args.compare, args.accept_reference, args.update_reference,
+                                  args.previous_reference)):
+                raise HarnessError("bounded Stage-A refuses lazy and named-reference operations")
+            results, manifest, gate_code = run_stage_a_bounded_gate(
+                args.root_path, entry_stop=args.bounded_entries,
+                manifest_path=args.manifest, pdf_path=args.pdf,
+                gallery_module=gallery)
+        elif args.adf101_fast:
+            if args.lazy or any((args.compare, args.accept_reference, args.update_reference,
+                                  args.previous_reference)):
+                raise HarnessError(
+                    "ADF101 bounded FAST refuses lazy mode and named-reference operations")
+            from phase_13_101_realdata_oracles import run_fast
+            results, manifest, gate_code = run_fast(
+                args.root_path, manifest_path=args.manifest, pdf_path=args.pdf,
+                h=sys.modules[__name__], gallery_module=gallery)
         elif args.numeric_recheck:
             if any((args.compare, args.accept_reference, args.update_reference,
                     args.previous_reference)):
@@ -11671,7 +11837,7 @@ _PRIMARY_ORACLE_REVIEW_CHECKS = {
     INJECTED_TRUTH_FACET_CASE_ID: (
         "Confirm both side_type panels are present and residual means fluctuate around zero rather than showing a coherent sector-dependent bias.",
         "Check there is no systematic A/C-side offset or repeated sector structure larger than the expected statistical fluctuations.",
-        "Confirm per-facet/per-sector counts and means are compared with the raw stable-row oracle_noise partition.",
+        "Confirm per-facet/per-sector counts and means are compared with the independently reconstructed, dtype-aware oracle_residual; ideal Gaussian noise remains a separate generator diagnostic.",
     ),
     PRECLEAN_C1_CASE_ID: (
         "Confirm three side_type facets are visible and every facet contains both early and late histogram branches; 3×2 cardinality is load-bearing.",
@@ -12040,10 +12206,10 @@ def injected_truth_facet_case(*, gallery_module=None) -> CaseSpec:
     return CaseSpec(
         case_id=cid,
         claim_id="I4.injected_truth.facet_residual",
-        title="injected truth: simple side-facet residual profile matches raw injected noise",
+        title="injected truth: side-facet profile matches dtype-aware residual truth",
         claim=("basic facet partitioning preserves the independently known oracle_residual "
                "profile in each side_type×sector cell"),
-        failure_means=("facet partitioning or profile reduction differs from raw injected-noise truth"),
+        failure_means=("facet partitioning or profile reduction differs from independently reconstructed dtype-aware residual truth"),
         expected_visual="two side_type panels with residual means fluctuating around zero",
         owner_on_failure="dfdraw",
         purpose="CORRECTNESS",
@@ -12054,7 +12220,7 @@ def injected_truth_facet_case(*, gallery_module=None) -> CaseSpec:
         canonical_spec={
             **_injected_truth_common_spec(
                 INJECTED_TRUTH_FACET_GALLERY,
-                "oracle_residual = stable-row injected Gaussian noise exactly"),
+                "oracle_residual is reconstructed from injected noise through authoritative alias dtypes"),
             "expr": "oracle_residual:sector",
             "selection": INJECTED_TRUTH_SIDE_SEL,
             "facet_by": "side_type",
@@ -12068,8 +12234,8 @@ def injected_truth_facet_case(*, gallery_module=None) -> CaseSpec:
             panel_roles="side_type=0 and side_type=1",
             expected_traces="one residual profile per facet",
             expected_group_count="2 facets",
-            primary_comparison="raw oracle_noise profile -> public facet profile_data",
-            residual_definition="public facet-bin residual mean - raw injected-noise mean",
+            primary_comparison="independent dtype-aware oracle_residual profile -> public facet profile_data",
+            residual_definition="public facet-bin residual mean - independently reconstructed dtype-aware residual mean",
             accepted_envelope="counts exact; means within declared numerical tolerance",
             case_ids=(cid,),
             proof_kind="CORRECTNESS",
@@ -12078,9 +12244,9 @@ def injected_truth_facet_case(*, gallery_module=None) -> CaseSpec:
         observables=(
             Observable("count", "INDEPENDENT", "ARRAY", "raw facet/sector counts",
                        comparator="exact"),
-            Observable("y_mean", "INDEPENDENT", "ARRAY", "raw facet/sector oracle_noise means",
+            Observable("y_mean", "INDEPENDENT", "ARRAY", "raw facet/sector dtype-aware oracle_residual means",
                        comparator="close", rtol=1e-8, atol=1e-9,
-                       rationale="same explicitly selected injected noise rows"),
+                       rationale="same selected rows and independently reconstructed, stepwise authoritative alias dtypes"),
         ),
         non_claims=("complex vector/facet composition is owned by Ranks 3 and 4",),
         negative_control="INJECTED_TRUTH:FACET_IDENTITY_MUTATION",
@@ -12867,7 +13033,12 @@ def _it_facet(adf: Any, gallery: Any) -> tuple[dict, dict]:
         got = {"count": [], "y_mean": []}
         for facet in (0, 1):
             mask = model["side_sel"] & (model["side"] == facet)
-            ref = _it_profile(model["sector"], model["noise"], mask)
+            # The public request plots oracle_residual, not the ideal float64
+            # injected noise.  Reconstruct each alias step independently at
+            # its authoritative materialized dtype (AD-19), then compare the
+            # same per-sector reduction.  Keep the ideal-noise identity as
+            # a separate L0 generator/physics check in _it_raw_model().
+            ref = _it_profile(model["sector"], model["residual"], mask)
             frame = _it_faceted_profile_frame(stats, facet)
             exp["count"].extend(ref["count"].tolist())
             got["count"].extend(np.asarray(frame["count"], dtype=int).tolist())
