@@ -7677,13 +7677,12 @@ class DFDraw:
         # was pre-existing for fit (Phase 13.42) and fit_textbox_kwargs
         # (Phase 13.42 FIX2 ADV-3); summary_fit (Phase 13.43) would have
         # silently dropped via the same route. Fixed all 3 together.
-        # PHASE_13_103_DF B4: figsize is a named draw() argument, so it is
-        # absent from **kwargs.  Scalar ordinary-facet delegates must receive
-        # it explicitly; the facet owner then creates the Figure.  Preserve
-        # the historical default when figsize is not provided.
+        # PHASE_13_103_DF B4/B4-legacy: figsize is a named draw() argument,
+        # absent from **kwargs. Both ordinary facet_by= and legacy facet=True
+        # delegate Figure creation to the typed owner. Preserve omitted sizes.
         _scalar_facet_size = (
-            {'figsize': figsize} if facet_by is not None and figsize is not None
-            else {}
+            {'figsize': figsize}
+            if (facet_by is not None or facet) and figsize is not None else {}
         )
         if type == "hist":
             return self.hist(

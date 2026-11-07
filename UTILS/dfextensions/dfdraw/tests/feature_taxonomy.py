@@ -159,7 +159,7 @@ FEATURES = [
         "id": "INTEGRATION.explicit_facet_figure_geometry",
         "name": "PHASE_13_103_DF B4: explicit figsize flows from generic draw() to scalar "
                 "profile, histogram and scatter ordinary facets; defaults, "
-                "grouped profiles, vector profiles, margins and ADF parity remain stable",
+                "legacy facet=True, grouped profiles, vector profiles, margins and ADF parity remain stable",
         "category": "INTEGRATION",
         "tests": [
             'test_phase_13_103_b4_figsize_forwarding_red.py::test_B4_01_explicit_figsize_through_generic_scalar_dispatch[1d-profile]',
@@ -189,6 +189,24 @@ FEATURES = [
             'test_phase_13_103_b4_figsize_forwarding_red.py::test_B4_07_adf_public_path_matches_direct_dfdraw[1d]',
             'test_phase_13_103_b4_figsize_forwarding_red.py::test_B4_07_adf_public_path_matches_direct_dfdraw[2d]',
             'test_phase_13_103_b5a_histo_alias_red.py::test_B5A_07_B4_three_dimensional_facet_figsize_refusal_before_figure',
+
+            'test_phase_13_103_b4_figsize_forwarding_red.py::test_B4_08_legacy_explicit_figsize_matches_typed_and_statistics[requested0-profile]',
+            'test_phase_13_103_b4_figsize_forwarding_red.py::test_B4_08_legacy_explicit_figsize_matches_typed_and_statistics[requested0-hist]',
+            'test_phase_13_103_b4_figsize_forwarding_red.py::test_B4_08_legacy_explicit_figsize_matches_typed_and_statistics[requested0-scatter]',
+            'test_phase_13_103_b4_figsize_forwarding_red.py::test_B4_08_legacy_explicit_figsize_matches_typed_and_statistics[requested1-profile]',
+            'test_phase_13_103_b4_figsize_forwarding_red.py::test_B4_08_legacy_explicit_figsize_matches_typed_and_statistics[requested1-hist]',
+            'test_phase_13_103_b4_figsize_forwarding_red.py::test_B4_08_legacy_explicit_figsize_matches_typed_and_statistics[requested1-scatter]',
+            'test_phase_13_103_b4_figsize_forwarding_red.py::test_B4_09_legacy_omitted_figsize_keeps_typed_default[profile]',
+            'test_phase_13_103_b4_figsize_forwarding_red.py::test_B4_09_legacy_omitted_figsize_keeps_typed_default[hist]',
+            'test_phase_13_103_b4_figsize_forwarding_red.py::test_B4_09_legacy_omitted_figsize_keeps_typed_default[scatter]',
+            'test_phase_13_103_b4_figsize_forwarding_red.py::test_B4_10_legacy_figsize_preserves_explicit_margins[profile]',
+            'test_phase_13_103_b4_figsize_forwarding_red.py::test_B4_10_legacy_figsize_preserves_explicit_margins[hist]',
+            'test_phase_13_103_b4_figsize_forwarding_red.py::test_B4_10_legacy_figsize_preserves_explicit_margins[scatter]',
+            'test_phase_13_103_b4_figsize_forwarding_red.py::test_B4_11_unfaceted_figsize_remains_unchanged[profile]',
+            'test_phase_13_103_b4_figsize_forwarding_red.py::test_B4_11_unfaceted_figsize_remains_unchanged[hist]',
+            'test_phase_13_103_b4_figsize_forwarding_red.py::test_B4_11_unfaceted_figsize_remains_unchanged[scatter]',
+            'test_phase_13_103_b4_figsize_forwarding_red.py::test_B4_12_adf_legacy_facet_matches_direct_public_path[profile]',
+            'test_phase_13_103_b4_figsize_forwarding_red.py::test_B4_12_adf_legacy_facet_matches_direct_public_path[hist]',
         ],
     },
 

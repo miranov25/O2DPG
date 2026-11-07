@@ -132,3 +132,119 @@ def test_B4_07_adf_public_path_matches_direct_dfdraw(data, dim):
     finally:
         plt.close(fig_adf)
         plt.close(fig_direct)
+
+
+# PHASE_13_103_DF B4 legacy-facet closeout (Opus48_3, 2026-11-06):
+# facet=True with group_by= has a typed Figure owner just like facet_by=.
+# Assert the generic route preserves both the caller's size and all group
+# statistics. These are real rendered Figure-size checks, not mock calls.
+
+
+def _legacy_draw_args(kind):
+    expr, opts = _type_args(kind)
+    return expr, dict(opts, group_by='g', facet=True)
+
+
+@pytest.mark.parametrize('kind', ['profile', 'hist', 'scatter'])
+@pytest.mark.parametrize('requested', [(16, 10), (7, 5)])
+def test_B4_08_legacy_explicit_figsize_matches_typed_and_statistics(
+        data, kind, requested):
+    expr, opts = _legacy_draw_args(kind)
+    fig_typed = fig_draw = None
+    try:
+        fig_typed, _, stats_typed = getattr(DFDraw(data), kind)(
+            expr, figsize=requested, **opts,
+        )
+        fig_draw, _, stats_draw = DFDraw(data).draw(
+            expr, type=kind, figsize=requested, **opts,
+        )
+        assert np.allclose(_size(fig_typed), requested, atol=1e-12)
+        assert np.allclose(_size(fig_draw), requested, atol=1e-12)
+        assert len(fig_draw.axes) == len(fig_typed.axes)
+        # Actual group and statistical payload invariance: no scalarized
+        # values, selection counts or autorange may change for a size fix.
+        assert stats_draw['n_groups'] == stats_typed['n_groups'] == 2
+        assert stats_draw['groups'] == stats_typed['groups']
+        assert stats_draw['n_total'] == stats_typed['n_total'] == len(data)
+        assert stats_draw['per_group'] == stats_typed['per_group']
+    finally:
+        if fig_typed is not None:
+            plt.close(fig_typed)
+        if fig_draw is not None:
+            plt.close(fig_draw)
+
+
+@pytest.mark.parametrize('kind', ['profile', 'hist', 'scatter'])
+def test_B4_09_legacy_omitted_figsize_keeps_typed_default(data, kind):
+    expr, opts = _legacy_draw_args(kind)
+    fig_typed = fig_draw = None
+    try:
+        fig_typed, _, stats_typed = getattr(DFDraw(data), kind)(expr, **opts)
+        fig_draw, _, stats_draw = DFDraw(data).draw(expr, type=kind, **opts)
+        assert _size(fig_draw) == _size(fig_typed)
+        assert stats_draw == stats_typed
+    finally:
+        if fig_typed is not None:
+            plt.close(fig_typed)
+        if fig_draw is not None:
+            plt.close(fig_draw)
+
+
+@pytest.mark.parametrize('kind', ['profile', 'hist', 'scatter'])
+def test_B4_10_legacy_figsize_preserves_explicit_margins(data, kind):
+    expr, opts = _legacy_draw_args(kind)
+    fig = None
+    try:
+        fig, _, _ = DFDraw(data).draw(
+            expr, type=kind, figsize=(12, 7),
+            figure_margins=[.18, .97, .78, .27],
+            subplot_spacing=[.25, .35], **opts,
+        )
+        assert np.allclose(_size(fig), (12, 7), atol=1e-12)
+        p = fig.subplotpars
+        assert np.allclose(
+            [p.left, p.right, p.top, p.bottom, p.wspace, p.hspace],
+            [.18, .97, .78, .27, .25, .35], atol=1e-12,
+        )
+    finally:
+        if fig is not None:
+            plt.close(fig)
+
+
+@pytest.mark.parametrize('kind', ['profile', 'hist', 'scatter'])
+def test_B4_11_unfaceted_figsize_remains_unchanged(data, kind):
+    expr, opts = _type_args(kind)
+    fig = None
+    try:
+        fig, _, _ = DFDraw(data).draw(
+            expr, type=kind, figsize=(9, 5), **opts,
+        )
+        assert np.allclose(_size(fig), (9, 5), atol=1e-12)
+    finally:
+        if fig is not None:
+            plt.close(fig)
+
+
+@pytest.mark.parametrize('kind', ['profile', 'hist'])
+def test_B4_12_adf_legacy_facet_matches_direct_public_path(data, kind):
+    # Requires installed AliasDataFrame on Alma2; exact same public contract.
+    adf_module = pytest.importorskip('dfextensions.AliasDataFrame')
+    adf = adf_module.AliasDataFrame(data)
+    expr, opts = _legacy_draw_args(kind)
+    fig_adf = fig_direct = None
+    try:
+        fig_adf, _, stats_adf = adf.draw(
+            expr, type=kind, figsize=(12, 7), **opts,
+        )
+        fig_direct, _, stats_direct = DFDraw(data).draw(
+            expr, type=kind, figsize=(12, 7), **opts,
+        )
+        assert _size(fig_adf) == _size(fig_direct) == (12.0, 7.0)
+        assert stats_adf['n_groups'] == stats_direct['n_groups']
+        assert stats_adf['n_total'] == stats_direct['n_total']
+        assert stats_adf['per_group'] == stats_direct['per_group']
+    finally:
+        if fig_adf is not None:
+            plt.close(fig_adf)
+        if fig_direct is not None:
+            plt.close(fig_direct)
