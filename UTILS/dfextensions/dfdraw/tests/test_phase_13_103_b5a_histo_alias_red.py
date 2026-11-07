@@ -1,7 +1,7 @@
 """PHASE_13_103_DF B5-A: ROOT-style histo alias before expression-vector dispatch.
 
-This slice normalizes a spelling only. Histogram expression-vector × ordinary
-column facets remains B5-B and must still refuse before Figure allocation.
+This slice originally normalized a spelling only. B5-B now adds ordinary
+column-facet support; alias parity and unsupported neighbor refusals remain.
 """
 
 import matplotlib
@@ -89,21 +89,32 @@ def test_B5A_02_scalar_alias_parity_remains_unchanged(data, faceted):
 
 
 @pytest.mark.parametrize('case', ['ordinary-facet', 'quantiles', 'normalize'])
-def test_B5A_03_unsupported_ordinary_hist_vector_facet_refuses_like_hist(data, case):
+def test_B5A_03_hist_vector_ordinary_facet_alias_and_refusals(data, case):
     opts = {'facet_by': 'B', 'facet_by_bins': 6, 'bins': 13}
     if case == 'quantiles':
         opts['quantiles'] = [0.10, 0.50, 0.90]
     if case == 'normalize':
         opts['normalize'] = 'ratio'
+    if case == 'ordinary-facet':
+        # B5-B changes this one previously refused neighbor to supported.
+        first = DFDraw(data).draw('[a,b]', type='hist', **opts)
+        second = DFDraw(data).draw('[a,b]', type='histo', **opts)
+        assert len(first[1]) == len(second[1]) == 6
+        assert len(first[2]) == len(second[2]) == 2
+        for left, right in zip(first[2], second[2]):
+            for cell in left['per_group']:
+                assert left['per_group'][cell]['n'] == right['per_group'][cell]['n']
+        return
     messages = []
     before = set(plt.get_fignums())
     for spelling in ('hist', 'histo'):
-        with pytest.raises(NotImplementedError) as exc:
+        with pytest.raises((NotImplementedError, ValueError)) as exc:
             DFDraw(data).draw('[a,b]', type=spelling, **opts)
         messages.append(str(exc.value))
         assert set(plt.get_fignums()) == before
     assert messages[0] == messages[1]
-    assert ('facet_by' in messages[0] or 'facet' in messages[0])
+    assert ('facet_by' in messages[0] or 'facet' in messages[0]
+            or 'quantiles' in messages[0])
 
 
 @pytest.mark.parametrize('expr', ['a', '[a,b]'], ids=['scalar', 'vector'])
@@ -158,12 +169,13 @@ def test_B5A_08_adf_histo_alias_matches_dfdraw(data, case):
     opts = _args('overlay')
     if case == 'ordinary-facet':
         opts.update(facet_by='B', facet_by_bins=6)
-        for runner in (lambda: adf.draw('[a,b]', type='histo', **opts),
-                       lambda: DFDraw(data).draw('[a,b]', type='hist', **opts)):
-            before = set(plt.get_fignums())
-            with pytest.raises(NotImplementedError, match='facet'):
-                runner()
-            assert set(plt.get_fignums()) == before
+        left = DFDraw(data).draw('[a,b]', type='hist', **opts)
+        right = adf.draw('[a,b]', type='histo', **opts)
+        assert len(left[1]) == len(right[1]) == 6
+        assert len(left[2]) == len(right[2]) == 2
+        for branch in range(2):
+            for cell in left[2][branch]['per_group']:
+                assert left[2][branch]['per_group'][cell]['n'] == right[2][branch]['per_group'][cell]['n']
     else:
         left = DFDraw(data).draw('[a,b]', type='hist', **opts)
         right = adf.draw('[a,b]', type='histo', **opts)

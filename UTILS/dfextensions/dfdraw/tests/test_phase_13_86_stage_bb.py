@@ -242,17 +242,55 @@ def test_BB5_expression_vector_weights_vector_composes_within_each_facet(
 
 
 @pytest.mark.parametrize("door", ["typed", "draw"])
-@pytest.mark.parametrize("kind,expr", [("hist", "[y0,y1]"), ("scatter", EXPR)])
-def test_BB6_neighbor_hist_scatter_expression_vector_facet_refuse_loudly(
-    door, kind, expr
-):
+def test_BB6_neighbor_hist_expression_vector_facet_matches_numpy(door):
+    """B5-B turns the old hist refusal into a positive, numerical contract.
+
+    Both expression branches share physical bin edges within each facet.
+    The corresponding scatter expression-vector combination is still refused.
+    """
     df = _truth_df()
+    bins = 8
+    physical_range = (-10.0, 150.0)
+    options = dict(facet_by="facet", bins=bins, range=physical_range,
+                   histtype="bar")
     d = DFDraw(df)
+    if door == "draw":
+        fig, axes, stats = d.draw("[y0,y1]", type="hist", **options)
+    else:
+        fig, axes, stats = d.hist("[y0,y1]", **options)
+    try:
+        assert isinstance(stats, list) and len(stats) == 2
+        axes = np.asarray(axes).ravel()
+        assert len(axes) == 2
+        for ax, facet in zip(axes, ("A", "B")):
+            assert len(ax.patches) == 2 * bins
+            for branch_i, name in enumerate(("y0", "y1")):
+                values = df.loc[df["facet"] == facet, name].to_numpy(dtype=float)
+                expected, edges = np.histogram(values, bins=bins, range=physical_range)
+                patches = ax.patches[branch_i * bins:(branch_i + 1) * bins]
+                np.testing.assert_allclose(
+                    [patch.get_height() for patch in patches], expected,
+                    rtol=0, atol=1e-12)
+                np.testing.assert_allclose(
+                    [patch.get_x() for patch in patches], edges[:-1],
+                    rtol=0, atol=1e-12)
+                np.testing.assert_allclose(
+                    [patch.get_width() for patch in patches], np.diff(edges),
+                    rtol=0, atol=1e-12)
+                assert stats[branch_i]["per_group"][facet]["n"] == len(values)
+    finally:
+        plt.close(fig)
+
+
+@pytest.mark.parametrize("door", ["typed", "draw"])
+def test_BB6_neighbor_scatter_expression_vector_facet_refuse_loudly(door):
+    """Scatter vector/ordinary-facet compositions remain unsupported."""
+    d = DFDraw(_truth_df())
     with pytest.raises(NotImplementedError, match="expression-vector.*facet_by"):
         if door == "draw":
-            d.draw(expr, type=kind, facet_by="facet")
+            d.draw(EXPR, type="scatter", facet_by="facet")
         else:
-            getattr(d, kind)(expr, facet_by="facet")
+            d.scatter(EXPR, facet_by="facet")
 
 
 @pytest.mark.parametrize("door", ["typed", "draw"])

@@ -10,6 +10,36 @@ Phase 13.15.DF — DRAFT for team vote
 """
 
 FEATURES = [
+    # PHASE_13_103_DF B5-B: histogram expression vectors in ordinary 1-D facets.
+    {
+        'id': 'HIST.expression_vector_ordinary_facets',
+        'name': 'Histogram expression-vector × one ordinary facet column',
+        'category': 'HIST',
+        'description': (
+            'Shared physical bin edges within each facet, using existing '
+            'facet-local scalar autorange applied to the pooled finite branch '
+            'values; explicit bins/range override it. Reuses per-branch scalar '
+            'histogram rendering and vector-major facet statistics. '
+            'Includes weighted NumPy and scalar invariance, alias/ADF parity, '
+            'unsupported-neighbor refusals and empty cells.'
+        ),
+        'tests': [
+            'test_phase_13_103_b5b_hist_vector_ordinary_facet_red.py::test_B5_01_02_facet_local_autorange_and_numpy_counts',
+            'test_phase_13_103_b5b_hist_vector_ordinary_facet_red.py::test_B5_02_explicit_bins_and_range_authoritative[explicit_bins0-None]',
+            'test_phase_13_103_b5b_hist_vector_ordinary_facet_red.py::test_B5_02_explicit_bins_and_range_authoritative[8-range_arg1]',
+            'test_phase_13_103_b5b_hist_vector_ordinary_facet_red.py::test_B5_03_scalar_weights_and_selection_are_numerically_correct',
+            'test_phase_13_103_b5b_hist_vector_ordinary_facet_red.py::test_B5_04_generic_draw_and_histo_alias_parity',
+            'test_phase_13_103_b5b_hist_vector_ordinary_facet_red.py::test_B5_05_06_old_nonfaceted_and_vector_facet_hist_preserved',
+            'test_phase_13_103_b5b_hist_vector_ordinary_facet_red.py::test_B5_07_08_scalar_hist_facets_and_profile_scatter_unmodified',
+            'test_phase_13_103_b5b_hist_vector_ordinary_facet_red.py::test_B5_09_empty_nan_and_range_filtered_cells',
+            'test_phase_13_103_b5b_hist_vector_ordinary_facet_red.py::test_B5_10_quantiles_refused_before_figure_allocation',
+            'test_phase_13_103_b5b_hist_vector_ordinary_facet_red.py::test_B5_duplicate_expression_identity_refused_preallocation',
+            'test_phase_13_103_b5b_hist_vector_ordinary_facet_red.py::test_B5_unsupported_vector_cross_products_refuse_preallocation',
+            'test_phase_13_103_b5b_hist_vector_ordinary_facet_red.py::test_B5_11_adf_public_path_matches_scalar_numpy_reference',
+            'test_phase_13_103_b5b_hist_vector_ordinary_facet_red.py::test_B5_computed_expression_vectors_and_facet_binning',
+        ],
+    },
+
     # PHASE_13_103_DF B3: renderer-measured factored Figure legend wrapping.
     {
         'id': 'PRESENTATION.shared_legend_adaptive_layout',
@@ -102,7 +132,7 @@ FEATURES = [
 
     {
         "id": "INTEGRATION.histo_vector_alias_dispatch",
-        "name": "PHASE_13_103_DF B5-A: ROOT histo alias resolved before expression-vector dispatch; preserves histogram vector owners and B5-B refusal",
+        "name": "PHASE_13_103_DF B5-A: ROOT histo alias resolved before expression-vector dispatch; preserves histogram vector owners and supports B5-B extension",
         "category": "INTEGRATION",
         "tests": [
             'test_phase_13_103_b5a_histo_alias_red.py::test_B5A_01_vector_alias_matches_hist_dispatch_and_numerics[overlay]',
@@ -110,9 +140,9 @@ FEATURES = [
             'test_phase_13_103_b5a_histo_alias_red.py::test_B5A_01_vector_alias_matches_hist_dispatch_and_numerics[vector-facet]',
             'test_phase_13_103_b5a_histo_alias_red.py::test_B5A_02_scalar_alias_parity_remains_unchanged[scalar]',
             'test_phase_13_103_b5a_histo_alias_red.py::test_B5A_02_scalar_alias_parity_remains_unchanged[ordinary-facet]',
-            'test_phase_13_103_b5a_histo_alias_red.py::test_B5A_03_unsupported_ordinary_hist_vector_facet_refuses_like_hist[ordinary-facet]',
-            'test_phase_13_103_b5a_histo_alias_red.py::test_B5A_03_unsupported_ordinary_hist_vector_facet_refuses_like_hist[quantiles]',
-            'test_phase_13_103_b5a_histo_alias_red.py::test_B5A_03_unsupported_ordinary_hist_vector_facet_refuses_like_hist[normalize]',
+            'test_phase_13_103_b5a_histo_alias_red.py::test_B5A_03_hist_vector_ordinary_facet_alias_and_refusals[ordinary-facet]',
+            'test_phase_13_103_b5a_histo_alias_red.py::test_B5A_03_hist_vector_ordinary_facet_alias_and_refusals[quantiles]',
+            'test_phase_13_103_b5a_histo_alias_red.py::test_B5A_03_hist_vector_ordinary_facet_alias_and_refusals[normalize]',
             'test_phase_13_103_b5a_histo_alias_red.py::test_B5A_04_draw_batch_histo_alias_matches_hist[scalar]',
             'test_phase_13_103_b5a_histo_alias_red.py::test_B5A_04_draw_batch_histo_alias_matches_hist[vector]',
             'test_phase_13_103_b5a_histo_alias_red.py::test_B5A_05_canonical_hist_vector_routes_stay_supported[overlay]',
@@ -2305,10 +2335,10 @@ FEATURES = [
             "test_phase_13_86_stage_bb.py::test_BB4_expression_vector_selection_vector_composes_within_each_facet[outer-4]",
             "test_phase_13_86_stage_bb.py::test_BB5_expression_vector_weights_vector_composes_within_each_facet[inner-2]",
             "test_phase_13_86_stage_bb.py::test_BB5_expression_vector_weights_vector_composes_within_each_facet[outer-4]",
-            "test_phase_13_86_stage_bb.py::test_BB6_neighbor_hist_scatter_expression_vector_facet_refuse_loudly[hist-[y0,y1]-draw]",
-            "test_phase_13_86_stage_bb.py::test_BB6_neighbor_hist_scatter_expression_vector_facet_refuse_loudly[hist-[y0,y1]-typed]",
-            "test_phase_13_86_stage_bb.py::test_BB6_neighbor_hist_scatter_expression_vector_facet_refuse_loudly[scatter-[y0,y1]:x-draw]",
-            "test_phase_13_86_stage_bb.py::test_BB6_neighbor_hist_scatter_expression_vector_facet_refuse_loudly[scatter-[y0,y1]:x-typed]",
+            "test_phase_13_86_stage_bb.py::test_BB6_neighbor_hist_expression_vector_facet_matches_numpy[draw]",
+            "test_phase_13_86_stage_bb.py::test_BB6_neighbor_hist_expression_vector_facet_matches_numpy[typed]",
+            "test_phase_13_86_stage_bb.py::test_BB6_neighbor_scatter_expression_vector_facet_refuse_loudly[draw]",
+            "test_phase_13_86_stage_bb.py::test_BB6_neighbor_scatter_expression_vector_facet_refuse_loudly[typed]",
             "test_phase_13_86_stage_bb.py::test_BB7_profile_expression_vector_nd_facet_positive_contract[draw]",
             "test_phase_13_86_stage_bb.py::test_BB7_profile_expression_vector_nd_facet_positive_contract[typed]",
             "test_phase_13_86_stage_bb.py::test_BB8_public_same_true_neighbor_remains_invalid",

@@ -5881,6 +5881,58 @@ class DFDraw:
             # vector-aware delegation path.
             _cell_profile_range = forwarded.get('x_range', None)
             _cell_hist_range = forwarded.get('range', None)
+            _b5_hist_cell = (
+                plot_kind == 'hist' and _facet_mode == 'column'
+                and isinstance(subplot_y, list) and len(subplot_y) >= 2
+            )
+            _b5_cell_strategy = None
+            if _b5_hist_cell:
+                # Histogram edges are statistical, not an axis-sharing
+                # setting. Materialize a shared edge array per facet cell;
+                # this also keeps EMPTY branch histograms on the requested
+                # explicit edges instead of their legacy (0,1) fallback.
+                from .plots._autorange import resolve_range_1d
+                _parts = []
+                _weights_spec = forwarded.get('weights')
+                _weight_mask = None
+                if _weights_spec is not None:
+                    from .plots.profile import _eval_weights
+                    _weight_mask = np.isfinite(
+                        _eval_weights(subplot_df, _weights_spec))
+                for _expr_name in subplot_y:
+                    _values = subplot_df[_expr_name].to_numpy(dtype=float)
+                    _valid = np.isfinite(_values)
+                    if _weight_mask is not None:
+                        _valid &= _weight_mask
+                    _parts.append(_values[_valid])
+                _common_values = np.concatenate(_parts)
+                _user_bins = forwarded.get('bins', None)
+                if _user_bins is None:
+                    _user_bins = get_style_value('hist.bins', 50)
+                if (isinstance(_user_bins, (list, tuple, np.ndarray))
+                        and np.asarray(_user_bins).ndim == 1):
+                    # Explicit edges dominate range=, matching numpy.histogram.
+                    _shared_edges = np.asarray(_user_bins, dtype=float)
+                    _cell_hist_range = (float(_shared_edges[0]),
+                                        float(_shared_edges[-1]))
+                    _b5_cell_strategy = 'explicit'
+                else:
+                    if _cell_hist_range is None or isinstance(_cell_hist_range, str):
+                        if len(_common_values):
+                            _cell_hist_range, _b5_cell_strategy = resolve_range_1d(
+                                _cell_hist_range, _common_values,
+                                style_strategy=get_style_value('autorange.strategy', 'hybrid'),
+                                style_k_robust=get_style_value('autorange.k_robust', 4.0),
+                                style_k_outlier=get_style_value('autorange.k_outlier', 1.5),
+                                style_percentile=get_style_value('autorange.percentile', (1., 99.)))
+                        else:
+                            _cell_hist_range = (0., 1.)
+                            _b5_cell_strategy = 'empty'
+                    else:
+                        _b5_cell_strategy = 'explicit'
+                    _shared_edges = np.histogram_bin_edges(
+                        _common_values, bins=_user_bins, range=_cell_hist_range)
+                forwarded['bins'] = _shared_edges
             _cell_expression_vector = (
                 plot_kind == 'profile'
                 and isinstance(subplot_y, list)
@@ -5890,6 +5942,7 @@ class DFDraw:
                 plot_kind in ('profile', 'hist')
                 and (
                     _cell_expression_vector
+                    or _b5_hist_cell
                     or (_cell_selection_vector is not None
                         and len(_cell_selection_vector) >= 2)
                     or (_cell_weights_vector is not None
@@ -6034,8 +6087,12 @@ class DFDraw:
                         _cell_draw._pending_channel_assignment = (
                             _facet_resolved_channels
                         )
+                        _cell_hist_expr = (
+                            '[' + ','.join(map(str, subplot_y)) + ']'
+                            if _b5_hist_cell else str(subplot_y)
+                        )
                         _, _, stats = _cell_draw.hist(
-                            str(subplot_y),
+                            _cell_hist_expr,
                             ax=ax_i, same=True,
                             range=_cell_hist_range,
                             group_by=_inner_group_by,
@@ -6050,6 +6107,10 @@ class DFDraw:
                             delta_facet=_cell_delta_facet,
                             **forwarded
                         )
+                        if _b5_hist_cell:
+                            for _branch_stat in stats:
+                                _branch_stat['autorange_strategy'] = _b5_cell_strategy
+                                _branch_stat['autorange_used'] = _cell_hist_range
                     else:
                         _, _, stats = plot_fn(
                             subplot_df, subplot_y,
@@ -6271,6 +6332,10 @@ class DFDraw:
                     "per_group": _branch_per_group,
                     "faceted": True,
                     "facet_by": _facet_display_name,
+                    **({'expression': str(y_expr[_branch_i]),
+                        'expression_index': _branch_i}
+                       if plot_kind == 'hist' and isinstance(y_expr, list)
+                       and _facet_mode == 'column' else {}),
                     "facet_mode": _facet_mode,
                     "n_total": sum(
                         _s.get("n", 0)
@@ -7361,8 +7426,12 @@ class DFDraw:
             # requirement: the typed hist() owner must receive the complete
             # bracket vector so it can materialize each component once and
             # hand the list to the existing facet coordinator.
+            # PHASE_13_103 B5-B: one ordinary histogram facet column is a
+            # typed histogram owner, not a flattened generic vector overlay.
             if type == "hist" and (
                 normalize is not None or facet_by == "vector"
+                or (isinstance(facet_by, str) and facet_by not in
+                    ('vector', 'group_by', 'quantiles'))
             ):
                 return self.hist(
                     expr, selection=selection, bins=bins, stats=stats,
@@ -7385,6 +7454,8 @@ class DFDraw:
                     delta_facet=delta_facet,
                     normalize=normalize, normalize_layout=normalize_layout,
                     nan_policy=nan_policy,
+                    **({'figsize': figsize} if facet_by is not None
+                       and figsize is not None else {}),
                     **kwargs
                 )
             if type == "profile" and (
@@ -8151,6 +8222,90 @@ class DFDraw:
             _apply_legend_mode(
                 fig, _normalize_legend_spec(legend, show_legend)
             )
+            return fig, axes, stats_dict
+
+        # PHASE_13_103_DF B5-B: compose an expression-vector histogram inside
+        # each ONE ordinary column facet.  The existing faceting coordinator
+        # owns the Figure and the existing vector histogram engine owns each
+        # overlaid branch: no histogram estimator or statistics schema change.
+        if (_y_is_vector and isinstance(facet_by, str)
+                and facet_by not in ('vector', 'group_by', 'quantiles')):
+            if facet:
+                raise ValueError('facet=True cannot combine with ordinary '
+                                 'histogram vector facet_by=')
+            if kwargs.get('quantiles') is not None:
+                raise NotImplementedError(
+                    'hist vector × ordinary facet does not support quantiles=; '
+                    'histogram quantile semantics are not defined')
+            if selection_vector is not None and len(selection_vector) >= 2:
+                raise NotImplementedError(
+                    'hist vector × ordinary facet with selection_vector is '
+                    'outside PHASE_13_103 B5-B; use scalar selection=')
+            if weights_vector is not None and len(weights_vector) >= 2:
+                raise NotImplementedError(
+                    'hist vector × ordinary facet with weights_vector is '
+                    'outside PHASE_13_103 B5-B; use scalar weights=')
+            if group_by is not None:
+                raise NotImplementedError(
+                    'hist vector × ordinary facet with group_by is outside '
+                    'PHASE_13_103 B5-B; use separate calls')
+            if time_format is not None:
+                raise NotImplementedError(
+                    'hist vector × ordinary facet with time_format requires '
+                    'a separately validated date-edge composition')
+            if same or ax is not None:
+                raise NotImplementedError(
+                    'hist vector × ordinary facet owns a new Figure; '
+                    'same=True and ax= are not supported')
+            _ids = [str(item) for item in y_expr]
+            if len(set(_ids)) != len(_ids):
+                raise ValueError(
+                    'hist vector ordinary facets require unique expression '
+                    'identities; duplicate expressions would collide')
+            df_for_facet = self._apply_selection(self.df, selection)
+            df_for_facet = self._apply_sampling(df_for_facet, sample)
+            if facet_by not in df_for_facet.columns:
+                raise ValueError(
+                    f'hist vector ordinary facet column {facet_by!r} '
+                    'does not exist')
+            _facet_ids = [str(v) for v in
+                          pd.unique(df_for_facet[facet_by].dropna())]
+            if len(set(_facet_ids)) != len(_facet_ids):
+                raise ValueError(
+                    'hist vector ordinary facet values have duplicate string '
+                    'identities; per-facet statistics would collide')
+            for item in y_expr:
+                if item not in df_for_facet.columns:
+                    df_for_facet = df_for_facet.assign(**{
+                        item: self._eval_column(item, df=df_for_facet)})
+            fig, axes, stats_dict = self._dispatch_faceted_render(
+                df=df_for_facet, x_expr=None, y_expr=y_expr,
+                facet_by=facet_by, plot_kind='hist',
+                bins=bins, range=range, norm=norm,
+                stats=stats, title=title, xlabel=xlabel, ylabel=ylabel,
+                group_by=None, top_k=top_k, ncols=ncols,
+                sharex=sharex, sharey=sharey,
+                auto_title=auto_title, selection=selection,
+                stat_fields=stat_fields, nan_policy=nan_policy,
+                weights=weights, facet_by_bins=facet_by_bins,
+                facet_by_quantiles=facet_by_quantiles,
+                share_x=share_x, share_y=share_y,
+                share_across_figures=share_across_figures,
+                group_by_bins=group_by_bins,
+                group_by_quantiles=group_by_quantiles,
+                hist_norm=hist_norm, min_entries=min_entries,
+                color=color, marker=marker,
+                hist_errors=hist_errors, linestyle_cycle=linestyle_cycle,
+                time_format=time_format, cumulative=cumulative,
+                fit=fit, fit_textbox_kwargs=fit_textbox_kwargs,
+                summary_fit=summary_fit, **kwargs)
+            if save:
+                fig.savefig(save, dpi=get_style_value('figure.dpi', 100),
+                            bbox_inches='tight')
+            self._maybe_attach_summary_fit(
+                stats_dict, summary_fit, group_by=None, facet_by=facet_by,
+                expr_for_auto_title=expr, fig=fig)
+            _apply_legend_mode(fig, _normalize_legend_spec(legend, show_legend))
             return fig, axes, stats_dict
 
         # Other histogram expression-vector × facet combinations remain
