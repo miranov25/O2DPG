@@ -3157,4 +3157,19 @@ FEATURES = [
         ],
     },
 
+    # PHASE_13_82_DF S9 slice 0: merge_exact honours analyst-declared category
+    # order the same way preserve_partitions does (closes review condition S8 C-1).
+    {
+        "id": "STATS.s9_merge_exact_declared_category_order",
+        "name": "merge_exact refuses conflicting analyst-declared category orders, keeps an identical declared order with exact pooled sums, and leaves the undeclared input-order union unchanged (S9 slice 0)",
+        "category": "STATS",
+        "tests": [
+            'test_phase_13_82_s9_merge_exact_declared_order_red.py::test_S9_01_merge_exact_refuses_reversed_declared_orders',
+            'test_phase_13_82_s9_merge_exact_declared_order_red.py::test_S9_02_merge_exact_refuses_partial_declared_orders',
+            'test_phase_13_82_s9_merge_exact_declared_order_red.py::test_S9_03_merge_exact_keeps_identical_declared_order_and_sums',
+            'test_phase_13_82_s9_merge_exact_declared_order_red.py::test_S9_04_merge_exact_undeclared_order_is_unchanged_legacy_union',
+            'test_phase_13_82_s9_merge_exact_declared_order_red.py::test_S9_05_merge_exact_and_preserve_partitions_agree_on_refusal',
+        ],
+    },
+
 ]

@@ -295,7 +295,16 @@ def _contributing_provenance_for_merge(node: 'StatisticalNode') -> list[dict[str
 
 
 def _axes_for_exact_merge(nodes: Sequence['StatisticalNode']) -> dict[str, Any]:
-    """Validate axis identity and union categorical domains in input order."""
+    """Validate axis identity and union categorical domains in input order.
+
+    Categorical labels are unioned in input order (legacy ``merge_exact``
+    behaviour, kept deliberately).  An analyst-declared order (axis
+    ``ordered: True``) is the exception: it is scientific metadata, so all
+    inputs must declare the identical order and the result keeps it.  Two
+    different declared orders have no unique union and are refused
+    (PHASE_13_82_DF S9 slice 0, closing review condition S8 C-1), exactly as
+    ``partitioned_state.preserve_partitions`` already refuses them.
+    """
     first = nodes[0]
     merged_axes = copy.deepcopy(first.axes)
     for node in nodes[1:]:
@@ -307,6 +316,13 @@ def _axes_for_exact_merge(nodes: Sequence['StatisticalNode']) -> dict[str, Any]:
             right = {k: v for k, v in node.axes[dim].items() if k != 'values'}
             if left != right:
                 raise ValueError(f'incompatible categorical axis/source for exact merge: {dim}')
+            # A declared (analyst) order is compared label by label, after the
+            # same normalisation the builders apply (-0.0 -> 0.0, NumPy scalars
+            # unwrapped), so only a genuinely different order is refused.
+            if first.axes[dim].get('ordered') is True and (
+                    [_category_key(v) for v in node.axes[dim]['values']] !=
+                    [_category_key(v) for v in first.axes[dim]['values']]):
+                raise ValueError(f'conflicting explicit categorical order for exact merge: {dim}')
             values = merged_axes[dim]['values']
             seen = {json.dumps(v, sort_keys=True) for v in values}
             for value in node.axes[dim]['values']:
@@ -354,6 +370,28 @@ def merge_exact(nodes: Sequence['StatisticalNode'], *, partition_id: str) -> 'St
     partition-preserving mode, rebinning, derived aggregation, persistence, or
     rendering.  The caller supplies a new stable ``partition_id`` for the
     pooled object; all original partition identities/provenance remain recorded.
+
+    Categorical axes: labels are unioned in input order.  If the inputs carry
+    an analyst-declared category order (``category_orders=`` or an ordered
+    pandas categorical at build time), every input must declare the same
+    order; the pooled axis keeps it, including declared-but-empty labels.
+
+    Raises
+    ------
+    ValueError
+        Fewer than two inputs, an invalid or duplicated ``partition_id``,
+        incompatible ``x_bin`` edges or categorical axis metadata, mixed
+        category value types, or inputs whose declared category orders
+        differ (``conflicting explicit categorical order for exact merge``).
+
+    Example
+    -------
+    >>> a = build_histogram_state([0.2], edges=[0., 1.], name='h', partition_id='run1',
+    ...                           categories={'r': ['IROC']}, category_orders={'r': ['IROC', 'OROC1']})
+    >>> b = build_histogram_state([0.4], edges=[0., 1.], name='h', partition_id='run2',
+    ...                           categories={'r': ['OROC1']}, category_orders={'r': ['IROC', 'OROC1']})
+    >>> merge_exact([a, b], partition_id='run1+run2').axes['r']['values']
+    ['IROC', 'OROC1']
     """
     nodes = list(nodes)
     if len(nodes) < 2:

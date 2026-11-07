@@ -1336,4 +1336,12 @@ TEST_LAYERS = {
     'test_phase_13_82_s8_partition_preserve.py::test_s8_17_unordered_numeric_values_are_numeric_sorted': 'integration',
     'test_phase_13_82_s8_partition_preserve.py::test_s8_18_partition_id_is_reserved_as_new_s8_coordinate': 'smoke',
 
+    # PHASE_13_82_DF S9 slice 0: declared-order guard on merge_exact.
+    # Refusals are smoke; S9_03 compares pooled sums to numpy on the raw arrays.
+    'test_phase_13_82_s9_merge_exact_declared_order_red.py::test_S9_01_merge_exact_refuses_reversed_declared_orders': 'smoke',
+    'test_phase_13_82_s9_merge_exact_declared_order_red.py::test_S9_02_merge_exact_refuses_partial_declared_orders': 'smoke',
+    'test_phase_13_82_s9_merge_exact_declared_order_red.py::test_S9_03_merge_exact_keeps_identical_declared_order_and_sums': 'invariance',
+    'test_phase_13_82_s9_merge_exact_declared_order_red.py::test_S9_04_merge_exact_undeclared_order_is_unchanged_legacy_union': 'integration',
+    'test_phase_13_82_s9_merge_exact_declared_order_red.py::test_S9_05_merge_exact_and_preserve_partitions_agree_on_refusal': 'smoke',
+
 }
