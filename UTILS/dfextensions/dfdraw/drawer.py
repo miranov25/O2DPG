@@ -285,9 +285,30 @@ def _compose_facet_semantic_legend(fig, axes, *, expressions=(),
         placement['bbox_to_anchor'] = anchor
     elif user_loc is None:
         placement['bbox_to_anchor'] = (.5, .95)
-    return fig.legend([h for h, _ in chosen], [l for _, l in chosen],
-                      handler_map={tuple: HandlerTuple(ndivide=None)},
-                      **placement)
+    # PHASE_13_103 B3: choose automatic legend columns using the *rendered*
+    # glyph width, not just the number of identities. A factored 2+5+3
+    # legend can exceed even a wide Figure while still fitting in eight
+    # nominal columns. The semantic handles and their order are unchanged.
+    legend_handles = [h for h, _ in chosen]
+    legend_labels = [label for _, label in chosen]
+
+    def create_legend():
+        return fig.legend(legend_handles, legend_labels,
+                          handler_map={tuple: HandlerTuple(ndivide=None)},
+                          **placement)
+
+    legend = create_legend()
+    if legend_spec.get('ncol') is None:
+        fig.canvas.draw()
+        renderer = fig.canvas.get_renderer()
+        horizontal_margin = 5.0 * fig.dpi / 72.0
+        allowed_width = max(1., fig.bbox.width - 2 * horizontal_margin)
+        while (legend.get_window_extent(renderer).width > allowed_width
+               and placement['ncol'] > 1):
+            legend.remove()
+            placement['ncol'] -= 1
+            legend = create_legend()
+    return legend
 
 def _apply_global_group_legend_override(fig, legend, show_legend):
     """Honor explicit legend controls after a factored global-group render.
@@ -666,6 +687,54 @@ _ND_FACET_PRESENTATION_KWARGS = frozenset({
     'color_display', 'max_legend_categories',
 })
 
+
+
+def _reserve_automatic_legend_top_room(fig, axes_grid, legend, *,
+                                       margin_override=None,
+                                       column_headings=(), row_headings=(),
+                                       panel_headings=(), suptitle=None):
+    """B3: reserve renderer-measured top space without overriding user margins.
+
+    Only automatic Figure geometry is changed. Call before the existing
+    decoration stacker; that function remains the single placement owner.
+    """
+    if legend is None or margin_override is not None:
+        return
+    fig.canvas.draw()
+    renderer = fig.canvas.get_renderer()
+    axes = np.atleast_2d(axes_grid)
+    visible_top = [ax for ax in axes[0] if ax.get_visible()]
+    if not visible_top:
+        return
+    bounds = [ax.get_tightbbox(renderer) for ax in visible_top]
+    top_edge = max(b.y1 for b in bounds if b is not None)
+    gap = 5.0 * fig.dpi / 72.0
+    height = legend.get_window_extent(renderer).height + 2 * gap
+    headings = list(column_headings) + [text for text, _ in panel_headings]
+    if headings:
+        height += max(h.get_window_extent(renderer).height for h in headings) + gap
+    if suptitle is not None:
+        height += suptitle.get_window_extent(renderer).height + gap
+    deficit = top_edge + height - (fig.bbox.y1 - gap)
+    if deficit <= 0:
+        return
+    current_top = max(ax.get_position().y1 for ax in visible_top)
+    new_top = current_top - (deficit + gap) / fig.bbox.height
+    if new_top <= min(ax.get_position().y0 for ax in axes.flat if ax.get_visible()) + .04:
+        return  # Already too little Figure space; the stacker will warn.
+    fig.subplots_adjust(top=new_top)
+    # These Figure text artists were initially anchored to the automatic Axes
+    # positions. Keep their association after the reserved band is enlarged.
+    for text, ax in panel_headings:
+        pos = ax.get_position()
+        text.set_position(((pos.x0 + pos.x1) / 2, pos.y1 + .01))
+    for j, text in enumerate(column_headings):
+        pos = axes[0, j].get_position()
+        text.set_position(((pos.x0 + pos.x1) / 2, pos.y1 + .012))
+    for i, text in enumerate(row_headings):
+        pos = axes[i, 0].get_position()
+        x, _ = text.get_position()
+        text.set_position((x, (pos.y0 + pos.y1) / 2))
 
 
 def _position_nd_figure_decorations(fig, axes_grid, *,
@@ -6148,6 +6217,13 @@ class DFDraw:
             # hatch; do not move its legend above the grid.
             positioned_legend = (legend_artist if _facet_legend_spec is not None
                                  and not _facet_legend_spec.get('loc') else None)
+            if (positioned_legend is not None and _facet_legend_spec
+                    and _facet_legend_spec.get('mode') == 'shared'
+                    and _facet_legend_spec.get('bbox_to_anchor') is None):
+                _reserve_automatic_legend_top_room(
+                    fig, axes, positioned_legend,
+                    margin_override=_one_dim_options.get('figure_margins'),
+                    panel_headings=panel_headings, suptitle=fig._suptitle)
             if (panel_headings or shared_x_artist is not None or
                     shared_y_artist is not None or positioned_legend is not None):
                 _position_nd_figure_decorations(
@@ -6826,6 +6902,15 @@ class DFDraw:
         # PHASE_13_93 closure repair: use rendered glyph/axes extents, not
         # fixed Figure fractions, for the annotations owned by this N-D grid.
         # One-shot initial placement only; users retain full post-draw control.
+        if (legend_artist is not None and _facet_legend_spec
+                and _facet_legend_spec.get('mode') == 'shared'
+                and _facet_legend_spec.get('loc') is None
+                and _facet_legend_spec.get('bbox_to_anchor') is None):
+            _reserve_automatic_legend_top_room(
+                fig, axes, legend_artist,
+                margin_override=figure_margins,
+                column_headings=column_headings, row_headings=row_headings,
+                suptitle=fig._suptitle)
         if (row_headings or column_headings or shared_xlabel_artist is not None
                 or shared_ylabel_artist is not None or legend_artist is not None):
             _position_nd_figure_decorations(

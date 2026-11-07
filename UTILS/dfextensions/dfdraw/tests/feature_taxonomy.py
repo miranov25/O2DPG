@@ -10,6 +10,30 @@ Phase 13.15.DF — DRAFT for team vote
 """
 
 FEATURES = [
+    # PHASE_13_103_DF B3: renderer-measured factored Figure legend wrapping.
+    {
+        'id': 'PRESENTATION.shared_legend_adaptive_layout',
+        'name': 'Shared Figure legend auto-wrap with exact factored identities',
+        'category': 'PRESENTATION',
+        'description': (
+            'Renderer-measured legend columns and automatic top-room budgeting '
+            'for 1-D/2-D facets; user ncol/loc/anchor/margins remain authoritative, '
+            'with unchanged numerical plot payloads.'
+        ),
+        'tests': [
+            'test_phase_13_103_b3_shared_legend_wrap_red.py::test_B3_01_02_04_05_06_auto_wrapping_and_semantic_completeness[2-1d-figsize0]',
+            'test_phase_13_103_b3_shared_legend_wrap_red.py::test_B3_01_02_04_05_06_auto_wrapping_and_semantic_completeness[5-1d-figsize1]',
+            'test_phase_13_103_b3_shared_legend_wrap_red.py::test_B3_01_02_04_05_06_auto_wrapping_and_semantic_completeness[7-1d-figsize2]',
+            'test_phase_13_103_b3_shared_legend_wrap_red.py::test_B3_01_02_04_05_06_auto_wrapping_and_semantic_completeness[10-1d-figsize3]',
+            'test_phase_13_103_b3_shared_legend_wrap_red.py::test_B3_01_02_04_05_06_auto_wrapping_and_semantic_completeness[2-2d-figsize4]',
+            'test_phase_13_103_b3_shared_legend_wrap_red.py::test_B3_01_02_04_05_06_auto_wrapping_and_semantic_completeness[5-2d-figsize5]',
+            'test_phase_13_103_b3_shared_legend_wrap_red.py::test_B3_01_02_04_05_06_auto_wrapping_and_semantic_completeness[7-2d-figsize6]',
+            'test_phase_13_103_b3_shared_legend_wrap_red.py::test_B3_01_02_04_05_06_auto_wrapping_and_semantic_completeness[10-2d-figsize7]',
+            'test_phase_13_103_b3_shared_legend_wrap_red.py::test_B3_03_two_dimensional_outer_headings_title_and_shared_labels',
+            'test_phase_13_103_b3_shared_legend_wrap_red.py::test_B3_07_explicit_columns_location_anchor_and_title_remain_authoritative',
+            'test_phase_13_103_b3_shared_legend_wrap_red.py::test_B3_08_numerical_lines_unchanged_by_auto_wrapping',
+        ],
+    },
     # PHASE_13_103_DF B2: one labelled fit annotation for all vector branches.
     {
         'id': 'PRESENTATION.vector_fit_annotation_layout',

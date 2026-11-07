@@ -14,6 +14,18 @@ Phase 13.15.DF
 """
 
 TEST_LAYERS = {
+    # PHASE_13_103_DF B3: measured Figure-legend geometry + numerical truth.
+    'test_phase_13_103_b3_shared_legend_wrap_red.py::test_B3_01_02_04_05_06_auto_wrapping_and_semantic_completeness[2-1d-figsize0]': 'visual_primitive',
+    'test_phase_13_103_b3_shared_legend_wrap_red.py::test_B3_01_02_04_05_06_auto_wrapping_and_semantic_completeness[5-1d-figsize1]': 'visual_primitive',
+    'test_phase_13_103_b3_shared_legend_wrap_red.py::test_B3_01_02_04_05_06_auto_wrapping_and_semantic_completeness[7-1d-figsize2]': 'visual_primitive',
+    'test_phase_13_103_b3_shared_legend_wrap_red.py::test_B3_01_02_04_05_06_auto_wrapping_and_semantic_completeness[10-1d-figsize3]': 'visual_primitive',
+    'test_phase_13_103_b3_shared_legend_wrap_red.py::test_B3_01_02_04_05_06_auto_wrapping_and_semantic_completeness[2-2d-figsize4]': 'visual_primitive',
+    'test_phase_13_103_b3_shared_legend_wrap_red.py::test_B3_01_02_04_05_06_auto_wrapping_and_semantic_completeness[5-2d-figsize5]': 'visual_primitive',
+    'test_phase_13_103_b3_shared_legend_wrap_red.py::test_B3_01_02_04_05_06_auto_wrapping_and_semantic_completeness[7-2d-figsize6]': 'visual_primitive',
+    'test_phase_13_103_b3_shared_legend_wrap_red.py::test_B3_01_02_04_05_06_auto_wrapping_and_semantic_completeness[10-2d-figsize7]': 'visual_primitive',
+    'test_phase_13_103_b3_shared_legend_wrap_red.py::test_B3_03_two_dimensional_outer_headings_title_and_shared_labels': 'visual_primitive',
+    'test_phase_13_103_b3_shared_legend_wrap_red.py::test_B3_07_explicit_columns_location_anchor_and_title_remain_authoritative': 'visual_primitive',
+    'test_phase_13_103_b3_shared_legend_wrap_red.py::test_B3_08_numerical_lines_unchanged_by_auto_wrapping': 'invariance',
     # B2b reviewer-closure regression checks, no generated gallery dependency.
     'test_phase_13_103_b2b_review_findings_red.py::test_B2B_01_four_fit_labels_stay_within_each_2d_facet[default]': 'visual_primitive',
     'test_phase_13_103_b2b_review_findings_red.py::test_B2B_01_four_fit_labels_stay_within_each_2d_facet[small]': 'visual_primitive',
