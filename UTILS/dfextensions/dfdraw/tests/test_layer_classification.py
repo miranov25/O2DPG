@@ -1344,4 +1344,39 @@ TEST_LAYERS = {
     'test_phase_13_82_s9_merge_exact_declared_order_red.py::test_S9_04_merge_exact_undeclared_order_is_unchanged_legacy_union': 'integration',
     'test_phase_13_82_s9_merge_exact_declared_order_red.py::test_S9_05_merge_exact_and_preserve_partitions_agree_on_refusal': 'smoke',
 
+    # PHASE_13_82_DF S9 slice 1: payload integrity on load.
+    # Refusals are smoke; valid round trips are integration (as for S8).
+    'test_phase_13_82_s9_payload_integrity_red.py::test_S9P_01_leaf_payload_with_invalid_order_declaration_is_refused[ordered-int-1]': 'smoke',
+    'test_phase_13_82_s9_payload_integrity_red.py::test_S9P_01_leaf_payload_with_invalid_order_declaration_is_refused[ordered-string]': 'smoke',
+    'test_phase_13_82_s9_payload_integrity_red.py::test_S9P_01_leaf_payload_with_invalid_order_declaration_is_refused[ordered-without-origin]': 'smoke',
+    'test_phase_13_82_s9_payload_integrity_red.py::test_S9P_01_leaf_payload_with_invalid_order_declaration_is_refused[ordered-canonical-origin]': 'smoke',
+    'test_phase_13_82_s9_payload_integrity_red.py::test_S9P_01_leaf_payload_with_invalid_order_declaration_is_refused[origin-without-ordered]': 'smoke',
+    'test_phase_13_82_s9_payload_integrity_red.py::test_S9P_01_leaf_payload_with_invalid_order_declaration_is_refused[ordered-false]': 'smoke',
+    'test_phase_13_82_s9_payload_integrity_red.py::test_S9P_01_leaf_payload_with_invalid_order_declaration_is_refused[ordered-false-canonical]': 'smoke',
+    'test_phase_13_82_s9_payload_integrity_red.py::test_S9P_02_direct_construction_with_invalid_order_declaration_is_refused': 'smoke',
+    'test_phase_13_82_s9_payload_integrity_red.py::test_S9P_03_stored_ordered_1_no_longer_bypasses_merge_exact_guard': 'smoke',
+    'test_phase_13_82_s9_payload_integrity_red.py::test_S9P_04_valid_leaf_payloads_still_round_trip[undeclared]': 'integration',
+    'test_phase_13_82_s9_payload_integrity_red.py::test_S9P_04_valid_leaf_payloads_still_round_trip[declared]': 'integration',
+    'test_phase_13_82_s9_payload_integrity_red.py::test_S9P_05_outer_axis_label_type_change_is_refused[bool]': 'smoke',
+    'test_phase_13_82_s9_payload_integrity_red.py::test_S9P_05_outer_axis_label_type_change_is_refused[float]': 'smoke',
+    'test_phase_13_82_s9_payload_integrity_red.py::test_S9P_06_outer_axis_flag_or_edge_type_change_is_refused[declared-axis-ordered-1]': 'smoke',
+    'test_phase_13_82_s9_payload_integrity_red.py::test_S9P_06_outer_axis_flag_or_edge_type_change_is_refused[partition-axis-ordered-0]': 'smoke',
+    'test_phase_13_82_s9_payload_integrity_red.py::test_S9P_06_outer_axis_flag_or_edge_type_change_is_refused[x-edges-as-integers]': 'smoke',
+    'test_phase_13_82_s9_payload_integrity_red.py::test_S9P_07_untampered_preserved_state_round_trips_and_signed_zero_is_normalised': 'integration',
+
+    # PHASE_13_82_DF S9 slice 1 extension: stored row label types (refusals
+    # are smoke) and caller objects left unchanged on construction.
+    'test_phase_13_82_s9_record_type_and_input_copy_red.py::test_S9R_01_integer_row_label_under_decimal_axis_is_refused[int-after-float]': 'smoke',
+    'test_phase_13_82_s9_record_type_and_input_copy_red.py::test_S9R_01_integer_row_label_under_decimal_axis_is_refused[int-before-float]': 'smoke',
+    'test_phase_13_82_s9_record_type_and_input_copy_red.py::test_S9R_01_integer_row_label_under_decimal_axis_is_refused[int-among-floats]': 'smoke',
+    'test_phase_13_82_s9_record_type_and_input_copy_red.py::test_S9R_02_labels_already_refused_stay_refused[all-int-under-decimal]': 'smoke',
+    'test_phase_13_82_s9_record_type_and_input_copy_red.py::test_S9R_02_labels_already_refused_stay_refused[decimal-under-int]': 'smoke',
+    'test_phase_13_82_s9_record_type_and_input_copy_red.py::test_S9R_02_labels_already_refused_stay_refused[bool-under-decimal]': 'smoke',
+    'test_phase_13_82_s9_record_type_and_input_copy_red.py::test_S9R_02_labels_already_refused_stay_refused[bool-under-int]': 'smoke',
+    'test_phase_13_82_s9_record_type_and_input_copy_red.py::test_S9R_02_labels_already_refused_stay_refused[int-under-string]': 'smoke',
+    'test_phase_13_82_s9_record_type_and_input_copy_red.py::test_S9R_02b_stored_negative_zero_row_label_still_reads_as_zero': 'integration',
+    'test_phase_13_82_s9_record_type_and_input_copy_red.py::test_S9R_03_direct_construction_leaves_caller_objects_unchanged[axes]': 'integration',
+    'test_phase_13_82_s9_record_type_and_input_copy_red.py::test_S9R_03_direct_construction_leaves_caller_objects_unchanged[state]': 'integration',
+    'test_phase_13_82_s9_record_type_and_input_copy_red.py::test_S9R_04_node_still_normalises_its_own_copies': 'integration',
+
 }

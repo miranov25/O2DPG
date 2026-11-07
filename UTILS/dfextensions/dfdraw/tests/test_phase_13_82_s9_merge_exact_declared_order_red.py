@@ -94,8 +94,10 @@ def test_S9_03_merge_exact_keeps_identical_declared_order_and_sums():
     for row in m.state.itertuples(index=False):
         sel = (xbin == row.x_bin) & (r == row.region)
         assert row.entries == int(sel.sum())
-        assert row.sum_weights == pytest.approx(w[sel].sum(), abs=0.0)
-        assert row.sum_weights_squared == pytest.approx((w[sel] ** 2).sum(), abs=0.0)
+        # Exact equality: these weights are exact binary fractions, so the
+        # pooled sums must match numpy bit for bit (tightened in S9 slice 1).
+        assert row.sum_weights == w[sel].sum()
+        assert row.sum_weights_squared == (w[sel] ** 2).sum()
     # Row order follows the declared order inside each physical bin.
     rank = {v: i for i, v in enumerate(DECLARED)}
     keys = [(int(t.x_bin), rank[t.region]) for t in m.state.itertuples(index=False)]

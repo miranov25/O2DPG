@@ -69,6 +69,8 @@ def _normalize_signed_zero_node(node: 'StatisticalNode') -> None:
 
     Applied at construction/restore; not a rewrite of arbitrary categorical
     domains. Both 0.0 and -0.0 explicitly declared are ambiguous and refused.
+    When a label changes, the node gets new axes/state objects; the objects
+    the caller passed in are left exactly as they were.
     """
     for dim in node.dimensions[1:]:
         axis = node.axes.get(dim)
@@ -80,11 +82,20 @@ def _normalize_signed_zero_node(node: 'StatisticalNode') -> None:
         if len({_category_key(v) for v in normalized}) != len(normalized):
             if len({json.dumps(v, sort_keys=True) for v in values}) == len(values):
                 raise ValueError(f'coordinate {dim}: ambiguous signed-zero categorical domain')
-        axis['values'] = normalized
+        # Rewrite only when a label actually changes (a -0.0 or a NumPy
+        # scalar), and then on a copy: the caller's axes dict and state table
+        # are never modified (PHASE_13_82_DF S9 slice 1, S8 note N-2).
+        if any(type(a) is not type(b) or repr(a) != repr(b)
+               for a, b in zip(values, normalized)):
+            node.axes = {**node.axes, dim: {**axis, 'values': normalized}}
         # Avoid an O(number-of-rows) map on ordinary string/int/bool axes.
         if (dim in node.state and any(type(v) is float and v == 0.0
                                       for v in normalized)):
-            node.state[dim] = node.state[dim].map(_normalize_category_value)
+            column = node.state[dim]
+            mapped = column.map(_normalize_category_value)
+            if any(repr(a) != repr(b) for a, b in zip(column, mapped)):
+                node.state = node.state.copy()
+                node.state[dim] = mapped
 
 
 def _validate_edges(edges: Any) -> list[float]:
@@ -100,6 +111,29 @@ def _validate_edges(edges: Any) -> list[float]:
 
 def _columns(dimensions: list[str], state_schema: Mapping[str, str]):
     return dimensions + list(state_schema)
+
+
+def _check_record_labels(records, dimensions, axes) -> None:
+    """Refuse stored row labels that match no declared label in value and type.
+
+    Runs on the raw payload records, *before* they become a DataFrame: pandas
+    merges a column holding both 0.5 and 1 into decimals, after which the
+    integer label can no longer be seen.  Labels are compared by
+    ``_category_key`` (JSON text after the builders' normalisation), so -0.0
+    still matches 0.0 but 1 does not match 1.0 (PHASE_13_82_DF S9 slice 1).
+    """
+    if not isinstance(axes, dict) or not isinstance(dimensions, list):
+        return  # the regular validator reports malformed axes/dimensions
+    for dim in dimensions[1:]:
+        axis = axes.get(dim)
+        if not isinstance(axis, dict) or not isinstance(axis.get('values'), list):
+            continue  # the regular validator reports malformed axes
+        allowed = {_category_key(v) for v in axis['values']}
+        for record in records:
+            if isinstance(record, dict) and dim in record:
+                if _category_key(record[dim]) not in allowed:
+                    raise ValueError(f'coordinate {dim}: undeclared category value '
+                                     f'{record[dim]!r} in stored state record')
 
 
 def _typed_frame(rows, dimensions, state_schema):
@@ -178,6 +212,17 @@ def _validate_node(node: 'StatisticalNode') -> None:
             raise ValueError(f'coordinate {dim}: mixed category types are unsupported')
         if len(values) != len({json.dumps(v, sort_keys=True) for v in values}):
             raise ValueError(f'coordinate {dim}: duplicate declared values')
+        # Order declaration.  The builders write exactly one of two forms:
+        # no order keys (order not declared), or ordered=True together with
+        # order_origin='explicit' (analyst-declared order).  Any other form,
+        # e.g. ordered=1 from an edited payload, would slip past the
+        # merge_exact declared-order guard, so it is refused here - on direct
+        # construction and on load alike (PHASE_13_82_DF S9 slice 1).
+        order_keys = {k: axis[k] for k in ('ordered', 'order_origin') if k in axis}
+        if order_keys and not (len(order_keys) == 2
+                               and order_keys['ordered'] is True
+                               and order_keys['order_origin'] == 'explicit'):
+            raise ValueError(f'coordinate {dim}: invalid categorical order declaration {order_keys!r}')
     expected_schema = dict(_COMMON_STATE)
     if node.statistic_kind == 'profile':
         expected_schema.update(_PROFILE_EXTRA)
@@ -210,7 +255,12 @@ def _validate_node(node: 'StatisticalNode') -> None:
 
 @dataclass
 class StatisticalNode:
-    """Sparse, named retained statistic; no rendering or disk ownership."""
+    """Sparse, named retained statistic; no rendering or disk ownership.
+
+    Construction validates the node and normalises ``-0.0`` category labels
+    to ``0.0`` on the node's own copies; the axes dict and state table passed
+    in by the caller are never modified.
+    """
     schema_version: int
     name: str
     statistic_kind: str
@@ -255,6 +305,29 @@ class StatisticalNode:
 
     @classmethod
     def from_payload(cls, payload: Mapping[str, Any]) -> 'StatisticalNode':
+        """Rebuild a node from its logical payload (the output of ``to_payload``).
+
+        The payload is validated as strictly as a freshly built node.  In
+        particular a category axis must carry either no order keys or exactly
+        ``ordered: True`` with ``order_origin: 'explicit'``, and every stored
+        row label must equal a declared axis label in value *and* type
+        (``1`` does not match ``1.0``; a stored ``-0.0`` reads as ``0.0``).
+        Anything else is refused rather than interpreted.
+
+        Raises
+        ------
+        ValueError
+            Unsupported schema version, missing or unknown fields, or any
+            field that fails node validation (including
+            ``invalid categorical order declaration`` and
+            ``undeclared category value``).
+
+        Example
+        -------
+        >>> node = build_histogram_state([0.2], edges=[0., 1.], name='h', partition_id='run1')
+        >>> StatisticalNode.from_payload(node.to_payload()).to_payload() == node.to_payload()
+        True
+        """
         if not isinstance(payload, Mapping) or payload.get('schema_version') != SCHEMA_VERSION:
             raise ValueError('unsupported schema_version in statistical payload')
         fields = ['schema_version','name','statistic_kind','dimensions','axes',
@@ -267,7 +340,9 @@ class StatisticalNode:
             raise ValueError('statistical payload state must be a list of records')
         if not isinstance(value['dimensions'], list) or not isinstance(value['state_schema'], dict):
             raise ValueError('dimensions/state_schema invalid')
-        frame = _typed_frame(value.pop('state'), value['dimensions'], value['state_schema'])
+        records = value.pop('state')
+        _check_record_labels(records, value['dimensions'], value.get('axes'))
+        frame = _typed_frame(records, value['dimensions'], value['state_schema'])
         return cls(**value, state=frame)
 
 

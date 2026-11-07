@@ -87,6 +87,23 @@ def _canonical_axes(nodes: Sequence[StatisticalNode]) -> dict[str, Any]:
     return merged
 
 
+def _axes_identity(axes: Mapping[str, Any]) -> str:
+    """Type-sensitive identity text of an axes mapping.
+
+    Python equality treats ``False == 0``, ``True == 1`` and ``0.0 == 0``,
+    so two axes mappings that differ in JSON scalar type compare equal.
+    Category labels are normalised exactly as the builders do (``-0.0`` ->
+    ``0.0``, NumPy scalars unwrapped, via ``_category_key``); every other
+    entry is compared by its JSON text, which keeps the type.
+    """
+    normalised = copy.deepcopy(dict(axes))
+    for axis in normalised.values():
+        if (isinstance(axis, dict) and axis.get('kind') == 'categorical'
+                and isinstance(axis.get('values'), list)):
+            axis['values'] = [_category_key(v) for v in axis['values']]
+    return json.dumps(normalised, sort_keys=True, allow_nan=False)
+
+
 class PartitionedStatisticalState:
     """Immutable-by-access composition of independent unpooled state leaves.
 
@@ -177,6 +194,21 @@ class PartitionedStatisticalState:
 
     @classmethod
     def from_payload(cls, payload: Mapping[str, Any]) -> 'PartitionedStatisticalState':
+        """Rebuild a preserved state from its payload (the output of ``to_payload``).
+
+        The state is rebuilt from the stored leaf payloads; the stored
+        top-level ``axes`` must then describe exactly the rebuilt state,
+        compared type-sensitively.  Category labels follow the builders'
+        normalisation (``-0.0`` reads as ``0.0``); any other difference in
+        value or JSON type (``False`` vs ``0``, ``0.0`` vs ``0``, ``1`` vs
+        ``True``) is refused.
+
+        Raises
+        ------
+        ValueError
+            Invalid schema or kind, an invalid leaf payload, or stored axes
+            inconsistent with the source partitions.
+        """
         if (not isinstance(payload, Mapping) or
                 set(payload) != {'partitioned_schema_version', 'kind', 'axes', 'partitions'} or
                 payload.get('partitioned_schema_version') != PARTITIONED_SCHEMA_VERSION or
@@ -186,7 +218,9 @@ class PartitionedStatisticalState:
         safe = _json_copy(dict(payload), 'S8 partition-preserving payload')
         nodes = [StatisticalNode.from_payload(entry) for entry in safe['partitions']]
         obj = cls(nodes)
-        if safe['axes'] != obj.axes:
+        # Compare by JSON type as well as value: Python equality would accept
+        # False for 0, True for 1 or 0.0 for 0 (PHASE_13_82_DF S9 slice 1).
+        if _axes_identity(safe['axes']) != _axes_identity(obj.axes):
             raise ValueError('S8 payload axes inconsistent with source partitions')
         return obj
 

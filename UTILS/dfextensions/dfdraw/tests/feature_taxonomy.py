@@ -3172,4 +3172,53 @@ FEATURES = [
         ],
     },
 
+    # PHASE_13_82_DF S9 slice 1: stored retained-state data is checked on load
+    # (leaf order declaration; type-sensitive partitioned axes).
+    {
+        "id": "STATS.s9_payload_integrity_on_load",
+        "name": "Stored retained states are checked on load: a leaf category axis must carry no order keys or exactly ordered=True with order_origin='explicit', stored row labels must match a declared label in value and type, and stored partitioned axes must match the rebuilt state in value and JSON type (S9 slice 1)",
+        "category": "STATS",
+        "tests": [
+            'test_phase_13_82_s9_payload_integrity_red.py::test_S9P_01_leaf_payload_with_invalid_order_declaration_is_refused[ordered-int-1]',
+            'test_phase_13_82_s9_payload_integrity_red.py::test_S9P_01_leaf_payload_with_invalid_order_declaration_is_refused[ordered-string]',
+            'test_phase_13_82_s9_payload_integrity_red.py::test_S9P_01_leaf_payload_with_invalid_order_declaration_is_refused[ordered-without-origin]',
+            'test_phase_13_82_s9_payload_integrity_red.py::test_S9P_01_leaf_payload_with_invalid_order_declaration_is_refused[ordered-canonical-origin]',
+            'test_phase_13_82_s9_payload_integrity_red.py::test_S9P_01_leaf_payload_with_invalid_order_declaration_is_refused[origin-without-ordered]',
+            'test_phase_13_82_s9_payload_integrity_red.py::test_S9P_01_leaf_payload_with_invalid_order_declaration_is_refused[ordered-false]',
+            'test_phase_13_82_s9_payload_integrity_red.py::test_S9P_01_leaf_payload_with_invalid_order_declaration_is_refused[ordered-false-canonical]',
+            'test_phase_13_82_s9_payload_integrity_red.py::test_S9P_02_direct_construction_with_invalid_order_declaration_is_refused',
+            'test_phase_13_82_s9_payload_integrity_red.py::test_S9P_03_stored_ordered_1_no_longer_bypasses_merge_exact_guard',
+            'test_phase_13_82_s9_payload_integrity_red.py::test_S9P_04_valid_leaf_payloads_still_round_trip[undeclared]',
+            'test_phase_13_82_s9_payload_integrity_red.py::test_S9P_04_valid_leaf_payloads_still_round_trip[declared]',
+            'test_phase_13_82_s9_payload_integrity_red.py::test_S9P_05_outer_axis_label_type_change_is_refused[bool]',
+            'test_phase_13_82_s9_payload_integrity_red.py::test_S9P_05_outer_axis_label_type_change_is_refused[float]',
+            'test_phase_13_82_s9_payload_integrity_red.py::test_S9P_06_outer_axis_flag_or_edge_type_change_is_refused[declared-axis-ordered-1]',
+            'test_phase_13_82_s9_payload_integrity_red.py::test_S9P_06_outer_axis_flag_or_edge_type_change_is_refused[partition-axis-ordered-0]',
+            'test_phase_13_82_s9_payload_integrity_red.py::test_S9P_06_outer_axis_flag_or_edge_type_change_is_refused[x-edges-as-integers]',
+            'test_phase_13_82_s9_payload_integrity_red.py::test_S9P_07_untampered_preserved_state_round_trips_and_signed_zero_is_normalised',
+            'test_phase_13_82_s9_record_type_and_input_copy_red.py::test_S9R_01_integer_row_label_under_decimal_axis_is_refused[int-after-float]',
+            'test_phase_13_82_s9_record_type_and_input_copy_red.py::test_S9R_01_integer_row_label_under_decimal_axis_is_refused[int-before-float]',
+            'test_phase_13_82_s9_record_type_and_input_copy_red.py::test_S9R_01_integer_row_label_under_decimal_axis_is_refused[int-among-floats]',
+            'test_phase_13_82_s9_record_type_and_input_copy_red.py::test_S9R_02_labels_already_refused_stay_refused[all-int-under-decimal]',
+            'test_phase_13_82_s9_record_type_and_input_copy_red.py::test_S9R_02_labels_already_refused_stay_refused[decimal-under-int]',
+            'test_phase_13_82_s9_record_type_and_input_copy_red.py::test_S9R_02_labels_already_refused_stay_refused[bool-under-decimal]',
+            'test_phase_13_82_s9_record_type_and_input_copy_red.py::test_S9R_02_labels_already_refused_stay_refused[bool-under-int]',
+            'test_phase_13_82_s9_record_type_and_input_copy_red.py::test_S9R_02_labels_already_refused_stay_refused[int-under-string]',
+            'test_phase_13_82_s9_record_type_and_input_copy_red.py::test_S9R_02b_stored_negative_zero_row_label_still_reads_as_zero',
+        ],
+    },
+
+    # PHASE_13_82_DF S9 slice 1 (S8 note N-2): constructing a node never
+    # modifies the caller's own axes dict or state table.
+    {
+        "id": "STATS.s9_node_construction_leaves_inputs_unchanged",
+        "name": "Constructing a StatisticalNode normalises -0.0 labels on its own copies; the caller's axes dict and state table are left unchanged (S9 slice 1)",
+        "category": "STATS",
+        "tests": [
+            'test_phase_13_82_s9_record_type_and_input_copy_red.py::test_S9R_03_direct_construction_leaves_caller_objects_unchanged[axes]',
+            'test_phase_13_82_s9_record_type_and_input_copy_red.py::test_S9R_03_direct_construction_leaves_caller_objects_unchanged[state]',
+            'test_phase_13_82_s9_record_type_and_input_copy_red.py::test_S9R_04_node_still_normalises_its_own_copies',
+        ],
+    },
+
 ]
