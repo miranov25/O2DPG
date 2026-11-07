@@ -2006,6 +2006,9 @@ class DFDraw:
         'vector_compose', 'delta_facet',
         # Phase 13.42.DF: Inline fits
         'fit',
+        # PHASE_13_103 B2b C-1: named draw() parameter must reach the vector
+        # profile path just as it already reaches the scalar typed path.
+        'fit_textbox_kwargs',
         # Note: 'type' consumed for routing; 'figsize' deliberately excluded
         # (figure already created); 'facet' caught by R4 guard; 'group_by'
         # passed as explicit named arg to _draw_vector.
@@ -3003,6 +3006,13 @@ class DFDraw:
                 # same=True may reuse the previous axes without an explicit
                 # ax= argument; do not remove its pre-existing fit annotation.
                 _b2_axis_before = getattr(self, '_last_ax', None)
+                if _b2_axis_before is None:
+                    # B2b C-2: a new DFDraw instance still reuses pyplot's
+                    # active axes for same=True. Snapshot previous artists
+                    # from that same axes before rendering scalar branches.
+                    import matplotlib.pyplot as _b2_plt
+                    if _b2_plt.get_fignums():
+                        _b2_axis_before = _b2_plt.gca()
             _b2_prior_fit_boxes = (
                 {t for t in _b2_axis_before.texts
                  if getattr(t, '_dfdraw_fit_textbox', False)}
@@ -3080,6 +3090,7 @@ class DFDraw:
                 ax, _b2_fit_curves, _b2_fit_results,
                 facet_mode=bool(kwargs.get('_facet_mode', False)),
                 textbox_kwargs=_b2_textbox_options,
+                wrap_to_axes=True,  # B2b: bounded four-branch fit presentation
             )
 
         if _stat_vector is not None and ax is not None:

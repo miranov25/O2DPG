@@ -34,6 +34,12 @@ FEATURES = [
             'test_phase_13_103_b2_vector_fit_textbox_red.py::test_B2_09_rendered_fit_textboxes_fit_within_axes[ordinary-2d]',
             'test_phase_13_103_b2_vector_fit_textbox_red.py::test_B2_10_adf_public_path_fit_annotations_match_direct[ordinary-1d]',
             'test_phase_13_103_b2_vector_fit_textbox_red.py::test_B2_10_adf_public_path_fit_annotations_match_direct[ordinary-2d]',
+            # B2b reviewer findings: default layout, routing, and same=True.
+            'test_phase_13_103_b2b_review_findings_red.py::test_B2B_01_four_fit_labels_stay_within_each_2d_facet[default]',
+            'test_phase_13_103_b2b_review_findings_red.py::test_B2B_01_four_fit_labels_stay_within_each_2d_facet[small]',
+            'test_phase_13_103_b2b_review_findings_red.py::test_B2B_02_generic_draw_forwards_fit_textbox_options',
+            'test_phase_13_103_b2b_review_findings_red.py::test_B2B_03_generic_draw_rejects_unknown_textbox_options',
+            'test_phase_13_103_b2b_review_findings_red.py::test_B2B_04_same_true_new_object_preserves_earlier_fit_box',
         ],
     },
 

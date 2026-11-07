@@ -14,6 +14,12 @@ Phase 13.15.DF
 """
 
 TEST_LAYERS = {
+    # B2b reviewer-closure regression checks, no generated gallery dependency.
+    'test_phase_13_103_b2b_review_findings_red.py::test_B2B_01_four_fit_labels_stay_within_each_2d_facet[default]': 'visual_primitive',
+    'test_phase_13_103_b2b_review_findings_red.py::test_B2B_01_four_fit_labels_stay_within_each_2d_facet[small]': 'visual_primitive',
+    'test_phase_13_103_b2b_review_findings_red.py::test_B2B_02_generic_draw_forwards_fit_textbox_options': 'visual_primitive',
+    'test_phase_13_103_b2b_review_findings_red.py::test_B2B_03_generic_draw_rejects_unknown_textbox_options': 'visual_primitive',
+    'test_phase_13_103_b2b_review_findings_red.py::test_B2B_04_same_true_new_object_preserves_earlier_fit_box': 'visual_primitive',
     # PHASE_13_103_DF B2 — vector profile fit annotations and numerical parity.
     'test_phase_13_103_b2_vector_fit_textbox_red.py::test_B2_01_four_branch_fit_annotation_is_consolidated[generic-draw]': 'visual_primitive',
     'test_phase_13_103_b2_vector_fit_textbox_red.py::test_B2_01_four_branch_fit_annotation_is_consolidated[typed-profile]': 'visual_primitive',

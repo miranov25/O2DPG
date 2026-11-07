@@ -198,7 +198,8 @@ def render_fit_textbox(ax,
                        fits_per_curve: List[List[Dict[str, Any]]],
                        *,
                        facet_mode: bool = False,
-                       textbox_kwargs: Optional[Dict[str, Any]] = None) -> None:
+                       textbox_kwargs: Optional[Dict[str, Any]] = None,
+                       wrap_to_axes: bool = False) -> None:
     """Render the ROOT-style fit-parameter textbox on ``ax``.
 
     Per-fit blocks are concatenated. Each block shows:
@@ -489,3 +490,50 @@ def render_fit_textbox(ax,
     # renderer so vector composition can replace only its own new boxes.
     # Scalar textboxes and annotations from other owners are unchanged.
     fit_text_artist._dfdraw_fit_textbox = True
+    if wrap_to_axes:
+        _wrap_fit_textbox_to_axes(ax, fit_text_artist)
+
+
+def _wrap_fit_textbox_to_axes(ax, artist):
+    """B2b: wrap an aggregated fit annotation to the owning axes width.
+
+    Reflows only at whitespace and retains all fit labels, numerical values,
+    and caller-selected precision. Called for the B2 vector aggregate only;
+    scalar/legacy annotations retain their existing byte-level text layout.
+    """
+    canvas = ax.figure.canvas
+    if not hasattr(canvas, 'get_renderer'):
+        return  # Unsupported renderer: preserve text verbatim.
+    renderer = canvas.get_renderer()
+    extent = ax.get_window_extent(renderer)
+    if not extent.width or extent.width <= 0:
+        return
+    # Reserve spare width for the textbox border and subsequent facet layout.
+    max_line_pixels = max(32.0, extent.width * 0.72)
+    font = artist.get_fontproperties()
+
+    def width(text):
+        return renderer.get_text_width_height_descent(text, font, False)[0]
+
+    lines = []
+    for original in artist.get_text().split('\n'):
+        # Keep intentional blank-line section boundaries.
+        if not original.strip():
+            lines.append(original)
+            continue
+        if width(original) <= max_line_pixels:
+            lines.append(original)  # preserve explicit indentation and spacing
+            continue
+        indent = original[:len(original) - len(original.lstrip())]
+        words = original.split()
+        # Preserve scientific values by breaking only between complete tokens.
+        current = indent + words[0]
+        for word in words[1:]:
+            candidate = current + ' ' + word
+            if width(candidate) <= max_line_pixels:
+                current = candidate
+            else:
+                lines.append(current)
+                current = indent + word
+        lines.append(current)
+    artist.set_text('\n'.join(lines))
