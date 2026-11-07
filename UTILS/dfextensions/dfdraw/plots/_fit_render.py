@@ -471,7 +471,7 @@ def render_fit_textbox(ax,
 
     coords = _POSITION_COORDS.get(position, _POSITION_COORDS['upper left'])
     x, y, ha, va = coords
-    ax.text(
+    fit_text_artist = ax.text(
         x, y, full_text,
         transform=ax.transAxes,
         fontsize=fontsize,
@@ -485,3 +485,7 @@ def render_fit_textbox(ax,
             alpha=0.85,
         ),
     )
+    # PHASE_13_103 B2: identify annotations owned by the fit-textbox
+    # renderer so vector composition can replace only its own new boxes.
+    # Scalar textboxes and annotations from other owners are unchanged.
+    fit_text_artist._dfdraw_fit_textbox = True

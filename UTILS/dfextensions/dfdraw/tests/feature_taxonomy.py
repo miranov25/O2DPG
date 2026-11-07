@@ -10,6 +10,33 @@ Phase 13.15.DF — DRAFT for team vote
 """
 
 FEATURES = [
+    # PHASE_13_103_DF B2: one labelled fit annotation for all vector branches.
+    {
+        'id': 'PRESENTATION.vector_fit_annotation_layout',
+        'name': 'Vector profile fit annotation consolidation',
+        'category': 'PRESENTATION',
+        'description': (
+            'One readable, branch-labelled textbox per ordinary vector-profile '
+            'axes; existing numerical fit payloads, overlays and scalar fits retained.'
+        ),
+        'tests': [
+            'test_phase_13_103_b2_vector_fit_textbox_red.py::test_B2_01_four_branch_fit_annotation_is_consolidated[generic-draw]',
+            'test_phase_13_103_b2_vector_fit_textbox_red.py::test_B2_01_four_branch_fit_annotation_is_consolidated[typed-profile]',
+            'test_phase_13_103_b2_vector_fit_textbox_red.py::test_B2_02_consolidated_annotations_in_each_facet[ordinary-1d]',
+            'test_phase_13_103_b2_vector_fit_textbox_red.py::test_B2_02_consolidated_annotations_in_each_facet[ordinary-2d]',
+            'test_phase_13_103_b2_vector_fit_textbox_red.py::test_B2_03_paired_fit_specs_keep_distinct_branch_text',
+            'test_phase_13_103_b2_vector_fit_textbox_red.py::test_B2_04_consolidation_respects_textbox_format_and_fontsize',
+            'test_phase_13_103_b2_vector_fit_textbox_red.py::test_B2_05_scalar_profile_fit_textbox_remains_unchanged',
+            'test_phase_13_103_b2_vector_fit_textbox_red.py::test_B2_06_vector_profile_without_fit_adds_no_fit_annotation',
+            'test_phase_13_103_b2_vector_fit_textbox_red.py::test_B2_07_four_numerical_fit_payloads_equal_scalar_fits',
+            'test_phase_13_103_b2_vector_fit_textbox_red.py::test_B2_08_fit_overlays_preserve_branch_colors_and_title',
+            'test_phase_13_103_b2_vector_fit_textbox_red.py::test_B2_09_rendered_fit_textboxes_fit_within_axes[ordinary-1d]',
+            'test_phase_13_103_b2_vector_fit_textbox_red.py::test_B2_09_rendered_fit_textboxes_fit_within_axes[ordinary-2d]',
+            'test_phase_13_103_b2_vector_fit_textbox_red.py::test_B2_10_adf_public_path_fit_annotations_match_direct[ordinary-1d]',
+            'test_phase_13_103_b2_vector_fit_textbox_red.py::test_B2_10_adf_public_path_fit_annotations_match_direct[ordinary-2d]',
+        ],
+    },
+
     {
         "id": "PROFILE.stat_vector_nd_facet_composition",
         "name": "PHASE_13_103_DF B1: existing per-bin std for expression vectors within 1-D and 2-D ordinary facet cells; preserve raw/scalar truth and visual-channel refusals",

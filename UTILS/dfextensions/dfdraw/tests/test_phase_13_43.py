@@ -482,24 +482,39 @@ class TestPhase1343SummaryFit:
     def test_f54_same_true_replace_mode(self):
         """Each draw(same=True) replaces stats['summary_fit']; previous figs
         dropped (Replace mode per §3.11)."""
-        d = DFDraw(_gauss_df())
-        fig1, ax1, stats1 = d.hist(
-            'x', bins=40, group_by='g', fit='gauss',
-            same=True, summary_fit='table',
-        )
-        sf1 = stats1['summary_fit']
-        first_fig = sf1.get('table')
-        # Second draw with same=True
-        fig2, ax2, stats2 = d.hist(
-            'x', bins=40, group_by='g', fit='gauss',
-            same=True, summary_fit='table',
-        )
-        sf2 = stats2['summary_fit']
-        # Each call has its OWN stats dict — verify the second call's summary
-        # is a fresh dict (Replace mode at the returned-stats level).
-        assert sf2 is not sf1, "Replace: each call returns its own summary"
-        assert isinstance(sf2.get('table'), plt.Figure)
-        plt.close(fig1); plt.close(fig2); _close_all(stats1); _close_all(stats2)
+        # Establish a private 2-D plotting context.  Without this, same=True
+        # may inherit a 3-D pyplot axes left active by an unrelated test.
+        # Keep the plt.gca() fallback exercised, but make its input explicit.
+        base_fig, base_ax = plt.subplots()
+        fig1 = fig2 = None
+        stats1 = stats2 = None
+        try:
+            plt.sca(base_ax)
+            d = DFDraw(_gauss_df())
+            fig1, ax1, stats1 = d.hist(
+                'x', bins=40, group_by='g', fit='gauss',
+                same=True, summary_fit='table',
+            )
+            sf1 = stats1['summary_fit']
+            # Second draw must reuse the same local 2-D plotting area.
+            fig2, ax2, stats2 = d.hist(
+                'x', bins=40, group_by='g', fit='gauss',
+                same=True, summary_fit='table',
+            )
+            sf2 = stats2['summary_fit']
+            assert ax1 is base_ax and ax2 is base_ax, (
+                "same=True must reuse this test's 2-D axes"
+            )
+            # The second call owns a fresh summary (Replace mode).
+            assert sf2 is not sf1, "Replace: each call returns its own summary"
+            assert isinstance(sf2.get('table'), plt.Figure)
+        finally:
+            for result in (stats1, stats2):
+                if result is not None:
+                    _close_all(result)
+            for figure in (fig1, fig2, base_fig):
+                if figure is not None:
+                    plt.close(figure)
 
     # -- F.55 — placement invariants (inspect.signature) ----------------
 

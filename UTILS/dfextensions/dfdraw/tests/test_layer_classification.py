@@ -14,6 +14,21 @@ Phase 13.15.DF
 """
 
 TEST_LAYERS = {
+    # PHASE_13_103_DF B2 — vector profile fit annotations and numerical parity.
+    'test_phase_13_103_b2_vector_fit_textbox_red.py::test_B2_01_four_branch_fit_annotation_is_consolidated[generic-draw]': 'visual_primitive',
+    'test_phase_13_103_b2_vector_fit_textbox_red.py::test_B2_01_four_branch_fit_annotation_is_consolidated[typed-profile]': 'visual_primitive',
+    'test_phase_13_103_b2_vector_fit_textbox_red.py::test_B2_02_consolidated_annotations_in_each_facet[ordinary-1d]': 'visual_primitive',
+    'test_phase_13_103_b2_vector_fit_textbox_red.py::test_B2_02_consolidated_annotations_in_each_facet[ordinary-2d]': 'visual_primitive',
+    'test_phase_13_103_b2_vector_fit_textbox_red.py::test_B2_03_paired_fit_specs_keep_distinct_branch_text': 'visual_primitive',
+    'test_phase_13_103_b2_vector_fit_textbox_red.py::test_B2_04_consolidation_respects_textbox_format_and_fontsize': 'visual_primitive',
+    'test_phase_13_103_b2_vector_fit_textbox_red.py::test_B2_05_scalar_profile_fit_textbox_remains_unchanged': 'visual_primitive',
+    'test_phase_13_103_b2_vector_fit_textbox_red.py::test_B2_06_vector_profile_without_fit_adds_no_fit_annotation': 'smoke',
+    'test_phase_13_103_b2_vector_fit_textbox_red.py::test_B2_07_four_numerical_fit_payloads_equal_scalar_fits': 'invariance',
+    'test_phase_13_103_b2_vector_fit_textbox_red.py::test_B2_08_fit_overlays_preserve_branch_colors_and_title': 'visual_primitive',
+    'test_phase_13_103_b2_vector_fit_textbox_red.py::test_B2_09_rendered_fit_textboxes_fit_within_axes[ordinary-1d]': 'visual_primitive',
+    'test_phase_13_103_b2_vector_fit_textbox_red.py::test_B2_09_rendered_fit_textboxes_fit_within_axes[ordinary-2d]': 'visual_primitive',
+    'test_phase_13_103_b2_vector_fit_textbox_red.py::test_B2_10_adf_public_path_fit_annotations_match_direct[ordinary-1d]': 'integration',
+    'test_phase_13_103_b2_vector_fit_textbox_red.py::test_B2_10_adf_public_path_fit_annotations_match_direct[ordinary-2d]': 'integration',
     # PHASE_13_103_DF B1: 2 independent NumPy/scalar invariance nodes;
     # 2 visual primitives, 10 refusals, 11 integration/compatibility nodes.
     'test_phase_13_103_b1_stat_vector_facet_red.py::test_B1_01_actual_banked_reproducer_no_group_2d': 'integration',

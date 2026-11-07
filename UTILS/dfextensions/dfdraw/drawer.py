@@ -2768,6 +2768,15 @@ class DFDraw:
                     or _paired_x_strategies is None
                     or len(_paired_x_strategies) != len(y_list)):
                 raise RuntimeError('paired X range metadata must match vector branches')
+        # PHASE_13_103 B2: only the ordinary ungrouped vector-profile
+        # overlay owns a consolidated fit annotation.  Keep each scalar
+        # branch fit and its overlay unchanged; aggregate the retained
+        # fit payloads for one call to the existing textbox renderer.
+        _b2_vector_fit = (draw_method == self.profile
+                          and kwargs.get('fit') is not None
+                          and len(y_list) > 1 and group_by is None)
+        _b2_fit_curves = []
+        _b2_fit_results = []
         stats_list = []
         _stat_branch_visuals = []  # branch identity and factored legend
         per_curve_sanitize = []  # Phase 13.27.DF Commit 2 v1.2 §5.2.1
@@ -2986,7 +2995,51 @@ class DFDraw:
                 _stat_vector is not None and list(_stat_vector) == ['std']
                 and group_by is None and iter_kwargs.get('ax') is not None
             ) else 0
+            # Identify fit textboxes present before this scalar branch.
+            # With same=True, earlier unrelated fit annotations must survive.
+            _b2_axis_before = iter_kwargs.get('ax')
+            if (_b2_vector_fit and _b2_axis_before is None
+                    and iter_kwargs['same']):
+                # same=True may reuse the previous axes without an explicit
+                # ax= argument; do not remove its pre-existing fit annotation.
+                _b2_axis_before = getattr(self, '_last_ax', None)
+            _b2_prior_fit_boxes = (
+                {t for t in _b2_axis_before.texts
+                 if getattr(t, '_dfdraw_fit_textbox', False)}
+                if _b2_vector_fit and _b2_axis_before is not None else set()
+            )
+            _b2_prior_line_count = (
+                len(_b2_axis_before.lines) if _b2_vector_fit
+                and _b2_axis_before is not None else 0
+            )
             fig, ax, stats = draw_method(expr, **iter_kwargs)
+            if _b2_vector_fit and ax is not None:
+                # A first profile with implicit matplotlib color can consume
+                # the C0 cycle, while its fit overlay advances to C1. Match
+                # each newly rendered fit overlay to that branch's first
+                # existing profile line without refitting or recoloring data.
+                _b2_added_lines = ax.lines[_b2_prior_line_count:]
+                _b2_successful_fits = (
+                    sum(r.get('fit_status') == 'ok' and
+                        r.get('function') is not None
+                        for group in stats.get('fit', []) for r in group)
+                    if isinstance(stats, dict) else 0
+                )
+                if (_b2_successful_fits and
+                        len(_b2_added_lines) > _b2_successful_fits):
+                    _b2_profile_color = _b2_added_lines[0].get_color()
+                    for _fit_line in _b2_added_lines[-_b2_successful_fits:]:
+                        _fit_line.set_color(_b2_profile_color)
+                # Remove only NEW boxes from this iteration, never titles,
+                # quantile labels, or boxes from an earlier same=True call.
+                for _textbox in tuple(ax.texts):
+                    if (getattr(_textbox, '_dfdraw_fit_textbox', False)
+                            and _textbox not in _b2_prior_fit_boxes):
+                        _textbox.remove()
+                if isinstance(stats, dict) and stats.get('fit'):
+                    _b2_fit_curves.append({'label': str(y_list[y_idx])})
+                    # Reuse already-fitted branch results; no re-fitting.
+                    _b2_fit_results.append(stats['fit'][0])
             if (_stat_vector is not None and list(_stat_vector) == ['std']
                     and group_by is None and ax is not None):
                 for _line in ax.lines[_prior_line_count:]:
@@ -3016,6 +3069,19 @@ class DFDraw:
             if isinstance(stats, dict) and 'sanitize_stats' in stats:
                 per_curve_sanitize.append(stats['sanitize_stats'])
         
+        if _b2_vector_fit and ax is not None and _b2_fit_results:
+            from .plots._fit_render import render_fit_textbox
+            # Use the existing formatter and explicit caller overrides.
+            # Compact default prevents a four-branch textbox from becoming
+            # four full-height multiline blocks in small ordinary facets.
+            _b2_textbox_options = dict(kwargs.get('fit_textbox_kwargs') or {})
+            _b2_textbox_options.setdefault('format', 'compact')
+            render_fit_textbox(
+                ax, _b2_fit_curves, _b2_fit_results,
+                facet_mode=bool(kwargs.get('_facet_mode', False)),
+                textbox_kwargs=_b2_textbox_options,
+            )
+
         if _stat_vector is not None and ax is not None:
             from matplotlib.lines import Line2D
             # Two independent legend factors (B + S entries, never B × S).
