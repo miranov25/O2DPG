@@ -6,7 +6,12 @@ HOW TO READ THIS FILE (navigation note, ~2 minutes)
     (time_series_draw.py) and DECLARES what must be true about that page:
       aliases   formulas that ADF's materialized aliases must equal exactly          (L1)
       expect    Profile(...):   per-bin count and (weighted) mean of a plotted profile   (L2)
-                Delta(...):     per-bin difference of two profiles (normalize="delta")  (L2)
+                Delta(...):     per-bin difference or ratio of two profiles (normalize) (L2)
+                RowCounts:      rows a selection keeps in each facet                   (L2)
+                SameAcrossSurfaces: draw = draw_batch = draw_figures, value by value   (L3)
+                SameAsCall:     a simpler public call gives the same numbers            (L3)
+                SameStyleAcrossFacets: each vector branch keeps its style in every facet (L3)
+                Flag:           a property the gallery function reports must be True  (L3)
                 Histogram(...): per-bin counts or weighted sums of a plotted histogram   (L2)
                 GaussFit(...):  centre and width of a plotted Gaussian fit             (L2)
                 FacetQuantiles: each panel's quantile lines vs np.percentile per cell   (L2)
@@ -28,12 +33,14 @@ HOW TO READ THIS FILE (navigation note, ~2 minutes)
         13_105    the declared cases of this file
     NOT_YET_MIGRATED lists the historical case IDs still owned by the old harness; the audit in
     run_gallery.sh checks that every old case is either PASS here or on that list, never both.
+  * After each case the PDF gets an EVIDENCE page: verdict, owner, and every comparison with its
+    worst difference and tolerance, so a reviewer sees the plot and the numbers side by side.
 
 Command line (called by run_gallery.sh; the data is loaded once for all targets):
     python time_series_draw_invariancetest.py time_series_tracks_0.root --bounded-entries 1000000 \
         --target gallery --target 13_105 --input-identity input_identity_first1M.json \
         --manifest out.json --pdf out.pdf --gallery-pdf gallery.pdf --strict
-    python time_series_draw_invariancetest.py --target ?        list the targets
+    python time_series_draw_invariancetest.py --target '?'      list the targets
 """
 from __future__ import annotations
 
@@ -46,6 +53,7 @@ import inspect
 import json
 import os
 import platform
+import re
 import sys
 import time
 from typing import Any, Callable
@@ -85,6 +93,12 @@ HIST_WEIGHTED = Tol("weighted histogram sums, float64", 1e-8, 1e-10)            
 F16_MEAN = Tol("float16 source summation", 3e-5, 2e-4)                             # historical ADF101 cases
 F16_QUANTILE = Tol("float16 source, linear quantile interpolation", 3e-4, 2e-4)
 F16_EDGE = Tol("float16 x expression promotion", 2e-3, 0.0)
+HIST12 = Tol("same float64 values, historical 1e-12", 1e-12, 1e-12)               # o5, C2
+O4 = Tol("same request, historical o4", 1e-12, 1e-10)
+C3_RATIO = Tol("ratio of float64 means, historical C3", 2e-13, 2e-13)
+C3_CENTRAL = Tol("float64 means, historical C3", 2e-12, 1e-12)
+O2_VALUE = Tol("weighted sums/mean/std/sem, historical o2", 1e-7, 5e-6)
+FIT10 = Tol("same fit from two public calls, historical o2", 1e-10, 1e-10)
 # golden noise values come from an independent implementation; libm cos/sqrt may differ by 1 ulp.
 GOLDEN = Tol("independent implementation, last-ulp libm differences", 1e-15, 0.0)
 
@@ -113,6 +127,24 @@ CHAIN_ALIASES = {   # the qualified-subframe chain of fig54; the subframe Oracle
 }
 QPT_BIN = {"qpt_bin10": lambda t: (10 * t.qpt).astype(np.int8)}    # the loader's alias (int8 truncation)
 QUANTILES = (0.15, 0.50, 0.90)
+RATIO_ALIASES = {   # the gallery's C3 pair (time_series_draw.py, PRECLEAN_C3_*)
+    **SECTOR_ALIAS,
+    "preclean_ratio_base":   lambda t: 1.0 + 0.02 * t.sector + 0.01 * t.tgl * t.tgl,
+    "preclean_ratio_scaled": lambda t: 2.0 * t.preclean_ratio_base,
+}
+O2_WEIGHT_EXPRESSIONS = ("1.0 + 0.0*abs(dcar_tpc_vertex)", "1.0 + abs(dcar_tpc_vertex)")   # fig44's weights_vector
+O2_WEIGHTS = {      # the same two weights as truth columns, in the source dtype of dcar_tpc_vertex
+    "w_unity": lambda t: 1.0 + 0.0 * t.dcar_tpc_vertex.abs(),
+    "w_dca":   lambda t: 1.0 + t.dcar_tpc_vertex.abs(),
+}
+
+
+def early(t):                     # time_s below the median of all rows (the gallery's t_mid)
+    return t.time_s < t.time_s.median()
+
+
+def late(t):
+    return t.time_s >= t.time_s.median()
 RAW_COLUMNS = ["phi", "tgl", "dcar_tpc_vertex", "dcar_tpc", "ncl", "side_type", "timeMS", "qpt"]   # ROOT branches used
 SOURCE_COLUMNS = RAW_COLUMNS + ["oracle_noise", "oracle_row_id", "oracle_w_flat", "oracle_w_tgl"]
 
@@ -138,15 +170,65 @@ class Profile:
     weights: str | None = None               # truth column of per-row weights; None = unweighted
     tol: Tol = SAME_VALUES
     edges_tol: Tol | None = None             # also compare the plotted bin edges (x_low, x_high)
+    spread: bool = False                     # also compare weighted y_std (population) and y_sem = std/sqrt(n_eff)
 
 
 @dataclasses.dataclass(frozen=True)
 class Delta:
-    """Per-bin mean of `signal` minus mean of `reference` (normalize="delta"), and which bins are undefined."""
+    """Per bin: mean(signal) - mean(reference) (kind "delta") or mean(signal)/mean(reference) (kind "ratio"),
+    which bins are undefined, and where the table exposes them, both central values and counts."""
     signal: Profile
     reference: Profile
-    plotted: Callable[[Any], list]           # drawn -> [(group label, plotted values, plotted undefined-mask), ...]
+    plotted: Callable[[Any], list]           # drawn -> [(group label, normalize table), ...]
     tol: Tol = SAME_VALUES
+    kind: str = "delta"
+    central_tol: Tol | None = None           # tolerance of signal/reference centrals; None = same as tol
+    plotted_lines: Callable[[Any], dict] | None = None   # drawn -> {group: [(x, y) signal line, (x, y) reference line]}
+
+
+@dataclasses.dataclass(frozen=True)
+class RowCounts:
+    """Rows that `rows` keeps in each group of `by`, with finite x, y and x inside `range` (the public n)."""
+    rows: Any
+    by: str
+    x: str
+    y: str
+    range: tuple
+    plotted: Callable[[Any], dict]           # drawn -> {group label: plotted n}
+
+
+@dataclasses.dataclass(frozen=True)
+class SameAcrossSurfaces:
+    """The same request through draw, draw_batch and draw_figures gives the same table, column by column."""
+    columns: tuple
+    plotted: Callable[[Any], dict]           # drawn -> {surface: table}
+    tol: Tol = O4
+
+
+@dataclasses.dataclass(frozen=True)
+class SameAsCall:
+    """A second, simpler public call must give the same numbers as the plotted one, e.g. each weights_vector
+    branch equals a draw with that single weight (composition invariant, L3)."""
+    name: str
+    call: Callable[[Any], Any]               # adf -> result of the simpler call
+    pairs: Callable[[Any, Any], list]        # (plotted, simpler) -> [(label, {name: plotted values}, {name: simpler})]
+    tol: Tol = HIST12
+    tols: dict = dataclasses.field(default_factory=dict)   # per-value tolerance where it differs from tol
+
+
+@dataclasses.dataclass(frozen=True)
+class SameStyleAcrossFacets:
+    """In every facet panel (title 'side_type=N') the first n profile lines (circle marker, visible line) have the
+    same colour, line style and marker as in the first facet, branch by branch (L3)."""
+    n_branches: int
+    n_facets: int = 2
+
+
+@dataclasses.dataclass(frozen=True)
+class Flag:
+    """A property the gallery function measured about the public call must be True (e.g. caller spec unchanged)."""
+    name: str
+    plotted: Callable[[Any], Any]
 
 
 @dataclasses.dataclass(frozen=True)
@@ -241,6 +323,53 @@ def first_fit(stats) -> dict:
     while isinstance(record, (list, tuple)) and record:
         record = record[0]
     return record if isinstance(record, dict) else {}
+
+
+def facet_panels(drawn) -> dict:
+    """{facet value: axes} for the panels titled 'side_type=N' (upper panels of a faceted normalize figure)."""
+    panels = {}
+    for ax in drawn[0].axes:
+        match = re.search(r"side_type=([^\s]+)", ax.get_title())
+        if match is not None:
+            panels[int(float(match.group(1)))] = ax
+    return panels
+
+
+def profile_lines(ax) -> list:
+    """The plotted profile lines of a panel, in drawing order: circle marker and a visible line."""
+    return [ln for ln in ax.lines if str(ln.get_marker()) == "o" and str(ln.get_linestyle()).lower() not in ("none", "")]
+
+
+def overlay_lines(drawn) -> dict:
+    """{facet: [(x, y) of each overlay line]} — signal first, reference second, as dfdraw draws them."""
+    return {g: [(np.asarray(ln.get_xdata(), float), np.asarray(ln.get_ydata(), float)) for ln in profile_lines(ax)]
+            for g, ax in facet_panels(drawn).items()}
+
+
+def facet_fit_parameters(stats, g) -> np.ndarray:
+    """Parameters of the fit drawn in facet g of one branch (dfdraw nests the record as [[record]])."""
+    cell = stats["per_group"][str(g)]["fit"]
+    while isinstance(cell, (list, tuple)):
+        cell = cell[0]
+    return np.asarray(cell["params"], float)
+
+
+def scalar_weight_draw(expression: str):
+    """fig44's request with ONE weight instead of the weights_vector (the old harness's scalar decomposition)."""
+    return lambda adf: adf.draw("dcar_tpc_vertex:tgl", selection=SIDES_A_C, type="profile", bins=30, range=(-1.5, 1.5),
+                                weights=expression, facet_by="side_type", fit="pol1", min_entries=1, auto_title=False,
+                                return_data=True)
+
+
+def branch_vs_scalar(i: int):
+    """Pairs (facet, vector branch i, scalar draw): profile columns and pol1 parameters of each side_type facet."""
+    columns = ("x_center", "count", "sum_weights", "y_mean", "y_std", "y_sem")
+
+    def values(stats, g):
+        table = stats["per_group"][str(g)]["profile_data"]
+        return {**{c: table[c].to_numpy() for c in columns}, "pol1 parameters": facet_fit_parameters(stats, g)}
+    return lambda drawn, scalar: [(f"weights branch {i} side_type={g}", values(drawn[2][i], g), values(scalar[2], g))
+                                  for g in (0, 1)]
 
 
 def bar_heights(ax, series: int, n_bins: int) -> np.ndarray:
@@ -379,13 +508,21 @@ def truth_profile(t: pd.DataFrame, spec: Profile) -> dict:
     keep = b.notna() & np.isfinite(y) & np.isfinite(w)
     if not keep.any():
         raise CheckFailure("L0", f"selection {spec.rows!r} keeps no rows for {spec.y}")
-    cells = pd.DataFrame({"w": w, "wy": w * y})[keep].groupby([key[keep], b[keep].astype(int)])
-    table = cells.agg(count=("w", "size"), sum_w=("w", "sum"), sum_wy=("wy", "sum"))
-    labels = names if spec.by_bins else sorted(key[keep].unique())
-    table = table.reindex(pd.MultiIndex.from_product([labels, range(spec.bins)])).fillna({"count": 0, "sum_w": 0.0})
-    table["mean"] = table["sum_wy"] / table["sum_w"].where(table["count"] > 0)
+    frame = pd.DataFrame({"g": key, "b": b, "w": w, "y": y})[keep]
+    frame["wy"], frame["ww"] = frame.w * frame.y, frame.w * frame.w
+    cell = frame.groupby(["g", "b"])
+    frame["dev2"] = frame.w * (frame.y - cell.wy.transform("sum") / cell.w.transform("sum")) ** 2   # two-pass
+    table = frame.groupby(["g", frame.b.astype(int)]).agg(
+        count=("w", "size"), sum_w=("w", "sum"), sum_wy=("wy", "sum"), sum_ww=("ww", "sum"), dev2=("dev2", "sum"))
+    labels = names if spec.by_bins else sorted(frame.g.unique())
+    table = table.reindex(pd.MultiIndex.from_product([labels, range(spec.bins)])).fillna({"count": 0})
+    filled = table["count"] > 0                    # empty bins: count 0, every other quantity NaN
+    table["mean"] = table["sum_wy"] / table["sum_w"].where(filled)
+    table["std"] = np.sqrt(table["dev2"] / table["sum_w"]).where(table["count"] > 1)
+    table["sem"] = table["std"] / np.sqrt(table["sum_w"] ** 2 / table["sum_ww"])
     return {g: (table.loc[g, "count"].to_numpy(int), table.loc[g, "sum_w"].to_numpy(float),
-                table.loc[g, "mean"].to_numpy(float)) for g in labels}
+                table.loc[g, "mean"].to_numpy(float), table.loc[g, "std"].to_numpy(float),
+                table.loc[g, "sem"].to_numpy(float)) for g in labels}
 
 
 def check_profile(t: pd.DataFrame, spec: Profile, drawn, result: CaseResult) -> None:
@@ -395,12 +532,15 @@ def check_profile(t: pd.DataFrame, spec: Profile, drawn, result: CaseResult) -> 
     labels = [str(g) if spec.by_bins else int(float(g)) for g, _ in plotted]
     compare_labels(result, f"{spec.y} groups of {spec.by}", labels, list(truth), "L2")
     for label, (_, table) in zip(labels, plotted):
-        count, sum_w, mean = truth[label]
+        count, sum_w, mean, std, sem = truth[label]
         tag = f"{spec.y} {spec.by}={label}" + (f" weights={spec.weights}" if spec.weights else "")
         compare(result, f"{tag} count", table["count"], count, EXACT, "L2")
         if spec.weights:
             compare(result, f"{tag} sum of weights", table["sum_weights"], sum_w, spec.tol, "L2")
         compare(result, f"{tag} mean", table["y_mean"], mean, spec.tol, "L2")
+        if spec.spread:
+            compare(result, f"{tag} std", table["y_std"], std, spec.tol, "L2")
+            compare(result, f"{tag} sem", table["y_sem"], sem, spec.tol, "L2")
         if spec.edges_tol is not None:
             r = select(t, spec.rows)
             edges = profile_edges(r[spec.x].astype(float), r[spec.y].astype(float), spec)
@@ -409,20 +549,93 @@ def check_profile(t: pd.DataFrame, spec: Profile, drawn, result: CaseResult) -> 
 
 
 def check_delta(t: pd.DataFrame, spec: Delta, drawn, result: CaseResult) -> None:
-    """Truth: mean(signal) - mean(reference) per bin; a bin is undefined where either side has no row (L2)."""
+    """Truth per bin: signal-reference (or signal/reference) of the two independent profiles; undefined where a
+    side is empty (or, for a ratio, the reference mean is 0). Centrals, counts and centres where exposed (L2)."""
     sig, ref = truth_profile(t, spec.signal), truth_profile(t, spec.reference)
     plotted = spec.plotted(drawn)
-    labels = [int(float(g)) for g, _, _ in plotted]
-    compare_labels(result, f"delta groups of {spec.signal.by}", labels, sorted(set(sig) | set(ref)), "L2")
-    for label, (_, values, undefined) in zip(labels, plotted):
-        n_sig, _, m_sig = sig.get(label, (np.zeros(spec.signal.bins, int), None, np.full(spec.signal.bins, np.nan)))
-        n_ref, _, m_ref = ref.get(label, (np.zeros(spec.signal.bins, int), None, np.full(spec.signal.bins, np.nan)))
-        want_undefined = (n_sig == 0) | (n_ref == 0)
-        compare(result, f"delta {spec.signal.by}={label} undefined bins", np.asarray(undefined, bool), want_undefined,
-                EXACT, "L2")
-        want = np.where(want_undefined, np.nan, m_sig - m_ref)
-        got = np.where(want_undefined, np.nan, np.asarray(values, float))
-        compare(result, f"delta {spec.signal.by}={label} values", got, want, spec.tol, "L2")
+    labels = [int(float(g)) for g, _ in plotted]
+    compare_labels(result, f"{spec.kind} groups of {spec.signal.by or 'the whole selection'}", labels,
+                   sorted(set(sig) | set(ref)), "L2")
+    empty = (np.zeros(spec.signal.bins, int), None, np.full(spec.signal.bins, np.nan))
+    edges = np.linspace(*spec.signal.range, spec.signal.bins + 1)
+    for label, (_, table) in zip(labels, plotted):
+        (n_sig, _, m_sig), (n_ref, _, m_ref) = sig.get(label, empty)[:3], ref.get(label, empty)[:3]
+        undefined = (n_sig == 0) | (n_ref == 0)
+        want = m_sig - m_ref if spec.kind == "delta" else m_sig / np.where(m_ref == 0, np.nan, m_ref)
+        undefined |= ~np.isfinite(want)
+        tag = f"{spec.kind} {spec.signal.by}={label}" if spec.signal.by else spec.kind
+        compare(result, f"{tag} undefined bins", np.asarray(table["mask_undefined"], bool), undefined, EXACT, "L2")
+        values = table["value"] if "value" in table else table["values"]
+        compare(result, f"{tag} values", np.where(undefined, np.nan, np.asarray(values, float)),
+                np.where(undefined, np.nan, want), spec.tol, "L2")
+        centres = table["x_center"] if "x_center" in table else table.get("bin_centers")
+        if centres is not None:
+            compare(result, f"{tag} bin centres", centres, (edges[1:] + edges[:-1]) / 2, HIST12, "L2")
+        for side, n, m in (("signal", n_sig, m_sig), ("reference", n_ref, m_ref)):
+            if f"{side}_count" in table:
+                compare(result, f"{tag} {side} count", table[f"{side}_count"], n, EXACT, "L2")
+                compare(result, f"{tag} {side} central", np.where(n > 0, np.asarray(table[f"{side}_central"], float), np.nan),
+                        m, spec.central_tol or spec.tol, "L2")
+        if spec.plotted_lines is not None:
+            check_overlay_lines(spec.plotted_lines(drawn).get(label, []), edges, m_sig, m_ref,
+                                spec.central_tol or spec.tol, tag, result)
+
+
+def check_overlay_lines(lines: list, edges: np.ndarray, m_sig, m_ref, tol: Tol, tag: str, result: CaseResult) -> None:
+    """The two plotted overlay curves, put back on the bin grid (NaN where nothing is drawn), against the truth
+    means; a point off the bin centres is a failure of what was plotted (L2)."""
+    compare(result, f"{tag} number of overlay lines", len(lines), 2, EXACT, "L2")
+    centres = (edges[1:] + edges[:-1]) / 2
+    for (x, y), side, want in zip(lines, ("signal", "reference"), (m_sig, m_ref)):
+        index = np.abs(centres[None, :] - x[:, None]).argmin(axis=1) if x.size else np.zeros(0, int)   # nearest centre
+        compare(result, f"{tag} {side} line x on bin centres", x, centres[index], HIST12, "L2")
+        on_grid = np.full(len(centres), np.nan)
+        on_grid[index] = y
+        compare(result, f"{tag} {side} plotted line", on_grid, want, tol, "L2")
+
+
+def check_row_counts(t: pd.DataFrame, spec: RowCounts, drawn, result: CaseResult) -> None:
+    """Per group: rows kept by the selection with finite x, y and x inside the range, against the public n (L2)."""
+    r = select(t, spec.rows)
+    x, y = r[spec.x].astype(float), r[spec.y].astype(float)
+    kept = np.isfinite(x) & np.isfinite(y) & (x >= spec.range[0]) & (x <= spec.range[1])
+    want = r[kept].groupby(spec.by).size()
+    got = spec.plotted(drawn)
+    labels = sorted(int(float(g)) for g in got)
+    compare_labels(result, f"groups of {spec.by}", labels, sorted(int(g) for g in want.index), "L2")
+    compare(result, f"rows per {spec.by}", [got[str(g)] if str(g) in got else got[g] for g in labels],
+            [want[g] for g in labels], EXACT, "L2")
+
+
+def check_same_across_surfaces(spec: SameAcrossSurfaces, drawn, result: CaseResult) -> None:
+    """draw_batch and draw_figures against draw, column by column (L3: the public call contract)."""
+    tables = spec.plotted(drawn)
+    for surface in ("draw_batch", "draw_figures"):
+        for column in spec.columns:
+            compare(result, f"{surface} {column} == draw", tables[surface][column], tables["draw"][column], spec.tol, "L3")
+
+
+def check_same_as_call(adf, spec: SameAsCall, drawn, result: CaseResult) -> None:
+    """Run the simpler call and compare it value by value with the plotted result (L3)."""
+    simpler = spec.call(adf)
+    for label, got, want in spec.pairs(drawn, simpler):
+        for name in got:
+            tol = EXACT if name == "count" else spec.tols.get(name, spec.tol)
+            compare(result, f"{spec.name}: {label} {name}", got[name], want[name], tol, "L3")
+
+
+def check_same_style(spec: SameStyleAcrossFacets, drawn, result: CaseResult) -> None:
+    """(colour, line style, marker) of each branch, facet by facet, against the first facet (L3)."""
+    styles = {g: [f"{ln.get_color()} {ln.get_linestyle()} {ln.get_marker()}" for ln in profile_lines(ax)[:spec.n_branches]]
+              for g, ax in sorted(facet_panels(drawn).items())}
+    compare(result, "facets with profile lines", len(styles), spec.n_facets, EXACT, "L3")
+    first, *others = sorted(styles)
+    for g in others:
+        compare_labels(result, f"branch styles side_type={g} == side_type={first}", styles[g], styles[first], "L3")
+
+
+def check_flag(spec: Flag, drawn, result: CaseResult) -> None:
+    compare(result, spec.name, int(bool(spec.plotted(drawn))), 1, EXACT, "L3")
 
 
 def check_histogram(t: pd.DataFrame, spec: Histogram, drawn, result: CaseResult) -> None:
@@ -571,7 +784,7 @@ def check_refusal(adf, spec: Refuses, result: CaseResult) -> None:
 def evaluate(adf, case: Case, drawn, result: CaseResult) -> None:
     """Evaluate every declaration of one case; a case with no gating comparison is a failure of the test (H)."""
     checks = {Profile: check_profile, Delta: check_delta, Histogram: check_histogram, GaussFit: check_gauss_fit,
-              FacetQuantiles: check_facet_quantiles}
+              FacetQuantiles: check_facet_quantiles, RowCounts: check_row_counts}
     needs_truth = case.aliases or case.fixture or any(type(s) in checks for s in case.expect)
     t = truth_frame(adf, case, result) if needs_truth else None
     for spec in case.expect:
@@ -585,6 +798,14 @@ def evaluate(adf, case: Case, drawn, result: CaseResult) -> None:
             check_headings(spec, drawn, result)
         elif isinstance(spec, GalleryPages):
             check_gallery_pages(spec, result)
+        elif isinstance(spec, SameAcrossSurfaces):
+            check_same_across_surfaces(spec, drawn, result)
+        elif isinstance(spec, Flag):
+            check_flag(spec, drawn, result)
+        elif isinstance(spec, SameAsCall):
+            check_same_as_call(adf, spec, drawn, result)
+        elif isinstance(spec, SameStyleAcrossFacets):
+            check_same_style(spec, drawn, result)
         else:
             raise CheckFailure("H", f"unknown declaration {type(spec).__name__}")
     gating_levels = {c["level"] for c in result.comparisons if c["ok"] is not None}
@@ -597,6 +818,22 @@ def evaluate(adf, case: Case, drawn, result: CaseResult) -> None:
 # =============================================================================
 # 5. The runner (run_gallery.sh calls main(); no orchestration here)
 # =============================================================================
+def evidence_page(case: Case, result: CaseResult):
+    """A text page after each case: verdict, owner, and the comparisons closest to their tolerance."""
+    fig = plt.figure(figsize=(11.0, 8.5))
+    rows = sorted(result.comparisons, key=lambda c: -(c["worst_abs"] / max(c["atol"] + c["rtol"], 1e-300)))
+    lines = [f"{case.case_id}", case.title, f"verdict: {result.status}"
+             + (f"   owner: {result.failure_level}" if result.failure_level else "")
+             + f"   comparisons: {len(result.comparisons)}   wall time: {result.wall_time_s} s", result.detail[:150], "",
+             f"{'level':5s} {'ok':5s} {'worst |diff|':>13s}  {'tolerance':44s} observable"]
+    lines += [f"{c['level']:5s} {str(c['ok']):5s} {c['worst_abs']:13.3e}  {c['tolerance'][:44]:44s} {c['observable'][:58]}"
+              for c in rows[:40]]
+    if len(rows) > 40:
+        lines.append(f"... {len(rows) - 40} more comparisons, all closer to zero than the ones above (manifest has all)")
+    fig.text(0.03, 0.97, "\n".join(lines), va="top", ha="left", family="monospace", fontsize=8.5)
+    return fig
+
+
 def run_case(adf, case: Case, pdf: PdfPages | None, page_counter: list) -> CaseResult:
     """Draw the page once and save it unchanged, evaluate the declarations, close only this case's Figures."""
     result, t0, before = CaseResult(case.case_id), time.perf_counter(), set(plt.get_fignums())
@@ -621,6 +858,12 @@ def run_case(adf, case: Case, pdf: PdfPages | None, page_counter: list) -> CaseR
         for num in set(plt.get_fignums()) - before:
             plt.close(num)
         result.wall_time_s = round(time.perf_counter() - t0, 3)
+        if pdf is not None:
+            page = evidence_page(case, result)
+            pdf.attach_note(f"{case.case_id}  evidence")
+            pdf.savefig(page)
+            plt.close(page)
+            page_counter[0] += 1
     return result
 
 
@@ -638,8 +881,13 @@ def run_cases(adf, cases: list, *, pdf_path: str | None, manifest_path: str, pro
         raise ValueError(f"no case to run: declared={len(declared)}, unknown selection={unknown}")
     chosen = [c for c in cases if selection is None or c.case_id in selection]
     pdf, pages = (PdfPages(pdf_path) if pdf_path else None), [0]
+    results = []
     try:
-        results = [run_case(adf, c, pdf, pages) for c in chosen]
+        for c in chosen:
+            r = run_case(adf, c, pdf, pages)
+            results.append(r)
+            print(f"[{_dt.datetime.now():%H:%M:%S}] {r.status:5s} {r.failure_level:3s} {r.case_id}  "
+                  f"{r.wall_time_s:.1f} s  {r.detail}", flush=True)
     finally:
         if pdf is not None:
             pdf.close()
@@ -657,8 +905,6 @@ def run_cases(adf, cases: list, *, pdf_path: str | None, manifest_path: str, pro
                    "cases": [dataclasses.asdict(r) for r in results], "reconciliation": rec,
                    "not_yet_migrated": list(NOT_YET_MIGRATED), "targets": provenance.get("targets", {})},
                   fh, indent=1, sort_keys=True, default=str)
-    for r in results:
-        print(f"{r.status:5s} {r.failure_level:3s} {r.case_id}  {r.detail}")
     if missing_mandatory:
         print(f"FAIL  mandatory case(s) missing from the table: {missing_mandatory}")
     gate = ("PASS" if rec["exit_code"] == 0 else "FAIL") + ("" if selection is None else f" (SUBSET {len(chosen)}/{len(declared)})")
@@ -733,7 +979,27 @@ def code_fingerprints(adf) -> dict:
 
 
 # =============================================================================
-# 6. The cases — the inventory first (what MUST exist), then the table (what each case declares)
+# 6. The cases
+# =============================================================================
+def control_one_element_selection(adf):
+    """September control: a ONE-element selection_vector (first third in time) must filter every facet."""
+    q1 = float(adf.df["time_s"].quantile(1.0 / 3.0))
+    return adf.draw("dcar_tpc_vertex:tgl", selection=SIDES_A_C, type="profile", bins=30, range=(-1.5, 1.5),
+                    selection_vector=[f"time_s<{q1}"], facet_by="side_type", min_entries=1, auto_title=False)
+
+
+def control_hist_selection_facets(adf):
+    """September control: a histogram with two selection branches must apply both inside every facet."""
+    t_mid = float(adf.df["time_s"].median())
+    return adf.draw("ncl", selection="(ncl>60)&(side_type<2)", type="hist", bins=40, range=(80.0, 160.0),
+                    selection_vector=[f"time_s<{t_mid}", f"time_s>={t_mid}"], facet_by="side_type", auto_title=False)
+
+
+def first_third(t):
+    return t.time_s < t.time_s.quantile(1.0 / 3.0)
+
+
+# ============================================================================= — the inventory first (what MUST exist), then the table (what each case declares)
 # =============================================================================
 MANDATORY_CASE_IDS = (
     "I4-REAL-INJECTED-TRUTH-FACET-RESIDUAL-EAGER-20PCT-01",
@@ -750,10 +1016,6 @@ MANDATORY_CASE_IDS = (
     "ADF99-02",
     "ADF100-01",
     "A6-VISUAL-GALLERY-FULL-01",
-)
-
-NOT_YET_MIGRATED = (   # historical case IDs still owned by the old harness; each S3 family shortens this list
-    "I4-REAL-VECTOR-FACET-SUMMARYFIT-SEMANTICS-EAGER-20PCT-01",
     "I4-REAL-VECTOR-FACET-ONE-ELEMENT-SELECTION-EAGER-20PCT-01",
     "I4-REAL-HIST-VECTOR-FACET-SELECTION-EAGER-20PCT-01",
     "PRECLEAN-C1-HIST-VECTOR-FACET-ACCEPTANCE-EAGER-20PCT-01",
@@ -762,6 +1024,10 @@ NOT_YET_MIGRATED = (   # historical case IDs still owned by the old harness; eac
     "I4-REAL-SELECTION-VECTOR-FACET-DELTA-CORRECTNESS-EAGER-20PCT-01",
     "I4-REAL-PUBLIC-SURFACE-QUALIFIED-VECTOR-EQUIV-EAGER-20PCT-01",
     "I4-REAL-WEIGHTS-VECTOR-FACET-PROFILE-CORRECTNESS-EAGER-20PCT-01",
+)
+
+NOT_YET_MIGRATED = (   # historical case IDs still owned by the old harness; each S3 family shortens this list
+    "I4-REAL-VECTOR-FACET-SUMMARYFIT-SEMANTICS-EAGER-20PCT-01",
     "I4-REAL-G7-SUBFRAME-EAGER-20PCT-01",
     "I4-REAL-G7-GB-EAGER-20PCT-01",
     "I4-REAL-G7-GB-SECTOR-REUSE-EAGER-20PCT-01",
@@ -837,14 +1103,13 @@ CASES = [
          aliases=INJECTED_ALIASES,
          expect=(Delta(Profile("dcar_distorted_clean", SELECTED, **SECTOR_BINS, plotted=None),
                        Profile("dcar_tpc_vertex", SELECTED, **SECTOR_BINS, plotted=None),
-                       plotted=lambda d: [(0, d[2]["normalize_data"]["value"], d[2]["normalize_data"]["mask_undefined"])]),)),
+                       plotted=lambda d: [(0, d[2]["normalize_data"])]),)),
     Case("I4-REAL-INJECTED-TRUTH-SELECTION-DELTA-FACET-EAGER-20PCT-01", G.fig48_injected_truth_selection_delta_facet,
          "G12.48 selection_vector delta tgl<0 minus tgl>=0 of known_delta, per side_type",
          aliases=INJECTED_ALIASES,
          expect=(Delta(Profile("known_delta", SIDES_A_C + " & (tgl < 0)", **SECTOR_BINS, by="side_type", plotted=None),
                        Profile("known_delta", SIDES_A_C + " & (tgl >= 0)", **SECTOR_BINS, by="side_type", plotted=None),
-                       plotted=lambda d: [(g, v["values"], v["mask_undefined"])
-                                          for g, v in sorted(d[2]["normalize_data_faceted"].items())]),)),
+                       plotted=lambda d: sorted(d[2]["normalize_data_faceted"].items())),)),
     Case("I4-REAL-INJECTED-TRUTH-WEIGHTS-FACET-EAGER-20PCT-01", G.fig49_injected_truth_weights_facet,
          "G12.49 weights_vector flat / tgl-weighted known_delta profile, per side_type",
          aliases=INJECTED_ALIASES, fixture=injected_noise_is_declared,
@@ -894,6 +1159,75 @@ CASES = [
     Case("A6-VISUAL-GALLERY-FULL-01", None,
          "the readable gallery itself: run_all_pdf succeeded with all 59 pages",
          expect=(GalleryPages(59),)),
+    # ---- batch B: September controls, vector/facet/weights cases, public surfaces
+    Case("I4-REAL-VECTOR-FACET-ONE-ELEMENT-SELECTION-EAGER-20PCT-01", control_one_element_selection,
+         "control: a one-element selection_vector filters every side_type facet",
+         aliases=TIME_ALIAS,
+         expect=(RowCounts(lambda t: t.eval(SIDES_A_C) & first_third(t), by="side_type", x="tgl",
+                           y="dcar_tpc_vertex", range=(-1.5, 1.5),
+                           plotted=lambda d: {g: c["n"] for g, c in d[2]["per_group"].items()}),)),
+    Case("I4-REAL-HIST-VECTOR-FACET-SELECTION-EAGER-20PCT-01", control_hist_selection_facets,
+         "control: histogram early/late branches applied inside each side_type facet",
+         aliases=TIME_ALIAS,
+         expect=tuple(Histogram("ncl", lambda t, w=window, s=side: (t.ncl > 60) & (t.side_type == s) & w(t),
+                                bins=40, range=(80.0, 160.0),
+                                plotted=lambda d, i=i, s=side: bar_heights(d[1].flat[s], i, 40))
+                      for side in (0, 1) for i, window in enumerate((early, late)))),
+    Case("I4-REAL-SELECTION-VECTOR-FACET-DELTA-CORRECTNESS-EAGER-20PCT-01", G.fig22_delta_faceted,
+         "G4.22 early minus late delta of dcar_tpc_vertex per sector, per side_type",
+         aliases={**SECTOR_ALIAS, **TIME_ALIAS},
+         expect=(Delta(Profile("dcar_tpc_vertex", lambda t: t.eval(SIDES_A_C) & early(t), **SECTOR_BINS, by="side_type",
+                               plotted=None),
+                       Profile("dcar_tpc_vertex", lambda t: t.eval(SIDES_A_C) & late(t), **SECTOR_BINS, by="side_type",
+                               plotted=None),
+                       plotted=lambda d: sorted(d[2]["normalize_data_faceted"].items()), tol=HIST12,
+                       plotted_lines=overlay_lines),)),
+    Case("I4-REAL-WEIGHTS-VECTOR-FACET-PROFILE-CORRECTNESS-EAGER-20PCT-01", G.fig44_weights_vector_facet_fit_oracle,
+         "G11.44 two weights_vector branches (1, 1+|dcar|), tgl profile per side_type",
+         derived=O2_WEIGHTS,
+         expect=tuple(Profile("dcar_tpc_vertex", SIDES_A_C, x="tgl", bins=30, range=(-1.5, 1.5), by="side_type",
+                              weights=w, plotted=branch(i, facets), tol=O2_VALUE, spread=True, edges_tol=HIST12)
+                      for i, w in enumerate(["w_unity", "w_dca"]))
+                + tuple(SameAsCall(f"weights_vector branch {i} == draw with weights='{expression}'",
+                                   scalar_weight_draw(expression), branch_vs_scalar(i), tols={"pol1 parameters": FIT10})
+                        for i, expression in enumerate(O2_WEIGHT_EXPRESSIONS))
+                + (SameStyleAcrossFacets(2),)),
+    Case("PRECLEAN-C1-HIST-VECTOR-FACET-ACCEPTANCE-EAGER-20PCT-01", G.fig55_preclean_hist_vector_facet_acceptance,
+         "G14.55 histogram early/late in each of 3 side_type facets, and the unfaceted control",
+         aliases=TIME_ALIAS,
+         expect=tuple(Histogram("ncl", lambda t, w=window, s=side: (t.ncl > 60) & (t.side_type == s) & w(t),
+                                bins=40, range=(80.0, 160.0),
+                                plotted=lambda d, i=i, s=side: bar_heights(d[1]["facets"].flat[s], i, 40))
+                      for side in (0, 1, 2) for i, window in enumerate((early, late)))
+                + tuple(Histogram("ncl", lambda t, w=window: (t.ncl > 60) & (t.side_type < 3) & w(t),
+                                  bins=40, range=(80.0, 160.0),
+                                  plotted=lambda d, i=i: bar_heights(d[1]["control"], i, 40))
+                        for i, window in enumerate((early, late)))),
+    Case("PRECLEAN-C2-DRAW-FIGURES-EFFECTIVE-DEFAULTS-EAGER-20PCT-01", G.fig56_preclean_draw_figures_effective_defaults,
+         "G14.56 draw_figures short form 'known_delta:sector' with defaults: side 0 minus side 1 via the O4 subframe",
+         aliases=INJECTED_ALIASES,
+         expect=(Delta(Profile("known_delta", SIDES_A_C + " & (side_type == 0)", **SECTOR_BINS, plotted=None),
+                       Profile("known_delta", SIDES_A_C + " & (side_type == 1)", **SECTOR_BINS, plotted=None),
+                       plotted=lambda d: [(0, d[2]["stats"]["normalize_data"])], tol=HIST12),
+                 Flag("caller's specs and defaults unchanged", lambda d: d[2]["caller_unchanged"]),
+                 Flag("short-form plot string preserved", lambda d: d[2]["short_form_preserved"]))),
+    Case("PRECLEAN-C3-RATIO-Y-VECTOR-TRUTH-EAGER-20PCT-01", G.fig57_preclean_ratio_y_vector_truth,
+         "G14.57 normalize=ratio of a two-branch y vector: base / (2 x base) = 0.5 in every filled bin",
+         aliases=RATIO_ALIASES,
+         expect=(Delta(Profile("preclean_ratio_base", SELECTED, **SECTOR_BINS, plotted=None),
+                       Profile("preclean_ratio_scaled", SELECTED, **SECTOR_BINS, plotted=None),
+                       plotted=lambda d: [(0, d[2]["normalize_data"])], kind="ratio",
+                       tol=C3_RATIO, central_tol=C3_CENTRAL),)),
+    Case("I4-REAL-PUBLIC-SURFACE-QUALIFIED-VECTOR-EQUIV-EAGER-20PCT-01", G.fig45_public_surface_equivalence_oracle,
+         "G11.45 the same subframe-qualified delta request through draw, draw_batch and draw_figures",
+         expect=(SameAcrossSurfaces(("x_center", "value", "mask_undefined", "signal_central", "signal_count",
+                                     "reference_central", "reference_count"),
+                                    plotted=lambda d: {k: v["normalize_data"] for k, v in d[2]["surface_stats"].items()}),
+                 Delta(Profile("dcar_tpc_vertex", SIDES_A_C + " & (side_type == 0)", x="tgl", bins=30, range=(-1.5, 1.5),
+                               plotted=None),
+                       Profile("dcar_tpc_vertex", SIDES_A_C + " & (side_type == 1)", x="tgl", bins=30, range=(-1.5, 1.5),
+                               plotted=None),
+                       plotted=lambda d: [(0, d[2]["surface_stats"]["draw"]["normalize_data"])], tol=O4))),
 ]
 
 

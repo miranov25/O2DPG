@@ -87,7 +87,10 @@ def test_every_case_passes_on_honest_frame(case_id, monkeypatch):
     gating = [c for c in result.comparisons if c["ok"] is not None]
     assert gating and all(c["ok"] for c in gating)
     levels = {c["level"] for c in gating}
-    assert levels == {"L3"} if case_id in (REFUSAL, VISUAL) else ("L2" in levels and "L1" in levels)
+    if case_id in (REFUSAL, VISUAL):
+        assert levels == {"L3"}
+    else:                                  # every drawn case checks what was plotted; L1 exactly when it declares aliases
+        assert "L2" in levels and ("L1" in levels) == bool(case(case_id).aliases)
 
 
 def test_physics_step_gates_at_mixed_precision_tolerance():
@@ -112,7 +115,7 @@ def test_truth_profile_agrees_with_plain_numpy():
 
 def test_truth_profile_puts_the_upper_edge_into_the_last_bin():
     t = pd.DataFrame({"x": [-0.5, 0.49, 35.5, 35.6], "y": [1.0, 2.0, 3.0, 4.0]})
-    count, _, mean = T.truth_profile(t, T.Profile("y", "x == x", x="x", bins=36, range=(-0.5, 35.5), plotted=None))[0]
+    count, _, mean, _, _ = T.truth_profile(t, T.Profile("y", "x == x", x="x", bins=36, range=(-0.5, 35.5), plotted=None))[0]
     assert count[0] == 2 and count[35] == 1 and count.sum() == 3 and mean[35] == 3.0
 
 
@@ -379,7 +382,8 @@ def test_C4_pdf_note_is_attached_before_the_page_it_labels():
         def attach_note(self, text): order.append(("note", text.split()[0]))
         def savefig(self, fig, **k): order.append(("page", None))
     result = T.run_case(make_adf(), case(FACET_RESIDUAL), RecordingPdf(), [0])
-    assert result.status == T.PASS and order == [("note", FACET_RESIDUAL), ("page", None)]
+    assert result.status == T.PASS
+    assert order == [("note", FACET_RESIDUAL), ("page", None), ("note", FACET_RESIDUAL), ("page", None)]   # page, evidence
 
 
 def test_C5_strict_requires_the_input_identity_reference(monkeypatch):
@@ -419,7 +423,7 @@ def test_S30_case_selector_needs_the_13_105_target(monkeypatch):
 
 def test_S30_not_yet_migrated_is_disjoint_from_the_cases():
     assert not set(T.NOT_YET_MIGRATED) & {c.case_id for c in T.CASES}
-    assert len(set(T.NOT_YET_MIGRATED)) == len(T.NOT_YET_MIGRATED) == 13
+    assert len(set(T.NOT_YET_MIGRATED)) == len(T.NOT_YET_MIGRATED) == 5
 
 
 def test_S30_crosswalk_fails_a_case_in_neither_list_and_a_case_in_both():
@@ -624,6 +628,135 @@ def test_C1_visual_case_without_the_gallery_target_is_red(monkeypatch):
     monkeypatch.setitem(T.RUN_CONTEXT, "gallery", None)
     result = run_alone(case(VISUAL))
     assert result.status == T.FAIL and result.failure_level == "H"
+
+
+# ------------------------------------------------------------------ batch B: each new kind of check turns red when broken
+ONE_ELEMENT = "I4-REAL-VECTOR-FACET-ONE-ELEMENT-SELECTION-EAGER-20PCT-01"
+HIST_FACETS = "I4-REAL-HIST-VECTOR-FACET-SELECTION-EAGER-20PCT-01"
+C2, C3 = "PRECLEAN-C2-DRAW-FIGURES-EFFECTIVE-DEFAULTS-EAGER-20PCT-01", "PRECLEAN-C3-RATIO-Y-VECTOR-TRUTH-EAGER-20PCT-01"
+O2 = "I4-REAL-WEIGHTS-VECTOR-FACET-PROFILE-CORRECTNESS-EAGER-20PCT-01"
+O4 = "I4-REAL-PUBLIC-SURFACE-QUALIFIED-VECTOR-EQUIV-EAGER-20PCT-01"
+
+
+def test_B_one_element_selection_silently_dropped_is_red_at_L2():
+    adf = make_adf()
+    drawn = T.control_one_element_selection(adf)
+    for cell in drawn[2]["per_group"].values():           # as if the one-element vector had been ignored
+        cell["n"] = cell["n"] * 3
+    r = red(adf, ONE_ELEMENT, drawn)
+    assert r.failure_level == "L2" and "rows per side_type" in r.detail
+
+
+def test_B_histogram_branch_in_one_facet_wrong_is_red_at_L2():
+    adf = make_adf()
+    drawn = T.control_hist_selection_facets(adf)
+    patch = drawn[1].flat[1].patches[0]
+    xy = patch.get_xy().copy()
+    xy[1:3, 1] += 1
+    patch.set_xy(xy)
+    assert red(adf, HIST_FACETS, drawn).failure_level == "L2"
+
+
+def test_B_ratio_value_or_count_wrong_is_red_at_L2():
+    adf = make_adf()
+    drawn = G.fig57_preclean_ratio_y_vector_truth(adf)
+    drawn[2]["normalize_data"].loc[5, "value"] = 0.5000001
+    r = red(adf, C3, drawn)
+    assert r.failure_level == "L2" and "ratio" in r.detail and "values" in r.detail
+    adf = make_adf()
+    drawn = G.fig57_preclean_ratio_y_vector_truth(adf)
+    drawn[2]["normalize_data"].loc[5, "reference_count"] += 1
+    assert "reference count" in red(adf, C3, drawn).detail
+
+
+def test_B_weighted_std_wrong_is_red_at_L2():
+    adf = make_adf()
+    drawn = G.fig44_weights_vector_facet_fit_oracle(adf)
+    table = drawn[2][1]["per_group"]["1"]["profile_data"]
+    table.loc[table.index[table["count"].to_numpy() > 1][0], "y_std"] *= 1.001
+    r = red(adf, O2, drawn)
+    assert r.failure_level == "L2" and "std" in r.detail
+
+
+def test_B_surface_disagreement_is_red_at_L3():
+    adf = make_adf()
+    drawn = G.fig45_public_surface_equivalence_oracle(adf)
+    table = drawn[2]["surface_stats"]["draw_batch"]["normalize_data"]
+    table.loc[table.index[~table["mask_undefined"].to_numpy(bool)][0], "value"] += 1e-6
+    r = red(adf, O4, drawn)
+    assert r.failure_level == "L3" and "draw_batch value" in r.detail
+
+
+def test_B_caller_spec_modified_is_red_at_L3():
+    adf = make_adf()
+    drawn = G.fig56_preclean_draw_figures_effective_defaults(adf)
+    drawn[2]["caller_unchanged"] = False
+    r = red(adf, C2, drawn)
+    assert r.failure_level == "L3" and "unchanged" in r.detail
+
+
+def test_B_evidence_page_follows_every_case_with_verdict_and_comparisons():
+    from matplotlib.backends.backend_pdf import PdfPages
+    texts = []
+
+    class RecordingPdf:
+        def attach_note(self, text): pass
+        def savefig(self, fig, **k): texts.append(" ".join(t.get_text() for t in fig.texts))
+    T.run_case(make_adf(), case(REFUSAL), RecordingPdf(), [0])               # machine-only: evidence page only
+    assert len(texts) == 1 and REFUSAL in texts[0] and "verdict: PASS" in texts[0]
+    texts.clear()
+    T.run_case(make_adf(), case(C3), RecordingPdf(), [0])
+    assert len(texts) == 2 and "verdict: PASS" in texts[1] and "ratio" in texts[1]
+
+
+# ------------------------------------------------------------------ batch B v02: the three checks ported from the old harness
+FACET_DELTA = "I4-REAL-SELECTION-VECTOR-FACET-DELTA-CORRECTNESS-EAGER-20PCT-01"
+
+
+def test_B2_overlay_line_point_changed_is_red_at_L2():
+    adf = make_adf()
+    drawn = G.fig22_delta_faceted(adf)
+    line = T.profile_lines(T.facet_panels(drawn)[1])[1]           # reference curve of side_type=1
+    y = np.asarray(line.get_ydata(), float).copy()
+    y[3] += 1e-9
+    line.set_ydata(y)
+    r = red(adf, FACET_DELTA, drawn)
+    assert r.failure_level == "L2" and "reference plotted line" in r.detail
+
+
+def test_B2_overlay_point_off_the_bin_centres_is_red_at_L2():
+    adf = make_adf()
+    drawn = G.fig22_delta_faceted(adf)
+    line = T.profile_lines(T.facet_panels(drawn)[0])[0]
+    x = np.asarray(line.get_xdata(), float).copy()
+    x[2] += 0.3
+    line.set_xdata(x)
+    assert "line x on bin centres" in red(adf, FACET_DELTA, drawn).detail
+
+
+def test_B2_weights_branch_fit_differs_from_scalar_draw_is_red_at_L3():
+    adf = make_adf()
+    drawn = G.fig44_weights_vector_facet_fit_oracle(adf)
+    cell = drawn[2][1]["per_group"]["0"]["fit"]
+    while isinstance(cell[0], (list, tuple)):
+        cell = cell[0]
+    cell[0]["params"] = np.asarray(cell[0]["params"], float) + 1e-6
+    r = red(adf, O2, drawn)
+    assert r.failure_level == "L3" and "pol1 parameters" in r.detail and "branch 1" in r.detail
+
+
+def test_B2_scalar_draw_runs_for_both_branches_and_both_facets():
+    result = run_alone(case(O2))
+    names = [c["observable"] for c in result.comparisons if c["level"] == "L3" and "pol1" in c["observable"]]
+    assert result.status == T.PASS and len(names) == 4
+
+
+def test_B2_branch_style_differs_between_facets_is_red_at_L3():
+    adf = make_adf()
+    drawn = G.fig44_weights_vector_facet_fit_oracle(adf)
+    T.profile_lines(T.facet_panels(drawn)[1])[1].set_color("magenta")
+    r = red(adf, O2, drawn)
+    assert r.failure_level == "L3" and "branch styles" in r.detail
 
 
 # ------------------------------------------------------------------ manifest consumed by run_gallery.sh / parity
