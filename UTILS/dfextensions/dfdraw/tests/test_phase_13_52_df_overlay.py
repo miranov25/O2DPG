@@ -358,14 +358,23 @@ def test_T_S5b_string_non_density_base_raises():
         d.draw("y:x", type="profile+hist2d")
 
 
-def test_T_S5c_string_facet_by_kwarg_raises():
-    """T-S5c: d.draw(type='hist2d+profile', facet_by='sec') → ValueError.
-    Faceting param rejected at sugar level too (P1-B duplicated at both
-    surfaces; spec §1.4 routing table)."""
+def test_T_S5c_string_facet_by_column_routes_to_faceted_overlay():
+    """T-S5c, inverted in PHASE_13_106 C1 under the change rule.
+
+    Previous boundary: d.draw(type='hist2d+profile', facet_by='sec') was
+    refused because faceted overlay was deferred to Phase 13.53, which never
+    landed.  Now an ordinary facet column gives one overlay per facet cell.
+    The legacy facet=True form and a facet inside a layer stay refused."""
     df = _make_overlay_df()
     d = DFDraw(df)
-    with pytest.raises(ValueError, match="faceting|Phase 13.53"):
-        d.draw("y:x", type="hist2d+profile", facet_by="sec")
+    fig, axes, stats = d.draw("y:x", type="hist2d+profile", facet_by="sec")
+    try:
+        assert len(np.asarray(axes).flat) == 4
+        assert stats["faceted"] is True
+    finally:
+        plt.close(fig)
+    with pytest.raises(ValueError, match="facet"):
+        d.draw("y:x", type="hist2d+profile", facet=True)
 
 
 def test_T_S6_overlay_summary_fit_on_profile_layer_renders():

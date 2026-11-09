@@ -5780,6 +5780,11 @@ class DFDraw:
         elif plot_kind == 'scatter':
             from .plots.scatter import draw_scatter
             plot_fn = draw_scatter
+        elif plot_kind == 'overlay':
+            # PHASE_13_106 C1: the cell owner is the existing overlay engine,
+            # called once per facet cell (see _faceted_overlay).
+            plot_fn = None
+            _overlay_layers = plot_kwargs.pop('_overlay_layers')
         else:
             raise NotImplementedError(
                 f"plot_kind={plot_kind!r} not supported. "
@@ -6136,6 +6141,16 @@ class DFDraw:
                         ax=ax_i,
                         **forwarded
                     )
+                elif plot_kind == 'overlay':
+                    # PHASE_13_106 C1: one cell = the unfaceted overlay of
+                    # this cell's rows (same layers, same keyword routing).
+                    _cell_drawer = DFDraw(subplot_df)
+                    _cell_drawer._data_source = self._data_source
+                    _, _, stats = _cell_drawer.overlay(
+                        f"{subplot_y}:{x_expr}", _overlay_layers, ax=ax_i)
+                    # Cell entry count (density layer) for the envelope's
+                    # n_total; the per-layer statistics stay under 'layers'.
+                    stats['n'] = stats['layers'][0].get('n', 0)
             except Exception as e:
                 # Re-raise with facet context
                 raise type(e)(
@@ -6201,7 +6216,8 @@ class DFDraw:
                         selection=plot_kwargs.get('selection'),
                         weights=None,
                         parts=parts,
-                        quantiles=quantiles if plot_kind == 'profile' else None,
+                        quantiles=(quantiles if plot_kind in ('profile', 'overlay')
+                                   else None),
                     )
                     _title_fontsize = get_style_value("axes.titlesize", 14)
                     td = fit_auto_title_to_figure(
@@ -7620,6 +7636,30 @@ class DFDraw:
             if color is not None: _overlay_kw_in.setdefault('color', color)
             if size is not None: _overlay_kw_in.setdefault('size', size)
             if marker is not None: _overlay_kw_in.setdefault('marker', marker)
+            # PHASE_13_106 C1: faceted overlay (the planned, never-delivered
+            # Phase 13.53 scope).  An ordinary data-column facet is handed to
+            # _faceted_overlay, where every facet cell is the existing
+            # unfaceted overlay applied to that cell's rows.  Other facet
+            # forms keep the clear refusal below.
+            if facet_by is not None and not facet:
+                # Named draw() parameters that belong to the Figure are not in
+                # **kwargs; hand them over explicitly so none is ignored.
+                _fo_kw = dict(_overlay_kw_in)
+                if legend is not None: _fo_kw['legend'] = legend
+                if show_legend is not None: _fo_kw['legend'] = show_legend
+                if figsize is not None: _fo_kw['figsize'] = figsize
+                if facet_label_format is not _FACET_LABEL_FORMAT_UNSET:
+                    raise NotImplementedError(
+                        "faceted overlay does not support facet_label_format "
+                        "(PHASE_13_106)")
+                return self._faceted_overlay(
+                    expr, type,
+                    facet_by=facet_by, facet_by_bins=facet_by_bins,
+                    facet_by_quantiles=facet_by_quantiles, ax=ax, save=save,
+                    share_changed=(share_x != 'all' or share_y != 'all'
+                                   or share_across_figures is not True),
+                    overlay_kw=_fo_kw,
+                )
             # Faceting params: spliced so _desugar_overlay raises a clean
             # ValueError (not silently dropped). Match _OVERLAY_NO_FACET set.
             if facet_by is not None: _overlay_kw_in.setdefault('facet_by', facet_by)
@@ -9698,6 +9738,18 @@ class DFDraw:
         # vector y element — undefined for single-Y).
         _y_is_vector = isinstance(y_expr, list)
 
+        # PHASE_13_106 C4: a one-element facet list means exactly the same as
+        # the plain string facet.  Without this, an expression vector with
+        # facet_by=['col'] reached the two-column PHASE_13_94 path below and
+        # was refused, while facet_by='col' worked.  Scalar expressions already
+        # accept both forms downstream, so only the vector route is touched.
+        # Genuine two-column lists keep the PHASE_13_94 path unchanged.
+        if (_y_is_vector and isinstance(facet_by, list)
+                and len(facet_by) == 1 and isinstance(facet_by[0], str)):
+            facet_by = facet_by[0]
+            if isinstance(facet_by_bins, (list, tuple)) and len(facet_by_bins) == 1:
+                facet_by_bins = facet_by_bins[0]
+
         # =====================================================================
         # Phase 13.33.DF (AD-80/81/82): normalize= validation + §6 directive.
         # =====================================================================
@@ -10400,6 +10452,9 @@ class DFDraw:
         *,
         ax: Optional[Any] = None,
         save: Optional[str] = None,
+        facet_by: Optional[Any] = None,
+        facet_by_bins: Optional[Any] = None,
+        facet_by_quantiles: Optional[Any] = None,
     ) -> Tuple[Any, Any, Dict[str, Any]]:
         """Compose multiple plot primitives onto one shared axes.
 
@@ -10456,6 +10511,14 @@ class DFDraw:
         if not layers:
             raise ValueError("overlay() requires a non-empty `layers` list")
 
+        # PHASE_13_106 C1 / D106-3: the explicit layers= form does not facet.
+        # Faceting is supported through draw(expr, type='a+b', facet_by=col).
+        if (facet_by is not None or facet_by_bins is not None
+                or facet_by_quantiles is not None):
+            raise ValueError(
+                "overlay(layers=[...]) does not facet; use "
+                "draw(expr, type='hist2d+profile', facet_by=<column>) "
+                "(PHASE_13_106)")
         for l in layers:
             t = l.get("type")
             # P1-A: real DFDraw method required, no AttributeError later.
@@ -10489,8 +10552,9 @@ class DFDraw:
             if bad:
                 raise ValueError(
                     f"overlay: faceting/share params {sorted(bad)} are not "
-                    "supported (overlay uses one shared axes). Faceted "
-                    "overlay is Phase 13.53."
+                    "supported inside a layer (overlay uses one shared axes). "
+                    "Faceted overlay: draw(expr, type='a+b', facet_by=<column>) "
+                    "(PHASE_13_106)."
                 )
 
         density = [l["type"] for l in layers if l["type"] in _OVERLAY_DENSITY]
@@ -10529,6 +10593,110 @@ class DFDraw:
         if save:
             fig.savefig(save)
         return fig, ax, {"layers": stats}
+
+    # PHASE_13_106 C1: Figure-level keywords of a faceted overlay.  They
+    # belong to the facet grid, never to an individual layer.
+    _FACETED_OVERLAY_FIGURE_KEYS = (
+        'ncols', 'sharex', 'sharey', 'legend', 'figsize', 'shared_xlabel',
+        'shared_ylabel', 'facet_labels', 'figure_margins', 'subplot_spacing',
+    )
+
+    def _faceted_overlay(self, expr, type_str, *, facet_by, facet_by_bins,
+                         facet_by_quantiles, ax, save, share_changed,
+                         overlay_kw):
+        """Faceted ``type='a+b'`` overlay: one overlay per facet cell.
+
+        PHASE_13_106 C1 (the planned Phase 13.53 scope).  Contract:
+
+        * Global ``selection`` and ``sample`` are applied once to the whole
+          frame; the frame is then split by the facet column with the
+          existing facet machinery (``facet_by_bins`` /
+          ``facet_by_quantiles``).
+        * Each cell is the existing unfaceted overlay applied to that cell's
+          rows: same layers, same keyword routing (``_desugar_overlay``),
+          facet-local automatic edges, one colorbar per cell.
+        * Axes are independent by default (``sharex=False``,
+          ``sharey=False``) so no cell is clipped to another cell's range;
+          the caller may pass ``sharex``/``sharey`` explicitly.
+        * Each cell keeps the overlay's own legend; ``legend=`` is refused.
+        * Returns ``(fig, axes, stats)`` with the faceted envelope
+          (``faceted``, ``facet_by``, ``groups``, ``per_group``,
+          ``n_total``); each ``per_group[label]`` is
+          ``{'layers': [...], 'n': <density-layer entries>}``.
+
+        Refused, before any Figure is created: weighted quantiles (as in the
+        profile owner), ``legend=``, channel facets (``'vector'``, ``'group_by'``,
+        ``'quantiles'``), more than one facet column, vector expressions,
+        ``ax=``, and non-default ``share_x``/``share_y``/
+        ``share_across_figures``.
+        """
+        if isinstance(facet_by, list):
+            if len(facet_by) != 1 or not isinstance(facet_by[0], str):
+                raise NotImplementedError(
+                    "faceted overlay supports exactly one ordinary facet "
+                    f"column (PHASE_13_106); got facet_by={facet_by!r}")
+            facet_by = facet_by[0]
+            if isinstance(facet_by_bins, (list, tuple)) and len(facet_by_bins) == 1:
+                facet_by_bins = facet_by_bins[0]
+        if facet_by in self._VALID_FACET_BY_VALUES_COMMIT1:
+            raise NotImplementedError(
+                "faceted overlay supports an ordinary data-column facet, not "
+                f"facet_by={facet_by!r} (PHASE_13_106)")
+        if ax is not None:
+            raise ValueError(
+                "faceted overlay creates its own Figure; ax= is not supported")
+        if share_changed:
+            raise NotImplementedError(
+                "faceted overlay does not support share_x/share_y/"
+                "share_across_figures (PHASE_13_106)")
+        kw = dict(overlay_kw)
+        selection = kw.pop('selection', None)
+        sample = kw.pop('sample', None)
+        title = kw.pop('title', None)
+        auto_title = kw.pop('auto_title', False)
+        figure_kw = {k: kw.pop(k) for k in self._FACETED_OVERLAY_FIGURE_KEYS
+                     if k in kw}
+        if figure_kw.get('legend') is not None:
+            # Each cell keeps the overlay's own legend; a Figure-level shared
+            # legend for overlays is not implemented.  Refuse instead of
+            # silently ignoring the request.
+            raise NotImplementedError(
+                "faceted overlay keeps one legend per cell; legend= is not "
+                "supported (PHASE_13_106)")
+        # A cell is the unfaceted overlay of its rows, with its own automatic
+        # x/y range.  Shared axes would clip cells with a wider range, so the
+        # default is independent axes; the caller may still ask for sharing.
+        figure_kw.setdefault('sharex', False)
+        figure_kw.setdefault('sharey', False)
+        if kw.get('weights') is not None and kw.get('quantiles'):
+            raise NotImplementedError(
+                "weighted quantiles deferred to Phase B "
+                "(faceted overlay, PHASE_13_106)")
+        y_expr, x_expr = self._parse_expr(expr)
+        if isinstance(y_expr, list) or isinstance(x_expr, list):
+            raise NotImplementedError(
+                "faceted overlay does not support expression vectors "
+                "(PHASE_13_106)")
+        # Same layer ownership and refusals as the unfaceted overlay.
+        layers = self._desugar_overlay(type_str, **kw)
+        df = self._apply_selection(self.df, selection)
+        df = self._apply_sampling(df, sample)
+        self._validate_facet_by_binning(
+            facet_by, facet_by_bins, facet_by_quantiles, df)
+        if y_expr not in df.columns:
+            df = df.assign(**{y_expr: self._eval_column(y_expr)})
+        if x_expr not in df.columns:
+            df = df.assign(**{x_expr: self._eval_column(x_expr)})
+        fig, axes, stats = self._dispatch_faceted_render(
+            df=df, x_expr=x_expr, y_expr=y_expr, facet_by=facet_by,
+            plot_kind='overlay', title=title, auto_title=auto_title,
+            quantiles=kw.get('quantiles'),
+            selection=selection, facet_by_bins=facet_by_bins,
+            facet_by_quantiles=facet_by_quantiles,
+            _overlay_layers=layers, **figure_kw)
+        if save:
+            fig.savefig(save)
+        return fig, axes, stats
 
     def _desugar_overlay(
         self, type_str: str, **kw: Any
@@ -10589,8 +10757,9 @@ class DFDraw:
             # would also reject, but a clearer early message is helpful).
             if k in _OVERLAY_NO_FACET:
                 raise ValueError(
-                    f"overlay string form: {k}= needs faceted overlay "
-                    "(Phase 13.53). Use layers=[...] when 13.53 lands."
+                    f"overlay string form: {k}= is not supported; faceting "
+                    "uses facet_by=<column> with one overlay per facet cell "
+                    "(PHASE_13_106)."
                 )
             owners = [i for i, p in enumerate(parts) if k in sigs[p]]
             if not owners:

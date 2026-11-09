@@ -143,12 +143,24 @@ def test_FP06_legacy_legend_modes_respected():
             plt.close(fig)
 
 
-def test_FP07_one_element_list_vector_facet_refusal_not_widened():
-    # PHASE_13_94 explicitly refuses list-form singleton expression-vector
-    # facets before entering the Figure coordinator. Preserve that boundary.
-    with pytest.raises(NotImplementedError, match='exactly two facet columns'):
-        _draw(facet_by=['f'], facet_by_bins=[6],
-              shared_xlabel='x', facet_labels='outer')
+def test_FP07_one_element_list_vector_facet_equals_string_facet():
+    # PHASE_13_106 C4 (inverted with disclosure under the change rule).
+    # Previous boundary: PHASE_13_94/13_99 refused a one-element facet list
+    # for expression vectors, because 13.94 was scoped to true 2-D facets.
+    # Change: facet_by=['f'] now means exactly facet_by='f' (same panels,
+    # same shared presentation); a real user call failed on the list form.
+    fig_l, axes_l, stats_l = _draw(facet_by=['f'], facet_by_bins=[6],
+                                   shared_xlabel='x', facet_labels='outer')
+    fig_s, axes_s, stats_s = _draw(facet_by='f', facet_by_bins=6,
+                                   shared_xlabel='x', facet_labels='outer')
+    try:
+        assert len(np.asarray(axes_l).flat) == len(np.asarray(axes_s).flat) == 6
+        assert len(fig_l.legends) == len(fig_s.legends) == 1
+        assert _legend_labels(fig_l) == _legend_labels(fig_s)
+        assert [s['n_groups'] for s in stats_l] == [s['n_groups'] for s in stats_s]
+    finally:
+        plt.close(fig_l)
+        plt.close(fig_s)
 
 
 def test_FP16_legacy_shared_group_legend_with_sparse_last_facet_row():
