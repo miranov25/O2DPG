@@ -572,7 +572,7 @@ def test_A_wrong_subframe_offset_in_the_chain_is_red_at_L1():
 # ------------------------------------------------------------------ batch C1: each new kind of check turns red when broken
 def test_C1_quantile_line_value_changed_is_red_at_L2():
     adf = make_adf()
-    drawn = G.fig58_adf99_01_quantile_facets(adf)
+    drawn = G.fig_adf99_01_quantile_facets(adf)
     line = [ln for ln in drawn[1].flat[2].lines if str(ln.get_label()) == "median"][1]      # dcar_tpc median, panel 2
     y = np.asarray(line.get_ydata(), float).copy()
     y[np.flatnonzero(np.isfinite(y))[0]] += 0.01
@@ -583,7 +583,7 @@ def test_C1_quantile_line_value_changed_is_red_at_L2():
 
 def test_C1_quantile_identity_removed_from_legend_is_red_at_L3():
     adf = make_adf()
-    drawn = G.fig58_adf99_01_quantile_facets(adf)
+    drawn = G.fig_adf99_01_quantile_facets(adf)
     legend = drawn[0].legends[0]
     [t for t in legend.get_texts() if t.get_text() == "q=90%"][0].set_text("q=95%")
     r = red(adf, "ADF99-01", drawn)
@@ -592,14 +592,14 @@ def test_C1_quantile_identity_removed_from_legend_is_red_at_L3():
 
 def test_C1_duplicate_group_in_legend_is_red_at_L3():
     adf = make_adf()
-    drawn = G.fig59_adf99_02_quantile_facet_groups(adf)
+    drawn = G.fig_adf99_02_quantile_facet_groups(adf)
     [t for t in drawn[0].legends[0].get_texts() if t.get_text() == "1"][0].set_text("0")
     assert red(adf, "ADF99-02", drawn).failure_level == "L3"
 
 
 def test_C1_grouped_quantile_line_of_wrong_group_is_red_at_L2():
     adf = make_adf()
-    drawn = G.fig59_adf99_02_quantile_facet_groups(adf)
+    drawn = G.fig_adf99_02_quantile_facet_groups(adf)
     for ln in drawn[1].flat[0].lines:                       # swap the group tags of panel 0: lines of group 0 claim group 1
         meta = getattr(ln, "_dfdraw_facet_semantic", None)
         if isinstance(meta, dict) and meta.get("kind") == "quantile":
@@ -609,7 +609,7 @@ def test_C1_grouped_quantile_line_of_wrong_group_is_red_at_L2():
 
 def test_C1_paired_x_edges_shared_is_red_at_L2():
     adf = make_adf()
-    drawn = G.fig60_adf100_01_paired_x(adf)
+    drawn = G.fig_adf100_01_paired_x(adf)
     first = drawn[2][0]["per_group"]
     for g, entry in drawn[2][1]["per_group"].items():        # branch 1 gets branch 0's edges (the classic swap)
         entry["profile_data"]["x_low"] = first[g]["profile_data"]["x_low"].to_numpy()

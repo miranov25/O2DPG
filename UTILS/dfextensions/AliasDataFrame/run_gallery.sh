@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# AliasDataFrame real-data gallery runner — PHASE_13_105 S3-0 (v04: pytest on 6 workers).
+# AliasDataFrame real-data gallery runner — PHASE_13_105 S3-0 (v05: pytest on 6 workers, incl. the old harness self-tests).
 #
 #   ./run_gallery.sh                     same as --all: every target, then the audit, one ZIP (the gate)
 #   ./run_gallery.sh --all
@@ -9,7 +9,8 @@
 #   ./run_gallery.sh --target ?          list the targets
 #
 # Targets
-#   pytest    every synthetic test of the 13.101 and 13.105 files, including the tests of this runner
+#   pytest    every synthetic test of the 13.101 and 13.105 files, including the tests of this runner,
+#             and the old harness's self-tests (until S5: a gallery change must not break the old harness)
 #   gallery   the 59-page readable gallery, time_series_draw.run_all_pdf
 #   13_101    the OLD harness: 23 historical cases + 3 ADF101 cases (its own process until S5)
 #   13_105    the NEW declarative test: all migrated cases, strict
@@ -46,7 +47,7 @@ HELP
 list_targets() {
     cat <<'LIST'
 TARGET    WHAT IT RUNS                                                    IN --all
-pytest    synthetic tests: 13.101 files (incl. runner tests) + 13.105 file   yes
+pytest    synthetic tests: 13.101, 13.105, runner, old-harness self-tests yes
 gallery   the 59-page readable gallery (time_series_draw.run_all_pdf)     yes
 13_101    old harness: 23 historical Stage-A cases + 3 ADF101 cases       yes, until S5
 13_105    new declarative test: all migrated cases, strict                yes
@@ -260,6 +261,7 @@ main() {
             tests/test_phase_13_101_ts_entry_stop.py \
             tests/test_phase_13_101_bounded_stage_a.py \
             tests/test_phase_13_101_facet_residual_reference.py \
+            tests/test_phase_13_77_realdata_invariance_harness.py \
             tests/test_time_series_invariancetest.py
     fi
 
