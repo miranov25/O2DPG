@@ -170,7 +170,7 @@ def test_run_gallery_default_includes_all_bounded_scientific_cases():
     assert 'run_stage legacy-23-full-source' not in script
     assert '"$root_path" --bounded-entries 1000000' in script
     assert '"$root_path" --adf101-fast' in script
-    assert 'total_scientific_cases=26' in script
+    assert 'old_13_101_scientific_cases=26' in script   # PHASE_13_105 S3-0: the old harness's 26 cases are one target of several
     assert 'historical_23_case_stageA=NOT_RUN' not in script
 
 
