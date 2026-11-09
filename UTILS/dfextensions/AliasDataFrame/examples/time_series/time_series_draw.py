@@ -1089,6 +1089,40 @@ def fig57_preclean_ratio_y_vector_truth(adf):
 
 # ── Figure lists ──────────────────────────────────────────────────────────────
 
+# ── G15: PHASE_13_101 real-data oracles (pages checked by time_series_draw_invariancetest.py) ──
+# These three pages are drawn by the invariance test; they join FIGURES_MANDATORY at the
+# PHASE_13_105 S5 cutover, when the 59-page count of the old harness no longer applies.
+ADF101_QUANTILES = [0.15, 0.50, 0.90]
+
+
+def fig58_adf99_01_quantile_facets(adf):
+    """ADF99-01: two Y expressions, six tgl facets, discrete quantiles, one shared legend."""
+    return adf.draw(
+        "[dcar_tpc_vertex,dcar_tpc]:sector", type="profile", selection=BASE_SEL,
+        facet_by="tgl", facet_by_bins=6, ncols=3, bins=36, range=(0.0, 36.0),
+        quantiles=ADF101_QUANTILES, quantile_mode="discrete", legend="shared",
+        auto_title=False, min_entries=1, return_data=True)
+
+
+def fig59_adf99_02_quantile_facet_groups(adf):
+    """ADF99-02: 3x2 tgl x qpt_bin10 facets, global side_type groups, quantiles, outer headings."""
+    return adf.draw(
+        "[dcar_tpc_vertex,dcar_tpc]:sector", type="profile", selection=INJECTED_TRUTH_SIDE_SEL,
+        facet_by=["tgl", "qpt_bin10"], facet_by_bins=[3, 2], group_by="side_type",
+        group_by_scope="global", bins=36, range=(0.0, 36.0), quantiles=ADF101_QUANTILES,
+        quantile_mode="discrete", legend="shared", facet_labels="outer",
+        auto_title=False, min_entries=1, return_data=True)
+
+
+def fig60_adf100_01_paired_x(adf):
+    """ADF100-01: two positional Y:X pairs, each with its own min-max bin edges, six tgl facets."""
+    return adf.draw(
+        "[dcar_tpc_vertex,dcar_tpc]:[sector,sector+0.25]", type="profile", selection=BASE_SEL,
+        facet_by="tgl", facet_by_bins=6, ncols=3, bins=20, range="minmax",
+        quantiles=ADF101_QUANTILES, quantile_mode="discrete", legend="shared",
+        auto_title=False, min_entries=1, return_data=True)
+
+
 FIGURES_G1 = [fig01_hist_ncl, fig02_hist_time, fig03_hist_cumulative,
               fig04_scatter_dca_tgl, fig05_hist2d_dca_sector, fig06_hexbin_dca_sector,
               fig07_profile_dca_sector, fig08_profile2d_dca_tgl_sector, fig09_scatter3d]
@@ -1141,6 +1175,7 @@ FIGURES_MANDATORY = (FIGURES_G1 + FIGURES_G2 + FIGURES_G3 + FIGURES_G4
                      + FIGURES_G10 + FIGURES_G11 + FIGURES_G12 + FIGURES_G13
                      + FIGURES_G14)
 FIGURES_OPTIONAL  = [fig32_subframe_vertex, fig33_gb_correction_tgl, fig34_gb_correction_sector]
+FIGURES_G15 = [fig58_adf99_01_quantile_facets, fig59_adf99_02_quantile_facet_groups, fig60_adf100_01_paired_x]
 
 
 # ── Batch PDF / declarative extra-page accounting ─────────────────────────────

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# AliasDataFrame real-data gallery runner — PHASE_13_105 S3-0.
+# AliasDataFrame real-data gallery runner — PHASE_13_105 S3-0 (v04: pytest on 6 workers).
 #
 #   ./run_gallery.sh                     same as --all: every target, then the audit, one ZIP (the gate)
 #   ./run_gallery.sh --all
@@ -254,7 +254,7 @@ main() {
 
     if has_target pytest; then
         run_stage focused-pytest "$run_dir/focused_pytest.log" \
-            python -m pytest -q \
+            python -m pytest -q -n 6 \
             tests/test_phase_13_101_realdata_fast_registry.py \
             tests/test_phase_13_101_dfdraw_adf_oracles.py \
             tests/test_phase_13_101_ts_entry_stop.py \
