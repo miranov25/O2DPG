@@ -1,7 +1,7 @@
 # ARCHITECT_DECISIONS.md
 # dfdraw — Architect Decision Registry
-# Version: 1.2.0 (PHASE_13_108_DF facet default presentation — AD-1/13.108.DF to AD-4/13.108.DF added)
-# Date: 2026-11-10 (v1.2.0); 2026-06-06 (v1.1.0); 2026-06-04 (v1.0 / v1.0.1)
+# Version: 1.2.1 (PHASE_13_108_DF — AD-5/13.108.DF added: numeric bins never merged by their names)
+# Date: 2026-11-10 (v1.2.1, v1.2.0); 2026-06-06 (v1.1.0); 2026-06-04 (v1.0 / v1.0.1)
 # Maintainer: Marian Ivanov (architect)
 #
 # This document is the canonical AD registry for the dfdraw project.
@@ -2008,7 +2008,7 @@ adf.draw("dyp_I0:row", group_by="sec", color="red")
 
 ---
 
-## Phase 13.108.DF — Facet default presentation (AD-1/13.108.DF to AD-4/13.108.DF)
+## Phase 13.108.DF — Facet default presentation (AD-1/13.108.DF to AD-5/13.108.DF)
 
 **Phase trigger:** bug report C6 (PHASE_13_106, 2026-11-10): on real data a faceted `hist2d+profile` repeated the same X/Y title and the same legend in every cell, and `legend="shared"` was refused. Proposal `PHASE_13_108_DF_FactDefaultStyleProposal.md` v0.1 (documentation commit `a1b988e7`, MD5 `6dc31b525726863b998ff62e1844e0c1`; the committed file name says `Fact`, not `Facet`). Consolidated proposal review `PHASE_13_108_DF_FacetDefaultStyle_Proposal_v0_1_Consolidated_Official_Review_Summary_GPT28_20261110.md` (MD5 `5f408dfadc57bdc9a60d3ac1763210e3`): APPROVE WITH CONDITIONS, recommending YES on the four decisions below.
 
@@ -2068,6 +2068,18 @@ The four D108 identifiers of the proposal map to the registry identifiers AD-1 t
 
 ---
 
+## AD-5/13.108.DF — Numeric bins are never merged because their names collide
+
+**Phase:** 13.108.DF | **Date:** 2026-11-10 | **Original notation:** category Q of the v0.2 candidate; PRECOMMIT v0.2 review GPT29 §5
+
+**Decision:** The name of a numeric group or facet bin (`group_by_bins`, `group_by_quantiles`, `facet_by_bins`, `facet_by_quantiles`, `facet_by='group_by'`, local and global group scope) is its grouping key. Two different bins never get the same name: today's short name is kept where it is unambiguous, and where two bins (or the two edges of one bin) would print the same, all bins of that variable get more decimals. Before this decision, such bins were merged into one group or facet. In exactly those collision cases the number of groups, their membership and their statistics therefore change to the true per-interval values; the underlying rows, the bin edges, the selection and the estimators do not change. Each group or facet holds exactly the raw rows that `pd.cut` / `pd.qcut` put in its interval (oracle tests `test_phase_13_108_s4_bin_membership_oracle.py`). The former refusal of colliding names on the global scope is removed.
+
+**Ratification:** Architect, 2026-11-10, after the PRECOMMIT v0.2 review by GPT29 asked for explicit acceptance of this extension of AD-4/13.108.DF beyond quantile labels. Implemented in commit `f2484556`; oracle evidence in the following commit.
+
+**Source:** `plots/_numeric_labels.py` (`interval_labels`, `map_interval_labels`), `plots/profile.py`, `drawer.py` (`_scope_group_domain`, dispatch-level binning)
+
+---
+
 ## Phase TS_v6 — Technical Summary v6 governance cycle (AD-1/TS_v6.DF to AD-2/TS_v6.DF)
 
 **Phase trigger:** Multi-session restructure of `dfdraw_Technical_Summary.md` (v6.0 → v6.3) and `dfdraw_PLOTTING_LIBRARY_COMPARISON.md` (v1.2 → v2.1) to align with the architect's December 2025 dfextensions presentation and 2026-06-05 verbal context. Cycle close formalized retroactively per GP-9.
@@ -2106,7 +2118,8 @@ The four D108 identifiers of the proposal map to the registry identifiers AD-1 t
 
 ---
 
-*dfdraw ARCHITECT_DECISIONS.md v1.2.0 — 2026-11-10*
+*dfdraw ARCHITECT_DECISIONS.md v1.2.1 — 2026-11-10*
+*v1.2.1 — 2026-11-10 (PHASE_13_108_DF: AD-5/13.108.DF, numeric bins never merged by their names)*
 *v1.2.0 — 2026-11-10 (PHASE_13_108_DF: AD-1/13.108.DF to AD-4/13.108.DF, Architect decision D108-A–D)*
 *v1.0 / v1.0.1 — 2026-06-04 (Org panel convergent touch-ups: header, AD-37/50 supersession, GP transitional authority, GP Date fields, About additions)*
 *v1.1.0 — 2026-06-06 (TS v6 governance cycle: GP-9 added, AD-1/TS_v6.DF + AD-2/TS_v6.DF added; panel: Sonnet56 [!] + Sonnet57 [!] + Opus1 [Main Reviewer] + architect direct intervention on GP-9 substantive-threshold definition)*

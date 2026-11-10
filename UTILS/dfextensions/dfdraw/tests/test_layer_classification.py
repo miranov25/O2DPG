@@ -1595,4 +1595,21 @@ TEST_LAYERS = {
     'test_phase_13_108_s3_v02_numeric_identity_and_labels.py::test_RED_B02_global_group_legend_names_quantile_levels[discrete-groups]': 'integration',
     'test_phase_13_108_s3_v02_numeric_identity_and_labels.py::test_RED_B02_global_group_legend_names_quantile_levels[global-bins]': 'integration',
     'test_phase_13_108_s3_v02_numeric_identity_and_labels.py::test_CTL_B03_global_group_legend_without_quantiles_unchanged': 'smoke',
+    # PHASE_13_108_DF S4: numeric bins hold exactly the raw rows of their
+    # interval (membership, n, statistics and quantile curves compared with
+    # pd.cut/pd.qcut row selection) -> invariance.
+    'test_phase_13_108_s4_bin_membership_oracle.py::test_S4_01_group_by_unfaceted[bins-narrow]': 'invariance',
+    'test_phase_13_108_s4_bin_membership_oracle.py::test_S4_01_group_by_unfaceted[bins-normal]': 'invariance',
+    'test_phase_13_108_s4_bin_membership_oracle.py::test_S4_01_group_by_unfaceted[quantiles-narrow]': 'invariance',
+    'test_phase_13_108_s4_bin_membership_oracle.py::test_S4_01_group_by_unfaceted[quantiles-normal]': 'invariance',
+    'test_phase_13_108_s4_bin_membership_oracle.py::test_S4_02_group_by_facet_local[narrow]': 'invariance',
+    'test_phase_13_108_s4_bin_membership_oracle.py::test_S4_02_group_by_facet_local[normal]': 'invariance',
+    'test_phase_13_108_s4_bin_membership_oracle.py::test_S4_03_group_by_global[narrow]': 'invariance',
+    'test_phase_13_108_s4_bin_membership_oracle.py::test_S4_03_group_by_global[normal]': 'invariance',
+    'test_phase_13_108_s4_bin_membership_oracle.py::test_S4_04_facet_by_numeric_bins[bins-narrow]': 'invariance',
+    'test_phase_13_108_s4_bin_membership_oracle.py::test_S4_04_facet_by_numeric_bins[bins-normal]': 'invariance',
+    'test_phase_13_108_s4_bin_membership_oracle.py::test_S4_04_facet_by_numeric_bins[quantiles-narrow]': 'invariance',
+    'test_phase_13_108_s4_bin_membership_oracle.py::test_S4_04_facet_by_numeric_bins[quantiles-normal]': 'invariance',
+    'test_phase_13_108_s4_bin_membership_oracle.py::test_S4_05_facet_by_group_by_bins[narrow]': 'invariance',
+    'test_phase_13_108_s4_bin_membership_oracle.py::test_S4_05_facet_by_group_by_bins[normal]': 'invariance',
 }
