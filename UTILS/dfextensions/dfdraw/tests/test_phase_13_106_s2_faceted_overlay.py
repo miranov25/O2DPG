@@ -10,7 +10,9 @@ per cell; one colorbar per cell; weighted quantiles refused).  This module
 pins the remaining parts of the S0 contract:
 
 * independent axes by default, so no cell is clipped to another cell's range;
-* ``n_total`` and per-cell ``n`` count the selected rows;
+* ``n_total`` and per-cell ``n`` count the selected rows (this fixture has
+  only finite values; in general they count the selected rows that are
+  finite in x and y, see ``test_phase_13_106_s8_c1_numeric_oracle.py``);
 * selection and sampling are applied once, before the frame is split;
 * binned facets reuse the existing facet machinery (same groups as hist2d);
 * the automatic title names the requested quantiles;

@@ -7648,17 +7648,31 @@ class DFDraw:
                 if legend is not None: _fo_kw['legend'] = legend
                 if show_legend is not None: _fo_kw['legend'] = show_legend
                 if figsize is not None: _fo_kw['figsize'] = figsize
-                if facet_label_format is not _FACET_LABEL_FORMAT_UNSET:
-                    raise NotImplementedError(
-                        "faceted overlay does not support facet_label_format "
-                        "(PHASE_13_106)")
+                # PHASE_13_106 v0.2 (review P1-2): named draw() parameters
+                # that the overlay string form never forwards.  The faceted
+                # overlay refuses them instead of dropping them silently.
+                # (stat_list, group_by_scope and facet_label_format are
+                # already refused for this type by earlier draw() guards.)
+                _fo_unforwarded = [name for name, given in (
+                    ('norm', norm is not None),
+                    ('same', bool(same)),
+                    ('normalize', normalize is not None),
+                    ('normalize_layout', normalize_layout != 'overlay+diff'),
+                    ('delta_facet', delta_facet is not None),
+                    ('selection_labels', selection_labels is not None),
+                    ('weights_labels', weights_labels is not None),
+                    ('selection_categorical', bool(selection_categorical)),
+                    ('weights_categorical', bool(weights_categorical)),
+                    ('vector_compose', vector_compose != 'inner'),
+                    ('fit_textbox_kwargs', fit_textbox_kwargs is not None),
+                ) if given]
                 return self._faceted_overlay(
                     expr, type,
                     facet_by=facet_by, facet_by_bins=facet_by_bins,
                     facet_by_quantiles=facet_by_quantiles, ax=ax, save=save,
                     share_changed=(share_x != 'all' or share_y != 'all'
                                    or share_across_figures is not True),
-                    overlay_kw=_fo_kw,
+                    overlay_kw=_fo_kw, unforwarded=_fo_unforwarded,
                 )
             # Faceting params: spliced so _desugar_overlay raises a clean
             # ValueError (not silently dropped). Match _OVERLAY_NO_FACET set.
@@ -9744,6 +9758,10 @@ class DFDraw:
         # was refused, while facet_by='col' worked.  Scalar expressions already
         # accept both forms downstream, so only the vector route is touched.
         # Genuine two-column lists keep the PHASE_13_94 path unchanged.
+        # PHASE_13_106 v0.2 (review P2-1): an empty list gets the same clear
+        # error as for scalar expressions, not the two-column message.
+        if _y_is_vector and isinstance(facet_by, list) and not facet_by:
+            raise ValueError("facet_by list cannot be empty")
         if (_y_is_vector and isinstance(facet_by, list)
                 and len(facet_by) == 1 and isinstance(facet_by[0], str)):
             facet_by = facet_by[0]
@@ -10601,9 +10619,31 @@ class DFDraw:
         'shared_ylabel', 'facet_labels', 'figure_margins', 'subplot_spacing',
     )
 
+    # PHASE_13_106 v0.2 (review P1-1): the only faceted overlay type pair.
+    # Architect choice D106-3 approved C1 for this ordered pair; other pairs
+    # keep the pre-PHASE_13_106 refusal until separately approved.
+    _FACETED_OVERLAY_TYPE = 'hist2d+profile'
+
+    # PHASE_13_106 v0.2 (review P1-2): the complete list of keywords a faceted
+    # overlay accepts.  Everything else is refused before any Figure is
+    # created, so no keyword can reach only one of the two layers (density
+    # and profile would then describe different populations) or be dropped.
+    #   applied once to the whole frame or to the Figure: selection, sample,
+    #       title, auto_title, the Figure keys above, and the internal
+    #       draw_batch flag _suppress_layout;
+    #   density layer only (hist2d): bins (historical routing of a keyword
+    #       both layers accept: the profile keeps its own default X bins),
+    #       cmap, colorbar, clabel, vmin, vmax;
+    #   profile layer only: quantiles.
+    _FACETED_OVERLAY_ALLOWED = frozenset((
+        'selection', 'sample', 'title', 'auto_title', '_suppress_layout',
+        'bins', 'cmap', 'colorbar', 'clabel', 'vmin', 'vmax',
+        'quantiles',
+    ) + _FACETED_OVERLAY_FIGURE_KEYS)
+
     def _faceted_overlay(self, expr, type_str, *, facet_by, facet_by_bins,
                          facet_by_quantiles, ax, save, share_changed,
-                         overlay_kw):
+                         overlay_kw, unforwarded=()):
         """Faceted ``type='a+b'`` overlay: one overlay per facet cell.
 
         PHASE_13_106 C1 (the planned Phase 13.53 scope).  Contract:
@@ -10622,15 +10662,35 @@ class DFDraw:
         * Returns ``(fig, axes, stats)`` with the faceted envelope
           (``faceted``, ``facet_by``, ``groups``, ``per_group``,
           ``n_total``); each ``per_group[label]`` is
-          ``{'layers': [...], 'n': <density-layer entries>}``.
+          ``{'layers': [...], 'n': <density-layer entries>}``.  ``n`` counts
+          the rows the density layer actually plots (selected, sampled and
+          finite in x and y under the default ``nan_policy``), not every
+          row that passes ``selection``; ``n_total`` is the sum over cells.
+        * Only ``type='hist2d+profile'`` is faceted, and only the keywords in
+          ``_FACETED_OVERLAY_ALLOWED`` are accepted.  ``bins=`` sets the
+          density bins only; the profile keeps its default X binning (the
+          existing overlay routing of a keyword both layers accept).
 
-        Refused, before any Figure is created: weighted quantiles (as in the
-        profile owner), ``legend=``, channel facets (``'vector'``, ``'group_by'``,
-        ``'quantiles'``), more than one facet column, vector expressions,
-        ``ax=``, and non-default ``share_x``/``share_y``/
+        Refused, before any Figure is created: other type pairs
+        (``ValueError``, as before PHASE_13_106); ``weights=`` (with
+        quantiles: weighted quantiles are deferred; without: the density map
+        would stay unweighted while the profile is weighted); every other
+        keyword not in the accepted list, including ``selection_vector``,
+        ``weights_vector`` and their label/categorical options, ``group_by``,
+        ``same``, ``normalize``, ``fit``, ``range`` and ``nan_policy``;
+        ``legend=``; channel facets (``'vector'``, ``'group_by'``,
+        ``'quantiles'``); more than one facet column; vector expressions;
+        ``ax=``; and non-default ``share_x``/``share_y``/
         ``share_across_figures``.
         """
+        if type_str != self._FACETED_OVERLAY_TYPE:
+            raise ValueError(
+                f"overlay string form: facet_by= is supported only for "
+                f"type='{self._FACETED_OVERLAY_TYPE}' (PHASE_13_106); "
+                f"got type='{type_str}'")
         if isinstance(facet_by, list):
+            if not facet_by:
+                raise ValueError("facet_by list cannot be empty")
             if len(facet_by) != 1 or not isinstance(facet_by[0], str):
                 raise NotImplementedError(
                     "faceted overlay supports exactly one ordinary facet "
@@ -10668,10 +10728,26 @@ class DFDraw:
         # default is independent axes; the caller may still ask for sharing.
         figure_kw.setdefault('sharex', False)
         figure_kw.setdefault('sharey', False)
-        if kw.get('weights') is not None and kw.get('quantiles'):
+        if kw.get('weights') is not None:
+            if kw.get('quantiles'):
+                raise NotImplementedError(
+                    "weighted quantiles deferred to Phase B "
+                    "(faceted overlay, PHASE_13_106)")
             raise NotImplementedError(
-                "weighted quantiles deferred to Phase B "
-                "(faceted overlay, PHASE_13_106)")
+                "faceted overlay does not support weights=: the density map "
+                "would stay unweighted while the profile is weighted "
+                "(PHASE_13_106)")
+        refused = sorted(set(unforwarded) | {
+            k for k, v in kw.items()
+            if k not in self._FACETED_OVERLAY_ALLOWED
+            and v is not None and v is not False})
+        if refused:
+            accepted = sorted(k for k in self._FACETED_OVERLAY_ALLOWED
+                              if not k.startswith('_') and k != 'legend')
+            raise NotImplementedError(
+                "faceted overlay (PHASE_13_106) does not support "
+                + ", ".join(f"{k}=" for k in refused)
+                + "; accepted keywords: " + ", ".join(accepted))
         y_expr, x_expr = self._parse_expr(expr)
         if isinstance(y_expr, list) or isinstance(x_expr, list):
             raise NotImplementedError(
