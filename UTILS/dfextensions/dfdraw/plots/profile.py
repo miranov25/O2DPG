@@ -37,17 +37,21 @@ from ._autorange import compute_autorange, resolve_range_1d, VALID_STRATEGIES
 from ._time_coords import to_date_coords
 # Phase 13.30.DF: Class-2 column-reference parameter validation
 from ._validation import validate_column_references
+# PHASE_13_108 v0.2: one owner for numbers written as names (quantile
+# levels, the exact median, numeric bin intervals).
+from ._numeric_labels import (is_median_level, map_interval_labels,
+                              quantile_percent_labels, quantile_percent_text)
 
 
 def _quantile_percent_text(q):
-    """PHASE_13_108 D108-D: one formatter for a quantile level as a percent.
+    """PHASE_13_108 D108-D: one quantile level as a percent, alone.
 
-    Up to six significant digits, without trailing zeros: 0.05 -> '5%',
-    0.1 -> '10%', 0.101 -> '10.1%', 0.5 -> '50%'.  The former '{:.0%}'
-    format rounded 0.101 to '10%', so two requested levels could share one
-    label (and one shared legend entry).  Round levels keep their text.
+    Six significant digits, without trailing zeros: 0.05 -> '5%',
+    0.101 -> '10.1%'.  Where several levels are shown together, use
+    ``quantile_percent_labels`` (v0.2), which also keeps levels apart that
+    differ beyond six digits.
     """
-    return f'{round(100.0 * float(q), 6):g}%'
+    return quantile_percent_text(q)
 
 
 # =============================================================================
@@ -644,11 +648,13 @@ def draw_profile(
                 )
         if group_by_bins is not None:
             intervals = pd.cut(df_filtered[group_by], bins=group_by_bins)
-            df_filtered['_group'] = intervals.map(_format_interval_label)
+            # PHASE_13_108 v0.2: the name is the grouping key; bins that
+            # would share a name get more decimals instead of being merged.
+            df_filtered['_group'] = map_interval_labels(intervals)
             group_col = '_group'
         elif group_by_quantiles is not None:
             intervals = pd.qcut(df_filtered[group_by], q=group_by_quantiles, duplicates='drop')
-            df_filtered['_group'] = intervals.map(_format_interval_label)
+            df_filtered['_group'] = map_interval_labels(intervals)
             group_col = '_group'
     
     # Group-by handling
@@ -812,7 +818,7 @@ def draw_profile(
         if (central in ('median', 'both')
                 or (stat_list is not None and 'median' in stat_list)
                 or (stat_list is not None and quantiles is not None
-                    and any(abs(q - .5) < 1e-12 for q in quantiles))):
+                    and any(is_median_level(q) for q in quantiles))):
             # PHASE_13_96_DF M-1: median must use precisely the same
             # resolved x bins as mean/std/SEM (including autorange).
             _bin_medians = _compute_per_bin_median(x_data, y_data, bins, _used_xrange)
@@ -1002,12 +1008,15 @@ def draw_profile(
                 # Unknown channel — fallback to linestyle behaviour.
                 _qs_cycle = ['--', '-.', ':']
 
+            # PHASE_13_108 v0.2: names of all levels together, so different
+            # levels never share a name; 'median' is exactly 0.5.
+            _q_names = quantile_percent_labels(list(_q_all))
             for j, (q_val, q_per_bin) in enumerate(_q_all.items()):
                 if (_stat_quantile_combo and 'median' in stat_list
-                        and abs(q_val - .5) < 1e-12):
+                        and is_median_level(q_val)):
                     continue  # the explicit median statistic owns q=0.5
-                q_label = (f'q={_quantile_percent_text(q_val)}'
-                           if abs(q_val - 0.5) > 1e-9 else 'median')
+                q_label = ('median' if is_median_level(q_val)
+                           else f'q={_q_names[float(q_val)]}')
                 if _qs_kind == 'linestyle':
                     q_ls = _qs_cycle[j % len(_qs_cycle)]
                     line, = ax.plot(
@@ -1029,6 +1038,8 @@ def draw_profile(
                         linestyle='-', linewidth=linewidth * 0.8,
                         label=q_label,
                     )
+                # PHASE_13_108 v0.2: numeric identity for the Figure legend.
+                line._dfdraw_quantile = float(q_val)
                 # On-line annotation (FIX2 behaviour preserved as default UX
                 # for quantile_style='linestyle'; suppressed for other channels
                 # since marker/color don't need disambiguating labels).
@@ -1038,7 +1049,7 @@ def draw_profile(
                     if n_valid > 2:
                         idx = np.where(valid)[0][int(0.4 * n_valid)]
                         ax.annotate(
-                            _quantile_percent_text(q_val),
+                            _q_names[float(q_val)],
                             xy=(bin_centers[idx], q_per_bin[idx]),
                             fontsize=7, fontweight='bold',
                             color=line.get_color(),
@@ -1742,13 +1753,13 @@ def _detect_quantile_mode(quantiles: list) -> str:
     # Check if symmetric pair (no 0.5) → error_bars optimization
     if n == 2:
         is_symmetric = abs(qs[0] + qs[1] - 1.0) < 1e-9
-        has_05 = any(abs(q - 0.5) < 1e-9 for q in qs)
+        has_05 = any(is_median_level(q) for q in qs)
         if is_symmetric and not has_05:
             return 'error_bars'
     
     # Check if symmetric triple with 0.5 → band optimization
     if n == 3:
-        has_05 = abs(qs[1] - 0.5) < 1e-9
+        has_05 = is_median_level(qs[1])  # PHASE_13_108 v0.2: exactly 0.5
         is_symmetric = abs(qs[0] + qs[2] - 1.0) < 1e-9
         if has_05 and is_symmetric:
             return 'band'
@@ -1758,7 +1769,7 @@ def _detect_quantile_mode(quantiles: list) -> str:
     # 2026-05-05: central=0.5 is NOT required — the central line is handled
     # by the central= parameter independently from mode detection.
     # Detection rule: at least 2 symmetric pairs (non_05_count >= 4).
-    non_05 = [q for q in qs if abs(q - 0.5) > 1e-9]
+    non_05 = [q for q in qs if not is_median_level(q)]
     if len(non_05) >= 4:
         # Check that all non_05 entries form symmetric pairs
         # (sorted, so qs[i] + qs[-(i+1)] should equal 1.0 for each pair).

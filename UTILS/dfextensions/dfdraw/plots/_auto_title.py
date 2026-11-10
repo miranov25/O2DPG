@@ -116,7 +116,11 @@ def format_profile_quantile_semantics(quantiles):
     """
     if quantiles is None or len(quantiles) == 0:
         return None
-    vals = [f"{float(q):.6g}" for q in quantiles]
+    # PHASE_13_108 v0.2: different levels never print the same
+    # ('q [0.1, 0.1]' for 0.100000001 and 0.100000002).
+    from ._numeric_labels import quantile_fraction_labels
+    names = quantile_fraction_labels(quantiles)
+    vals = [names[float(q)] for q in quantiles]
     if len(vals) == 2:
         return f"q {vals[0]}–{vals[1]}"
     return "q [" + ", ".join(vals) + "]"

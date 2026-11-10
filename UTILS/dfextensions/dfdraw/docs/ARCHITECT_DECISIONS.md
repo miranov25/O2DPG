@@ -1,7 +1,7 @@
 # ARCHITECT_DECISIONS.md
 # dfdraw — Architect Decision Registry
-# Version: 1.1.0 (TS v6 governance cycle — GP-9 added; AD-1/TS_v6.DF + AD-2/TS_v6.DF added)
-# Date: 2026-06-06 (v1.1.0); 2026-06-04 (v1.0 / v1.0.1)
+# Version: 1.2.0 (PHASE_13_108_DF facet default presentation — AD-1/13.108.DF to AD-4/13.108.DF added)
+# Date: 2026-11-10 (v1.2.0); 2026-06-06 (v1.1.0); 2026-06-04 (v1.0 / v1.0.1)
 # Maintainer: Marian Ivanov (architect)
 #
 # This document is the canonical AD registry for the dfdraw project.
@@ -2008,6 +2008,66 @@ adf.draw("dyp_I0:row", group_by="sec", color="red")
 
 ---
 
+## Phase 13.108.DF — Facet default presentation (AD-1/13.108.DF to AD-4/13.108.DF)
+
+**Phase trigger:** bug report C6 (PHASE_13_106, 2026-11-10): on real data a faceted `hist2d+profile` repeated the same X/Y title and the same legend in every cell, and `legend="shared"` was refused. Proposal `PHASE_13_108_DF_FactDefaultStyleProposal.md` v0.1 (documentation commit `a1b988e7`, MD5 `6dc31b525726863b998ff62e1844e0c1`; the committed file name says `Fact`, not `Facet`). Consolidated proposal review `PHASE_13_108_DF_FacetDefaultStyle_Proposal_v0_1_Consolidated_Official_Review_Summary_GPT28_20261110.md` (MD5 `5f408dfadc57bdc9a60d3ac1763210e3`): APPROVE WITH CONDITIONS, recommending YES on the four decisions below.
+
+**Architect decision, 2026-11-10 (GP-3, quoted from the coder session record):**
+
+> D108-A - Shared is default - user can overwrite default / D108-B Yes / D108-C Yes / D108-D Yes
+
+The four D108 identifiers of the proposal map to the registry identifiers AD-1 to AD-4/13.108.DF.
+
+---
+
+## AD-1/13.108.DF — Shared Figure X/Y titles by default (D108-A)
+
+**Phase:** 13.108.DF | **Date:** 2026-11-10 | **Original notation:** D108-A
+
+**Decision:** A faceted `profile` or `hist2d+profile` with two or more visible cells shows one Figure X title and one Figure Y title by default. This is decided separately for each axis: an axis is shared only when every visible cell renders the same label on it, so alias (AliasDataFrame) titles and multi-line titles are kept whole. Explicit `shared_xlabel` / `shared_ylabel` values (`True`, `False`, a string) always win. One-cell figures and non-profile facets are unchanged.
+
+**Ratification:** Architect decision above; proposal review GPT28 (2026-11-10).
+
+**Source:** `drawer.py` (`_rendered_axis_labels`, `_default_shared_axis_title`, 1-D and 2-D facet coordinators)
+
+---
+
+## AD-2/13.108.DF — One Figure legend instead of identical per-cell legends (D108-B)
+
+**Phase:** 13.108.DF | **Date:** 2026-11-10 | **Original notation:** D108-B
+
+**Decision:** When the per-cell legends of a faceted profile name the same identities, one Figure legend replaces them by default. It keeps every identity the cells named (groups, expressions, quantile levels). No legend is added where the cells draw none (band mode). Group intervals resolved separately in each cell (facet-local `group_by_bins` / `group_by_quantiles`) keep their per-cell legends, because the same colour means a different interval in each cell. An existing global group legend (PHASE_13_94 / 13_95) is kept and completed with the quantile levels the cells draw. Explicit `legend=` / `show_legend=` values always win.
+
+**Ratification:** Architect decision above; proposal review GPT28 (2026-11-10).
+
+**Source:** `drawer.py` (`_default_shared_legend_allowed`, `_compose_facet_semantic_legend`)
+
+---
+
+## AD-3/13.108.DF — Same defaults for the faceted `hist2d+profile` overlay (D108-C)
+
+**Phase:** 13.108.DF | **Date:** 2026-11-10 | **Original notation:** D108-C
+
+**Decision:** AD-1 and AD-2/13.108.DF also apply to the faceted `hist2d+profile` overlay. `legend=` is accepted in all its modes on this route (`'shared'` and the dict form go to the Figure composer; `'all'`, `'first'`, `'none'`, `False` to the per-cell legend handling). Each cell keeps its own density colorbar and its own axis limits. `quantile_mode` is accepted and checked before any Figure is created.
+
+**Ratification:** Architect decision above; proposal review GPT28 (2026-11-10).
+
+**Source:** `drawer.py` (faceted overlay route), `plots/profile.py`
+
+---
+
+## AD-4/13.108.DF — Quantile levels keep their identity in every label (D108-D)
+
+**Phase:** 13.108.DF | **Date:** 2026-11-10 | **Original notation:** D108-D
+
+**Decision:** A quantile level is named by its value, with six significant digits by default (0.05 → `q=5%`, 0.101 → `q=10.1%`); round levels keep their old text. Levels shown together never share a name: digits are added only where two different levels would otherwise print the same. `median` names exactly 0.5 and nothing else. The shared Figure legend matches quantile lines by their numeric level, not by their text. The quantile estimator is unchanged.
+
+**Ratification:** Architect decision above; proposal review GPT28 (2026-11-10). Generalised in v0.2 after the PRECOMMIT review (GPT29 consolidated, finding P1-108-01) to every place that writes a number as a name (quantile labels, the automatic title, numeric bin names).
+
+**Source:** `plots/_numeric_labels.py`, `plots/profile.py`, `plots/_auto_title.py`, `drawer.py`
+
+---
+
 ## Phase TS_v6 — Technical Summary v6 governance cycle (AD-1/TS_v6.DF to AD-2/TS_v6.DF)
 
 **Phase trigger:** Multi-session restructure of `dfdraw_Technical_Summary.md` (v6.0 → v6.3) and `dfdraw_PLOTTING_LIBRARY_COMPARISON.md` (v1.2 → v2.1) to align with the architect's December 2025 dfextensions presentation and 2026-06-05 verbal context. Cycle close formalized retroactively per GP-9.
@@ -2046,7 +2106,8 @@ adf.draw("dyp_I0:row", group_by="sec", color="red")
 
 ---
 
-*dfdraw ARCHITECT_DECISIONS.md v1.1.0 — 2026-06-06*
+*dfdraw ARCHITECT_DECISIONS.md v1.2.0 — 2026-11-10*
+*v1.2.0 — 2026-11-10 (PHASE_13_108_DF: AD-1/13.108.DF to AD-4/13.108.DF, Architect decision D108-A–D)*
 *v1.0 / v1.0.1 — 2026-06-04 (Org panel convergent touch-ups: header, AD-37/50 supersession, GP transitional authority, GP Date fields, About additions)*
 *v1.1.0 — 2026-06-06 (TS v6 governance cycle: GP-9 added, AD-1/TS_v6.DF + AD-2/TS_v6.DF added; panel: Sonnet56 [!] + Sonnet57 [!] + Opus1 [Main Reviewer] + architect direct intervention on GP-9 substantive-threshold definition)*
 *Legacy AD-1..AD-82: Sonnet56 (verbatim text) + Sonnet57 (source refs at HEAD 07606c02)*

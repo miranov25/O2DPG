@@ -19,6 +19,10 @@ from .style import get_style, get_style_value
 # inside draw_profile() only).
 from .plots.profile import _format_interval_label, _interval_sort_key
 from .plots.profile import _quantile_percent_text
+# PHASE_13_108 v0.2: numbers written as names keep their identity.
+from .plots._numeric_labels import (is_median_level, interval_labels,
+                                    map_interval_labels,
+                                    quantile_percent_labels)
 from .plots._facet_label_format import (
     normalize_facet_label_format, validate_facet_label_dimensions,
     facet_label_format_is_legacy, format_facet_dimension,
@@ -66,14 +70,15 @@ def _scope_group_domain(df, group_by, bins=None, quantiles=None):
     values = df[group_by].astype(np.float32) if df[group_by].dtype == np.float16 else df[group_by]
     classified = (pd.cut(values, bins=bins) if bins is not None else
                   pd.qcut(values, q=quantiles, duplicates='drop'))
-    identities = [str(_format_interval_label(v)) for v in classified.cat.categories]
-    if len(identities) != len(set(identities)):
-        raise ValueError('group_by interval labels are not unique at display precision')
+    # PHASE_13_108 v0.2: distinct bins always get distinct names (more
+    # decimals where needed) instead of the former refusal.
+    names = interval_labels(classified.cat.categories)
+    identities = [names[v] for v in classified.cat.categories]
     column = '__dfdraw_group_scope__'
     while column in df.columns:
         column += '_'
     frame = df.copy()
-    frame[column] = classified.map(_format_interval_label)
+    frame[column] = classified.map(names)
     return frame, column, identities
 
 
@@ -142,28 +147,33 @@ def _scope_figure_legend(fig, axes, identities, *, explicit_color=None,
 _FACET_DEFAULT_PRESENTATION_KINDS = ('profile', 'overlay')
 
 
-def _rendered_axis_labels(axes, axis, last_line=False):
+def _rendered_axis_labels(axes, axis):
     """Distinct non-empty axis labels as rendered by the visible cells.
 
-    ``last_line`` drops a leading facet heading that the legacy 2-D left-edge
-    cells put in front of the Y label ('row=value\n<label>').
+    The legacy 2-D left-edge cells put a 'row=value' line in front of their
+    Y label; they keep the original label in ``_dfdraw_semantic_ylabel``
+    and that original is used, whole (PHASE_13_108 v0.2: no line of a
+    multi-line title is ever dropped).
     """
     labels = []
     for ax in axes:
         if not ax.get_visible():
             continue
-        text = ax.get_xlabel() if axis == 'x' else ax.get_ylabel()
-        if last_line and text:
-            text = text.split('\n')[-1]
+        if axis == 'x':
+            text = ax.get_xlabel()
+        else:
+            text = getattr(ax, '_dfdraw_semantic_ylabel', None)
+            if text is None:
+                text = ax.get_ylabel()
         if text and text not in labels:
             labels.append(text)
     return labels
 
 
-def _default_shared_axis_title(axes, axis, last_line=False):
+def _default_shared_axis_title(axes, axis):
     """D108-A: the shared title if every visible cell renders the same label
     on this axis, otherwise None (the axis keeps its per-cell titles)."""
-    labels = _rendered_axis_labels(axes, axis, last_line=last_line)
+    labels = _rendered_axis_labels(axes, axis)
     return labels[0] if len(labels) == 1 else None
 
 
@@ -174,13 +184,19 @@ def _default_shared_legend_allowed(fig, axes, *, group_by, plot_kwargs,
     * only legends that exist are replaced; none is added (band mode and
       plain profiles draw no legend and get none);
     * a Figure legend that already exists (PHASE_13_94/13_95 global owners)
-      is left alone;
+      is left alone, unless the cells draw named quantile levels that it
+      does not show: then it is completed exactly as an explicit
+      ``legend='shared'`` completes it (PHASE_13_108 v0.2; before, the
+      1-D global group legend never named the quantile lines);
     * group intervals resolved separately in each facet (``group_by_bins`` /
       ``group_by_quantiles`` without global scope) mean different things in
       different cells, so their per-cell legends stay.
     """
     if fig.legends:
-        return False
+        return any(getattr(line, '_dfdraw_quantile', None) is not None
+                   or (getattr(line, '_dfdraw_facet_semantic', None)
+                       or {}).get('kind') == 'quantile'
+                   for ax in axes if ax.get_visible() for line in ax.lines)
     if not any(ax.get_legend() is not None for ax in axes if ax.get_visible()):
         return False
     if (group_by is not None and global_groups is None
@@ -266,23 +282,60 @@ def _compose_facet_semantic_legend(fig, axes, *, expressions=(),
             chosen.append((handle, label))
             used.add(label)
 
+    # PHASE_13_108 v0.2: the Figure legend replaces the cell legends, so it
+    # keeps every identity they named.  Group names of a grouped profile
+    # with discrete quantiles were dropped by v0.1 (only the quantile
+    # entries were kept, so the group colours lost their names).  Quantile
+    # entries are composed below by their numeric level.
+    if not expressions:
+        quantile_names = set()
+        if quantiles:
+            quantile_names = {('median' if is_median_level(q) else f'q={text}')
+                              for q, text in
+                              quantile_percent_labels(quantiles).items()}
+        for ax in axes:
+            cell_legend = ax.get_legend()
+            if cell_legend is None:
+                continue
+            for text in cell_legend.get_texts():
+                label = text.get_text()
+                if (not label or label.startswith('_') or label in used
+                        or label in quantile_names):
+                    continue
+                handle = next((h for h, candidate in rendered
+                               if candidate == label), None)
+                if handle is not None:
+                    chosen.append((handle, label))
+                    used.add(label)
+
     # Quantile styles must be drawn, not constructed from assumed line colors.
     # Preserve first actually rendered instance of each semantic quantile,
     # independently of sparse panels and repeated expression branches.
     if quantiles:
+        # PHASE_13_108 v0.2: identity is the numeric level, not its text.
+        # Names come from the whole requested set, so different levels
+        # never share one; 'median' is exactly 0.5.
+        q_names = quantile_percent_labels(quantiles)
+        tagged = [line for ax in axes for line in ax.lines
+                  if getattr(line, '_dfdraw_quantile', None) is not None]
+        used_levels = set()
         for q in quantiles:
             q = float(q)
-            label = ('median' if abs(q - .5) < 1e-12
-                     else f'q={_quantile_percent_text(q)}')
+            if q in used_levels:
+                continue
+            label = ('median' if is_median_level(q)
+                     else f'q={q_names[q]}')
             # Authoritative grouped-quantile identity takes priority over
             # anonymous Matplotlib labels. No quantile proxy is invented:
             # every handle below is an actual Line2D drawn by profile.py.
             grouped_source = [h for h, semantic in semantic_lines
                               if semantic.get('kind') == 'quantile'
-                              and abs(semantic.get('quantile', -1.) - q) < 1e-12]
+                              and semantic.get('quantile') == q]
             source = (grouped_source or
+                      [line for line in tagged if line._dfdraw_quantile == q] or
                       [h for h, candidate in rendered if candidate == label])
             if source and label not in used:
+                used_levels.add(q)
                 # A vector quantile's color can differ between its expression
                 # branches. Represent both *actual* rendered styles under
                 # one semantic quantile label, rather than showing a single
@@ -5627,7 +5680,7 @@ class DFDraw:
                     )
                 # Phase 13.32.DF v1.2 P2 (collision-safe): __dfdraw_*__ sentinel
                 # name avoids collision with any user column.
-                _effective_df['__dfdraw_group_bin__'] = intervals.map(_format_interval_label)
+                _effective_df['__dfdraw_group_bin__'] = map_interval_labels(intervals)
                 _effective_group_col = '__dfdraw_group_bin__'
 
             # Pop group_by too — facet_by='group_by' means the facet IS the
@@ -5703,7 +5756,7 @@ class DFDraw:
                     intervals = pd.qcut(
                         _effective_df[facet_by], q=_fby_quantiles, duplicates='drop'
                     )
-                _effective_df['__dfdraw_facet_bin__'] = intervals.map(_format_interval_label)
+                _effective_df['__dfdraw_facet_bin__'] = map_interval_labels(intervals)
                 _effective_facet_col = '__dfdraw_facet_bin__'
             # Replace df + facet_by for the rest of dispatch:
             df = _effective_df
@@ -6912,6 +6965,9 @@ class DFDraw:
                         ax_ij.set_title(f"{col_col}={col_display_values[j]}", fontsize=10)
                     if j == 0:
                         cur_ylabel = ax_ij.get_ylabel()
+                        # PHASE_13_108 v0.2: keep the original label whole
+                        # for the shared Figure title.
+                        ax_ij._dfdraw_semantic_ylabel = cur_ylabel
                         ax_ij.set_ylabel(f"{row_col}={row_display_values[i]}\n{cur_ylabel}".rstrip())
         
         if title:
@@ -6956,8 +7012,8 @@ class DFDraw:
                 fontsize=11)
         # PHASE_13_108_DF: default presentation (D108-A/B), as for 1-D facets.
         # The legacy left-edge Y label carries a 'row=value' first line; the
-        # semantic label is its last line (row identity moves to the row
-        # headings that the shared Y title already adds).
+        # cell keeps its original label (``_dfdraw_semantic_ylabel``) and the
+        # row identity moves to the row headings that the shared Y title adds.
         _visible_cells = [ax for ax in axes.flat if ax.get_visible()]
         if (plot_kind in _FACET_DEFAULT_PRESENTATION_KINDS
                 and len(_visible_cells) >= 2):
@@ -6965,7 +7021,7 @@ class DFDraw:
                     _visible_cells, 'x') is not None):
                 shared_xlabel = True
             if (shared_ylabel is None and _default_shared_axis_title(
-                    _visible_cells, 'y', last_line=True) is not None):
+                    _visible_cells, 'y') is not None):
                 shared_ylabel = True
             if _facet_legend_spec is None and _default_shared_legend_allowed(
                     fig, _visible_cells, group_by=group_by,
@@ -7023,9 +7079,10 @@ class DFDraw:
         if shared_ylabel:
             # The legacy left-edge cell ylabel embeds 'row_dim=value\n'.
             # Semantic Figure labels must never inherit that facet heading.
-            # PHASE_13_108 (review R4): use the rendered semantic line, so
-            # AliasDataFrame titles survive, as for the X title.
-            _rendered_y = _rendered_axis_labels(axes.flat, 'y', last_line=True)
+            # PHASE_13_108 (review R4): use the rendered semantic label, so
+            # AliasDataFrame titles survive, as for the X title; v0.2: the
+            # whole original label, every line.
+            _rendered_y = _rendered_axis_labels(axes.flat, 'y')
             label = (shared_ylabel if isinstance(shared_ylabel, str)
                      else (_rendered_y[0] if _rendered_y else None)
                      or plot_kwargs.get('ylabel') or str(y_expr or ''))
