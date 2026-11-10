@@ -1133,7 +1133,8 @@ HISTORICAL_GATES = {
     "I4-REAL-INJECTED-TRUTH-VECTOR-OVERLAY-EAGER-20PCT-01": (
         ("declared", "counts", 0, 0, r"^(dcar_\w+|known_delta) count$"),
         ("declared", "profile_means", 1e-9, 1e-8, r"^(dcar_\w+|known_delta) mean$"),
-        ("internal", "exactly four branch stats", 0, 0, r"^number of vector branches$")),
+        ("internal", "exactly four branch stats", 0, 0, r"^number of vector branches$"),
+        ("internal", "vector branch i x_center", 1e-9, 1e-8, r"^(dcar_\w+|known_delta) bin centres$")),
     "I4-REAL-INJECTED-TRUTH-DIRECT-DELTA-EAGER-20PCT-01": (
         ("declared", "delta_values", 1e-9, 1e-8, r"^delta values$"),),
     "I4-REAL-INJECTED-TRUTH-SELECTION-DELTA-FACET-EAGER-20PCT-01": (
@@ -1293,7 +1294,7 @@ CASES = [
          "G12.46 four-branch bracket vector: original, clean-distorted, noisy, known_delta",
          aliases=INJECTED_ALIASES, fixture=injected_noise_is_declared,
          expect=(Branches(4),)
-                + tuple(Profile(y, SELECTED, **SECTOR_BINS, plotted=branch(i))
+                + tuple(Profile(y, SELECTED, **SECTOR_BINS, plotted=branch(i), edges_tol=SAME_VALUES)
                         for i, y in enumerate(["dcar_tpc_vertex", "dcar_distorted_clean", "dcar_oracle", "known_delta"]))),
     Case("I4-REAL-INJECTED-TRUTH-DIRECT-DELTA-EAGER-20PCT-01", G.fig47_injected_truth_direct_delta,
          "G12.47 normalize=delta of clean-distorted minus original recovers known_delta",

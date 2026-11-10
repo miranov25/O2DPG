@@ -845,6 +845,21 @@ def test_FIX1_mutant_extra_vector_branch_is_red(case_id):              # old: "e
     assert r.failure_level == "L2" and "number of vector branches" in r.detail
 
 
+# S3-FIX2 (review finding S3-C01): the old harness checked the x centres of each of the four fig46 branches at
+# 1e-9 / 1e-8. One branch shifted by +0.25 must be red at that branch's bin centres; on the S3-FIX1 bytes it passed.
+FIG46_BRANCHES = ["dcar_tpc_vertex", "dcar_distorted_clean", "dcar_oracle", "known_delta"]
+
+
+@pytest.mark.parametrize("i", range(4))
+def test_FIX2_mutant_fig46_branch_x_centres_shifted_is_red(i):
+    adf = make_adf()
+    drawn = G.fig46_injected_truth_vector_overlay(adf)
+    table = drawn[2][i]["profile_data"]
+    table["x_center"] = table["x_center"] + 0.25
+    r = red(adf, "I4-REAL-INJECTED-TRUTH-VECTOR-OVERLAY-EAGER-20PCT-01", drawn)
+    assert r.failure_level == "L2" and f"{FIG46_BRANCHES[i]} bin centres" in r.detail
+
+
 # ------------------------------------------------------------------ S3-FIX1: the historical-parity table and its guard
 def test_FIX1_parity_table_has_the_66_declared_old_observables_of_the_21_migrated_cases():
     rows = [(c, row) for c, gates in T.HISTORICAL_GATES.items() for row in gates]
@@ -858,7 +873,9 @@ def test_FIX1_parity_holds_for_every_case_on_the_honest_frame(tmp_path, monkeypa
     code = T.run_cases(make_adf(), list(T.CASES), pdf_path=None, manifest_path=str(tmp_path / "m.json"),
                        provenance={"sample_mode": "FULL"})
     parity = json.load(open(tmp_path / "m.json"))["historical_parity"]
-    assert code == 0 and parity["ok"] and parity["checked"] == len(parity["rows"]) == 84
+    assert code == 0 and parity["ok"] and parity["checked"] == len(parity["rows"]) == 85
+    fig46 = [row for row in parity["rows"] if row["old"] == "vector branch i x_center"]
+    assert len(fig46) == 1 and fig46[0]["n_new"] == 4                   # one comparison per branch
 
 
 def run_with(case_id: str, kind: type, edit=None) -> T.CaseResult:
