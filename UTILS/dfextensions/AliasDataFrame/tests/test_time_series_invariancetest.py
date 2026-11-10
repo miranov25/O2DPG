@@ -4,7 +4,9 @@
   * every deliberate breakage turns the case red at the right owner level;
   * one negative control per review correction (F-S2-01 ... F-S2-08, D18, D19, C1 ... C8), each shown
     red on the previous bytes before the fix and green afterwards (CRR v0.4 §3, CRR v0.6 §3);
-  * the truth engine agrees with plain NumPy and with dfdraw's bin-edge rule.
+  * the truth engine agrees with plain NumPy and with dfdraw's bin-edge rule;
+  * S3-FIX1: one mutant per restored historical gate, accepted by the pre-fix checker and red now, and the
+    historical-parity guard (HISTORICAL_GATES) red when a tolerance is weakened or a check is dropped.
 No ROOT data file is needed; real-data runs go through run_gallery.sh on alma2.
 """
 from __future__ import annotations
@@ -759,13 +761,154 @@ def test_B2_branch_style_differs_between_facets_is_red_at_L3():
     assert r.failure_level == "L3" and "branch styles" in r.detail
 
 
+# ------------------------------------------------------------------ S3-FIX1: mutants the previous checker accepted
+# Each test below uses only names that exist in the pre-fix module too, so against those bytes it is RED with
+# "DID NOT RAISE": the old checker accepted the mutant. Against the fixed module it is GREEN: the case is red at the
+# named comparison, at the plotted-result (L2) or public-call (L3) level.
+C1_CASE = "PRECLEAN-C1-HIST-VECTOR-FACET-ACCEPTANCE-EAGER-20PCT-01"
+
+
+def test_FIX1_mutant_C2_bin_centre_0_moved_by_5e13_is_red():           # historical 1e-14 absolute, was 1e-12
+    adf = make_adf()
+    drawn = G.fig56_preclean_draw_figures_effective_defaults(adf)
+    table = drawn[2]["stats"]["normalize_data"]
+    assert table.loc[0, "x_center"] == 0.0
+    table.loc[0, "x_center"] = 5e-13
+    assert "delta bin centres" in red(adf, C2, drawn).detail
+
+
+def test_FIX1_mutant_C3_bin_centre_0_moved_by_5e13_is_red():
+    adf = make_adf()
+    drawn = G.fig57_preclean_ratio_y_vector_truth(adf)
+    table = drawn[2]["normalize_data"]
+    assert table.loc[0, "x_center"] == 0.0
+    table.loc[0, "x_center"] = 5e-13
+    assert "ratio bin centres" in red(adf, C3, drawn).detail
+
+
+def test_FIX1_mutant_C3_signal_central_off_by_1p5e12_is_red():         # historical 1e-12 absolute, was 2e-12
+    adf = make_adf()
+    drawn = G.fig57_preclean_ratio_y_vector_truth(adf)
+    table = drawn[2]["normalize_data"]
+    i = table.index[table["signal_count"].to_numpy() > 0][0]
+    table.loc[i, "signal_central"] += 1.5e-12 + 1e-12 * abs(table.loc[i, "signal_central"])
+    r = red(adf, C3, drawn)
+    assert r.failure_level == "L2" and "ratio signal central" in r.detail
+
+
+def test_FIX1_mutant_O4_draw_figures_bin_centre_moved_by_5e13_is_red():  # historical 1e-14/1e-12, was 1e-12/1e-10
+    adf = make_adf()
+    drawn = G.fig45_public_surface_equivalence_oracle(adf)
+    table = drawn[2]["surface_stats"]["draw_figures"]["normalize_data"]
+    table.loc[14, "x_center"] += 5e-13                                   # the bin centred at -0.05
+    r = red(adf, O4, drawn)
+    assert r.failure_level == "L3" and "draw_figures x_center == draw" in r.detail
+
+
+def test_FIX1_mutant_O4_draw_batch_count_not_equal_is_red():            # historical exact, was approximate
+    adf = make_adf()
+    drawn = G.fig45_public_surface_equivalence_oracle(adf)
+    table = drawn[2]["surface_stats"]["draw_batch"]["normalize_data"]
+    table["signal_count"] = table["signal_count"].astype(float)
+    table.loc[table.index[table["signal_count"].to_numpy() > 0][0], "signal_count"] += 1e-9
+    r = red(adf, O4, drawn)
+    assert r.failure_level == "L3" and "draw_batch signal_count == draw" in r.detail
+
+
+@pytest.mark.parametrize("case_id, facets", [(C1_CASE, lambda d: d[1]["facets"]), (HIST_FACETS, lambda d: d[1])])
+def test_FIX1_mutant_facet_titles_swapped_is_red(case_id, facets):     # old: "never trust subplot order"
+    adf = make_adf()
+    drawn = case(case_id).draw(adf)
+    first, second = np.asarray(facets(drawn), dtype=object).reshape(-1)[:2]
+    first_title, second_title = first.get_title(), second.get_title()
+    first.set_title(second_title)
+    second.set_title(first_title)
+    r = red(adf, case_id, drawn)
+    assert r.failure_level == "L2" and "histogram ncl side_type=0" in r.detail
+
+
+def test_FIX1_mutant_C1_facet_title_duplicated_is_red():
+    adf = make_adf()
+    drawn = G.fig55_preclean_hist_vector_facet_acceptance(adf)
+    np.asarray(drawn[1]["facets"], dtype=object).reshape(-1)[2].set_title("side_type=1")
+    r = red(adf, C1_CASE, drawn)
+    assert r.failure_level == "L2" and "facet panels (by title)" in r.detail
+
+
+@pytest.mark.parametrize("case_id", ["I4-REAL-INJECTED-TRUTH-VECTOR-OVERLAY-EAGER-20PCT-01",
+                                     "I4-REAL-INJECTED-TRUTH-WEIGHTS-FACET-EAGER-20PCT-01", "ADF100-01", O2])
+def test_FIX1_mutant_extra_vector_branch_is_red(case_id):              # old: "expected N branches"
+    adf = make_adf()
+    drawn = case(case_id).draw(adf)
+    drawn[2].append(drawn[2][-1])
+    r = red(adf, case_id, drawn)
+    assert r.failure_level == "L2" and "number of vector branches" in r.detail
+
+
+# ------------------------------------------------------------------ S3-FIX1: the historical-parity table and its guard
+def test_FIX1_parity_table_has_the_66_declared_old_observables_of_the_21_migrated_cases():
+    rows = [(c, row) for c, gates in T.HISTORICAL_GATES.items() for row in gates]
+    assert sum(row[0] == "declared" for _, row in rows) == 66
+    migrated = {c.case_id for c in T.CASES} - {REFUSAL}
+    assert set(T.HISTORICAL_GATES) == migrated and len(migrated) == 21
+
+
+def test_FIX1_parity_holds_for_every_case_on_the_honest_frame(tmp_path, monkeypatch):
+    monkeypatch.setitem(T.RUN_CONTEXT, "gallery", {"ok": True, "pages": 59})
+    code = T.run_cases(make_adf(), list(T.CASES), pdf_path=None, manifest_path=str(tmp_path / "m.json"),
+                       provenance={"sample_mode": "FULL"})
+    parity = json.load(open(tmp_path / "m.json"))["historical_parity"]
+    assert code == 0 and parity["ok"] and parity["checked"] == len(parity["rows"]) == 84
+
+
+def run_with(case_id: str, kind: type, edit=None) -> T.CaseResult:
+    """Run one case with its declarations of type `kind` changed by `edit`, or dropped when edit is None."""
+    import dataclasses
+    the_case = case(case_id)
+    expect = tuple(s if not isinstance(s, kind) else edit(s) for s in the_case.expect
+                   if edit is not None or not isinstance(s, kind))
+    return T.run_case(make_adf(), dataclasses.replace(the_case, expect=expect), pdf=None, page_counter=[0])
+
+
+def test_FIX1_parity_guard_reports_a_weakened_tolerance():
+    import dataclasses
+    r = run_with(C3, T.Delta, lambda s: dataclasses.replace(s, signal_tol=T.C3_REFERENCE))   # the pre-fix C3 setting
+    parity = T.historical_parity([r])
+    assert r.status == T.PASS and not parity["ok"]
+    assert parity["failed"] == [f"{C3} signal_central: WEAKER"]
+
+
+def test_FIX1_parity_guard_reports_approximate_counts_across_surfaces():
+    import dataclasses
+    r = run_with(O4, T.SameAcrossSurfaces, lambda s: dataclasses.replace(s, columns={c: T.O4 for c in s.columns}))
+    failed = T.historical_parity([r])["failed"]                                           # the pre-fix O4 setting
+    assert r.status == T.PASS and sorted(failed) == sorted(f"{O4} {n}: WEAKER" for n in (
+        "x_center", "signal_count", "reference_count", "mask_undefined"))
+
+
+def test_FIX1_parity_guard_reports_a_dropped_check():
+    r = run_with(C1_CASE, T.FacetPanels)
+    assert r.status == T.PASS and T.historical_parity([r])["failed"] == [f"{C1_CASE} facet_identities: MISSING"]
+
+
+def test_FIX1_parity_failure_fails_the_strict_gate(tmp_path, monkeypatch):
+    import dataclasses
+    weakened = dataclasses.replace(case(C3), expect=tuple(
+        dataclasses.replace(s, signal_tol=T.C3_REFERENCE) if isinstance(s, T.Delta) else s for s in case(C3).expect))
+    code = T.run_cases(make_adf(), [weakened], pdf_path=None, manifest_path=str(tmp_path / "m.json"),
+                       provenance={}, mandatory=())
+    rec = json.load(open(tmp_path / "m.json"))["reconciliation"]
+    assert code == 1 and rec["gating"] == [] and rec["historical_parity_failed"] == [f"{C3} signal_central: WEAKER"]
+
+
 # ------------------------------------------------------------------ manifest consumed by run_gallery.sh / parity
 def test_manifest_has_the_fields_the_consumers_read(tmp_path, monkeypatch):
     monkeypatch.setitem(T.RUN_CONTEXT, "gallery", {"ok": True, "pages": 59})
     code = T.run_cases(make_adf(), list(T.CASES), pdf_path=str(tmp_path / "p.pdf"),
                        manifest_path=str(tmp_path / "m.json"), provenance={"sample_mode": "FULL"})
     manifest = json.load(open(tmp_path / "m.json"))
-    assert code == 0 and set(manifest) >= {"cases", "provenance", "reconciliation", "schema_version"}
+    assert code == 0 and set(manifest) >= {"cases", "provenance", "reconciliation", "schema_version", "historical_parity"}
+    assert manifest["historical_parity"]["ok"] and manifest["reconciliation"]["historical_parity_failed"] == []
     rec = manifest["reconciliation"]
     assert rec["n_declared"] == rec["n_selected"] == rec["n_results"] == len(T.CASES) and rec["selection"] == "ALL"
     assert rec["missing_mandatory"] == []

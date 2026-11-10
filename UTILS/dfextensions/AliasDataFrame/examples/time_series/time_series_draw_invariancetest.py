@@ -13,6 +13,8 @@ HOW TO READ THIS FILE (navigation note, ~2 minutes)
                 SameStyleAcrossFacets: each vector branch keeps its style in every facet (L3)
                 Flag:           a property the gallery function reports must be True  (L3)
                 Histogram(...): per-bin counts or weighted sums of a plotted histogram   (L2)
+                Branches(n):    exactly n vector branches were plotted                  (L2)
+                FacetPanels:    the facet panels, found by their titles, each once     (L2)
                 GaussFit(...):  centre and width of a plotted Gaussian fit             (L2)
                 FacetQuantiles: each panel's quantile lines vs np.percentile per cell   (L2)
                 Legend / Headings: the figure's shared legend and outer facet headings  (L3)
@@ -33,6 +35,8 @@ HOW TO READ THIS FILE (navigation note, ~2 minutes)
         13_105    the declared cases of this file
     NOT_YET_MIGRATED lists the historical case IDs still owned by the old harness; the audit in
     run_gallery.sh checks that every old case is either PASS here or on that list, never both.
+    HISTORICAL_GATES lists every gating assertion of the old harness for a migrated case with its old
+    tolerance; each run checks that a new comparison carries it at that tolerance or stricter.
   * After each case the PDF gets an EVIDENCE page: verdict, owner, and every comparison with its
     worst difference and tolerance, so a reviewer sees the plot and the numbers side by side.
 
@@ -93,10 +97,13 @@ HIST_WEIGHTED = Tol("weighted histogram sums, float64", 1e-8, 1e-10)            
 F16_MEAN = Tol("float16 source summation", 3e-5, 2e-4)                             # historical ADF101 cases
 F16_QUANTILE = Tol("float16 source, linear quantile interpolation", 3e-4, 2e-4)
 F16_EDGE = Tol("float16 x expression promotion", 2e-3, 0.0)
-HIST12 = Tol("same float64 values, historical 1e-12", 1e-12, 1e-12)               # o5, C2
+HIST12 = Tol("same float64 values, historical 1e-12", 1e-12, 1e-12)               # o5, C2, C3 signal
+# bin centres are (low + high) / 2 of the declared edges: the historical C2/C3/O4 gate keeps the absolute
+# part at 1e-14, so a centre of 0.0 that moved by 5e-13 is a failure, not a rounding difference.
+BIN_CENTRES = Tol("bin centres of the declared edges, historical C2/C3/O4", 1e-14, 1e-12)
 O4 = Tol("same request, historical o4", 1e-12, 1e-10)
 C3_RATIO = Tol("ratio of float64 means, historical C3", 2e-13, 2e-13)
-C3_CENTRAL = Tol("float64 means, historical C3", 2e-12, 1e-12)
+C3_REFERENCE = Tol("float64 reference means, historical C3", 2e-12, 1e-12)        # the signal side keeps HIST12
 O2_VALUE = Tol("weighted sums/mean/std/sem, historical o2", 1e-7, 5e-6)
 FIT10 = Tol("same fit from two public calls, historical o2", 1e-10, 1e-10)
 # golden noise values come from an independent implementation; libm cos/sqrt may differ by 1 ulp.
@@ -180,9 +187,11 @@ class Delta:
     signal: Profile
     reference: Profile
     plotted: Callable[[Any], list]           # drawn -> [(group label, normalize table), ...]
-    tol: Tol = SAME_VALUES
+    tol: Tol = SAME_VALUES                   # the plotted difference or ratio
     kind: str = "delta"
-    central_tol: Tol | None = None           # tolerance of signal/reference centrals; None = same as tol
+    signal_tol: Tol | None = None            # signal central values (and plotted signal line); None = tol
+    reference_tol: Tol | None = None         # reference central values (and plotted reference line); None = tol
+    centres_tol: Tol = BIN_CENTRES           # x_center against the declared edges
     plotted_lines: Callable[[Any], dict] | None = None   # drawn -> {group: [(x, y) signal line, (x, y) reference line]}
 
 
@@ -199,10 +208,10 @@ class RowCounts:
 
 @dataclasses.dataclass(frozen=True)
 class SameAcrossSurfaces:
-    """The same request through draw, draw_batch and draw_figures gives the same table, column by column."""
-    columns: tuple
+    """The same request through draw, draw_batch and draw_figures gives the same table, column by column,
+    each column with its own tolerance (counts and masks exact)."""
+    columns: dict                            # {column: Tol}
     plotted: Callable[[Any], dict]           # drawn -> {surface: table}
-    tol: Tol = O4
 
 
 @dataclasses.dataclass(frozen=True)
@@ -241,6 +250,21 @@ class Histogram:
     plotted: Callable[[Any], Any]            # drawn -> the plotted bar heights
     weights: str | None = None
     tol: Tol = EXACT
+    label: str = ""                          # which plotted series, e.g. "side_type=1 early"
+
+
+@dataclasses.dataclass(frozen=True)
+class Branches:
+    """The plotted result has exactly `n` vector branches; an extra or a dropped branch is a failure (L2)."""
+    n: int
+
+
+@dataclasses.dataclass(frozen=True)
+class FacetPanels:
+    """The panels titled 'side_type=N' show exactly the facets `want`, each once. Panels are found by their
+    title, never by their position (L2)."""
+    want: tuple
+    axes: Callable[[Any], Any]               # drawn -> the facet axes
 
 
 @dataclasses.dataclass(frozen=True)
@@ -325,14 +349,27 @@ def first_fit(stats) -> dict:
     return record if isinstance(record, dict) else {}
 
 
+def titled_facets(axes) -> list:
+    """[(facet value, axes)] of every panel titled 'side_type=N', in drawing order; duplicates are kept."""
+    found = []
+    for ax in np.asarray(axes, dtype=object).reshape(-1):
+        match = re.search(r"side_type=([^\s]+)", ax.get_title()) if ax is not None else None
+        if match is not None:
+            found.append((int(float(match.group(1))), ax))
+    return found
+
+
+def facet_panel(axes, value: int):
+    """The one panel titled 'side_type=<value>'; none or two of them is a failure of what was plotted (L2)."""
+    found = [ax for g, ax in titled_facets(axes) if g == value]
+    if len(found) != 1:
+        raise CheckFailure("L2", f"{len(found)} panels titled side_type={value}")
+    return found[0]
+
+
 def facet_panels(drawn) -> dict:
     """{facet value: axes} for the panels titled 'side_type=N' (upper panels of a faceted normalize figure)."""
-    panels = {}
-    for ax in drawn[0].axes:
-        match = re.search(r"side_type=([^\s]+)", ax.get_title())
-        if match is not None:
-            panels[int(float(match.group(1)))] = ax
-    return panels
+    return dict(titled_facets(drawn[0].axes))
 
 
 def profile_lines(ax) -> list:
@@ -530,10 +567,10 @@ def check_profile(t: pd.DataFrame, spec: Profile, drawn, result: CaseResult) -> 
     truth = truth_profile(t, spec)
     plotted = spec.plotted(drawn)
     labels = [str(g) if spec.by_bins else int(float(g)) for g, _ in plotted]
-    compare_labels(result, f"{spec.y} groups of {spec.by}", labels, list(truth), "L2")
+    compare_labels(result, f"{spec.y} groups of {spec.by or 'the whole selection'}", labels, list(truth), "L2")
     for label, (_, table) in zip(labels, plotted):
         count, sum_w, mean, std, sem = truth[label]
-        tag = f"{spec.y} {spec.by}={label}" + (f" weights={spec.weights}" if spec.weights else "")
+        tag = spec.y + (f" {spec.by}={label}" if spec.by else "") + (f" weights={spec.weights}" if spec.weights else "")
         compare(result, f"{tag} count", table["count"], count, EXACT, "L2")
         if spec.weights:
             compare(result, f"{tag} sum of weights", table["sum_weights"], sum_w, spec.tol, "L2")
@@ -546,6 +583,7 @@ def check_profile(t: pd.DataFrame, spec: Profile, drawn, result: CaseResult) -> 
             edges = profile_edges(r[spec.x].astype(float), r[spec.y].astype(float), spec)
             got_edges = np.r_[np.asarray(table["x_low"], float), np.asarray(table["x_high"], float)[-1]]
             compare(result, f"{tag} bin edges", got_edges, edges, spec.edges_tol, "L2")
+            compare(result, f"{tag} bin centres", table["x_center"], (edges[1:] + edges[:-1]) / 2, spec.edges_tol, "L2")
 
 
 def check_delta(t: pd.DataFrame, spec: Delta, drawn, result: CaseResult) -> None:
@@ -570,23 +608,23 @@ def check_delta(t: pd.DataFrame, spec: Delta, drawn, result: CaseResult) -> None
                 np.where(undefined, np.nan, want), spec.tol, "L2")
         centres = table["x_center"] if "x_center" in table else table.get("bin_centers")
         if centres is not None:
-            compare(result, f"{tag} bin centres", centres, (edges[1:] + edges[:-1]) / 2, HIST12, "L2")
-        for side, n, m in (("signal", n_sig, m_sig), ("reference", n_ref, m_ref)):
+            compare(result, f"{tag} bin centres", centres, (edges[1:] + edges[:-1]) / 2, spec.centres_tol, "L2")
+        side_tols = (spec.signal_tol or spec.tol, spec.reference_tol or spec.tol)
+        for side, n, m, tol in zip(("signal", "reference"), (n_sig, n_ref), (m_sig, m_ref), side_tols):
             if f"{side}_count" in table:
                 compare(result, f"{tag} {side} count", table[f"{side}_count"], n, EXACT, "L2")
                 compare(result, f"{tag} {side} central", np.where(n > 0, np.asarray(table[f"{side}_central"], float), np.nan),
-                        m, spec.central_tol or spec.tol, "L2")
+                        m, tol, "L2")
         if spec.plotted_lines is not None:
-            check_overlay_lines(spec.plotted_lines(drawn).get(label, []), edges, m_sig, m_ref,
-                                spec.central_tol or spec.tol, tag, result)
+            check_overlay_lines(spec.plotted_lines(drawn).get(label, []), edges, m_sig, m_ref, side_tols, tag, result)
 
 
-def check_overlay_lines(lines: list, edges: np.ndarray, m_sig, m_ref, tol: Tol, tag: str, result: CaseResult) -> None:
+def check_overlay_lines(lines: list, edges: np.ndarray, m_sig, m_ref, tols: tuple, tag: str, result: CaseResult) -> None:
     """The two plotted overlay curves, put back on the bin grid (NaN where nothing is drawn), against the truth
     means; a point off the bin centres is a failure of what was plotted (L2)."""
     compare(result, f"{tag} number of overlay lines", len(lines), 2, EXACT, "L2")
     centres = (edges[1:] + edges[:-1]) / 2
-    for (x, y), side, want in zip(lines, ("signal", "reference"), (m_sig, m_ref)):
+    for (x, y), side, want, tol in zip(lines, ("signal", "reference"), (m_sig, m_ref), tols):
         index = np.abs(centres[None, :] - x[:, None]).argmin(axis=1) if x.size else np.zeros(0, int)   # nearest centre
         compare(result, f"{tag} {side} line x on bin centres", x, centres[index], HIST12, "L2")
         on_grid = np.full(len(centres), np.nan)
@@ -611,8 +649,8 @@ def check_same_across_surfaces(spec: SameAcrossSurfaces, drawn, result: CaseResu
     """draw_batch and draw_figures against draw, column by column (L3: the public call contract)."""
     tables = spec.plotted(drawn)
     for surface in ("draw_batch", "draw_figures"):
-        for column in spec.columns:
-            compare(result, f"{surface} {column} == draw", tables[surface][column], tables["draw"][column], spec.tol, "L3")
+        for column, tol in spec.columns.items():
+            compare(result, f"{surface} {column} == draw", tables[surface][column], tables["draw"][column], tol, "L3")
 
 
 def check_same_as_call(adf, spec: SameAsCall, drawn, result: CaseResult) -> None:
@@ -648,8 +686,18 @@ def check_histogram(t: pd.DataFrame, spec: Histogram, drawn, result: CaseResult)
         raise CheckFailure("L0", f"histogram selection keeps no rows for {spec.x}")
     want = np.histogram(x[keep], bins=np.linspace(*spec.range, spec.bins + 1),
                         weights=None if w is None else w[keep])[0]
-    tag = f"histogram {spec.x}" + (f" weights={spec.weights}" if spec.weights else "")
+    tag = f"histogram {spec.x}" + (f" weights={spec.weights}" if spec.weights else "") + (f" {spec.label}" if spec.label else "")
     compare(result, tag, spec.plotted(drawn), want, spec.tol, "L2")
+
+
+def check_branches(spec: Branches, drawn, result: CaseResult) -> None:
+    compare(result, "number of vector branches", len(drawn[2]), spec.n, EXACT, "L2")
+
+
+def check_facet_panels(spec: FacetPanels, drawn, result: CaseResult) -> None:
+    """Facet values read from the panel titles, sorted; a duplicated or missing title changes the list (L2)."""
+    compare_labels(result, "facet panels (by title)", sorted(g for g, _ in titled_facets(spec.axes(drawn))),
+                   sorted(spec.want), "L2")
 
 
 def quantile_label(q: float) -> str:
@@ -806,6 +854,10 @@ def evaluate(adf, case: Case, drawn, result: CaseResult) -> None:
             check_same_as_call(adf, spec, drawn, result)
         elif isinstance(spec, SameStyleAcrossFacets):
             check_same_style(spec, drawn, result)
+        elif isinstance(spec, Branches):
+            check_branches(spec, drawn, result)
+        elif isinstance(spec, FacetPanels):
+            check_facet_panels(spec, drawn, result)
         else:
             raise CheckFailure("H", f"unknown declaration {type(spec).__name__}")
     gating_levels = {c["level"] for c in result.comparisons if c["ok"] is not None}
@@ -898,15 +950,20 @@ def run_cases(adf, cases: list, *, pdf_path: str | None, manifest_path: str, pro
            "duplicated": sorted({i for i in declared if declared.count(i) > 1}),
            "gating": [r.case_id for r in results if r.status == FAIL],
            "not_executed": [r.case_id for r in results if r.status == SKIP], "input_identity_ok": input_ok}
+    parity = historical_parity(results)
+    rec["historical_parity_failed"] = parity["failed"]
     rec["exit_code"] = int(bool(rec["duplicated"] or rec["gating"] or rec["not_executed"] or not input_ok
-                                or missing_mandatory or rec["n_results"] != rec["n_selected"]))
+                                or missing_mandatory or rec["n_results"] != rec["n_selected"] or not parity["ok"]))
     with open(manifest_path, "w") as fh:
-        json.dump({"schema_version": "13.105-invariancetest-4", "provenance": provenance,
+        json.dump({"schema_version": "13.105-invariancetest-5", "provenance": provenance,
                    "cases": [dataclasses.asdict(r) for r in results], "reconciliation": rec,
+                   "historical_parity": parity,
                    "not_yet_migrated": list(NOT_YET_MIGRATED), "targets": provenance.get("targets", {})},
                   fh, indent=1, sort_keys=True, default=str)
     if missing_mandatory:
         print(f"FAIL  mandatory case(s) missing from the table: {missing_mandatory}")
+    print(f"HISTORICAL PARITY: {parity['checked']}/{len(parity['rows'])} old gates carried at their old tolerance "
+          f"or stricter" + ("" if parity["ok"] else f"  FAILED: {parity['failed']}"))
     gate = ("PASS" if rec["exit_code"] == 0 else "FAIL") + ("" if selection is None else f" (SUBSET {len(chosen)}/{len(declared)})")
     print(f"cases: {len(results)}/{len(declared)}  gating_reds: {len(rec['gating'])}  STRICT GATE: {gate}")
     return rec["exit_code"]
@@ -1062,6 +1119,145 @@ def migration_crosswalk(old_case_ids, new_manifest: dict) -> dict:
             "migrated_but_not_pass": not_passed, "ledger_problems": ledger_problems}
 
 
+# Every gating assertion of the old harness for a migrated case: (old name, old atol, old rtol, the new observables
+# that carry it as a regular expression). Exact = 0, 0. A tolerance given as a rule is the text of that rule.
+# "declared": the old Observable declarations (all 66, extracted by script); "internal": raise-checks inside the old
+# runner functions, found by reading the code; "review": added by the S3/S4 review (P1-S3-01).
+HISTORICAL_GATES = {
+    "I4-REAL-INJECTED-TRUTH-FACET-RESIDUAL-EAGER-20PCT-01": (
+        ("declared", "count", 0, 0, r"^oracle_residual side_type=\d+ count$"),
+        ("declared", "y_mean", 1e-9, 1e-8, r"^oracle_residual side_type=\d+ mean$")),
+    "I4-REAL-GROUPING-TRUTH-EAGER-20PCT-01": (
+        ("declared", "group_counts", 0, 0, r"^known_delta \S+=\S+ count$"),
+        ("declared", "group_means", 1e-9, 1e-8, r"^known_delta \S+=\S+ mean$")),
+    "I4-REAL-INJECTED-TRUTH-VECTOR-OVERLAY-EAGER-20PCT-01": (
+        ("declared", "counts", 0, 0, r"^(dcar_\w+|known_delta) count$"),
+        ("declared", "profile_means", 1e-9, 1e-8, r"^(dcar_\w+|known_delta) mean$"),
+        ("internal", "exactly four branch stats", 0, 0, r"^number of vector branches$")),
+    "I4-REAL-INJECTED-TRUTH-DIRECT-DELTA-EAGER-20PCT-01": (
+        ("declared", "delta_values", 1e-9, 1e-8, r"^delta values$"),),
+    "I4-REAL-INJECTED-TRUTH-SELECTION-DELTA-FACET-EAGER-20PCT-01": (
+        ("declared", "delta_values", 1e-9, 1e-8, r"^delta side_type=\d+ values$"),
+        ("declared", "valid_mask", 0, 0, r"^delta side_type=\d+ undefined bins$")),
+    "I4-REAL-INJECTED-TRUTH-WEIGHTS-FACET-EAGER-20PCT-01": (
+        ("declared", "count", 0, 0, r"^known_delta side_type=\d+ weights=\w+ count$"),
+        ("declared", "sum_weights", 1e-8, 1e-7, r"^known_delta side_type=\d+ weights=\w+ sum of weights$"),
+        ("declared", "y_mean", 1e-8, 1e-7, r"^known_delta side_type=\d+ weights=\w+ mean$"),
+        ("internal", "two weight branches", 0, 0, r"^number of vector branches$")),
+    "I4-REAL-INJECTED-TRUTH-GAUSS-FIT-EAGER-20PCT-01": (
+        ("declared", "fit_center_delta", "max(bin/4, 5 sigma/sqrt n)", None, r"^Gaussian fit centre$"),
+        ("declared", "fit_sigma_delta", "max(bin/4, 5 sigma/sqrt(2(n-1)))", None, r"^Gaussian fit width$")),
+    "I4-REAL-HIST-VECTOR-TRUTH-EAGER-20PCT-01": (
+        ("declared", "selection_bin_counts", 0, 0, r"^histogram ncl (early|late)$"),
+        ("declared", "weighted_bin_sums", 1e-8, 1e-10, r"^histogram ncl weights=\w+$")),
+    "I4-REAL-QUALIFIED-SUBFRAME-CHAIN-TRUTH-EAGER-20PCT-01": (
+        ("declared", "count", 0, 0, r"^oracle_chain_with_shift side_type=\d+ count$"),
+        ("declared", "y_mean", 1e-9, 1e-8, r"^oracle_chain_with_shift side_type=\d+ mean$")),
+    "ADF99-01": (
+        ("declared", "quantile_bins", 3e-4, 2e-4, r"^cell \d+ group None \w+ (q=\d+%|median) values$"),
+        ("declared", "legend_identifiers", 0, 0, r"^legend identities$"),
+        ("internal", "quantile x centers", 2e-3, 0, r"^cell \d+ group None \w+ (q=\d+%|median) x$"),
+        ("internal", "six panels", 0, 0, r"^number of facet panels$")),
+    "ADF99-02": (
+        ("declared", "group_quantiles", 3e-4, 2e-4, r"^cell \d+ group [01] \w+ (q=\d+%|median) values$"),
+        ("declared", "factored_legend", 0, 0, r"^legend identities$"),
+        ("internal", "quantile x centers", 2e-3, 0, r"^cell \d+ group [01] \w+ (q=\d+%|median) x$"),
+        ("internal", "six panels", 0, 0, r"^number of facet panels$"),
+        ("internal", "five outer headings", 0, 0, r"^distinct outer facet headings$")),
+    "ADF100-01": (
+        ("declared", "paired_counts", 0, 0, r"^\w+ tgl=\S+ count$"),
+        ("declared", "paired_means", 3e-5, 2e-4, r"^\w+ tgl=\S+ mean$"),
+        ("declared", "paired_edges", 2e-3, 0, r"^\w+ tgl=\S+ bin edges$"),
+        ("internal", "two paired branches", 0, 0, r"^number of vector branches$"),
+        ("internal", "six facet identities", 0, 0, r"^\w+ groups of tgl$")),
+    "A6-VISUAL-GALLERY-FULL-01": (
+        ("internal", "gallery ran without error", 0, 0, r"^gallery run_all_pdf succeeded$"),),
+    "I4-REAL-VECTOR-FACET-ONE-ELEMENT-SELECTION-EAGER-20PCT-01": (
+        ("declared", "facet_selected_rows", 0, 0, r"^rows per side_type$"),),
+    "I4-REAL-HIST-VECTOR-FACET-SELECTION-EAGER-20PCT-01": (
+        ("declared", "branch_facet_rows", 0, 0, r"^histogram ncl side_type=\d+ (early|late)$"),
+        ("internal", "two histogram facets", 0, 0, r"^facet panels \(by title\)$")),
+    "I4-REAL-SELECTION-VECTOR-FACET-DELTA-CORRECTNESS-EAGER-20PCT-01": (
+        ("declared", "facet_values", 0, 0, r"^delta groups of side_type$"),
+        ("declared", "signal_central", 1e-12, 1e-12, r"^delta side_type=\d+ signal plotted line$"),
+        ("declared", "reference_central", 1e-12, 1e-12, r"^delta side_type=\d+ reference plotted line$"),
+        ("declared", "delta_values", 1e-12, 1e-12, r"^delta side_type=\d+ values$"),
+        ("declared", "valid_bin_mask", 0, 0, r"^delta side_type=\d+ undefined bins$"),
+        ("internal", "overlay points on bin centres", 1e-12, 1e-12, r"^delta side_type=\d+ \w+ line x on bin centres$")),
+    "I4-REAL-WEIGHTS-VECTOR-FACET-PROFILE-CORRECTNESS-EAGER-20PCT-01": (
+        ("declared", "facet_values", 0, 0, r"^dcar_tpc_vertex groups of side_type$"),
+        ("declared", "weight_branch_labels", 0, 0, r"^number of vector branches$"),
+        ("declared", "count", 0, 0, r"^dcar_tpc_vertex side_type=\d+ weights=\w+ count$"),
+        ("declared", "sum_weights", 1e-6, 5e-6, r"^dcar_tpc_vertex side_type=\d+ weights=\w+ sum of weights$"),
+        ("declared", "y_mean", 1e-7, 5e-6, r"^dcar_tpc_vertex side_type=\d+ weights=\w+ mean$"),
+        ("declared", "y_std", 1e-7, 5e-6, r"^dcar_tpc_vertex side_type=\d+ weights=\w+ std$"),
+        ("declared", "y_sem", 1e-7, 5e-6, r"^dcar_tpc_vertex side_type=\d+ weights=\w+ sem$"),
+        ("internal", "x_center against the raw grid", 1e-12, 1e-12, r"^dcar_tpc_vertex side_type=\d+ weights=\w+ bin centres$"),
+        ("internal", "scalar decomposition count", 0, 0, r"^weights_vector branch \d .* count$"),
+        ("internal", "scalar decomposition values", 1e-12, 1e-12,
+         r"^weights_vector branch \d .* (x_center|sum_weights|y_mean|y_std|y_sem)$"),
+        ("internal", "scalar decomposition pol1 fit", 1e-10, 1e-10, r"^weights_vector branch \d .* pol1 parameters$"),
+        ("internal", "same style in both facets", 0, 0, r"^branch styles side_type=\d+ == side_type=\d+$")),
+    "PRECLEAN-C1-HIST-VECTOR-FACET-ACCEPTANCE-EAGER-20PCT-01": (
+        ("declared", "facet_identities", 0, 0, r"^facet panels \(by title\)$"),
+        ("declared", "faceted_bin_counts", 0, 0, r"^histogram ncl side_type=\d+ (early|late)$"),
+        ("declared", "control_bin_counts", 0, 0, r"^histogram ncl control (early|late)$"),
+        ("declared", "faceted_inrange_rows (= sum of the exact bin counts)", 0, 0, r"^histogram ncl side_type=\d+ (early|late)$"),
+        ("declared", "control_inrange_rows (= sum of the exact bin counts)", 0, 0, r"^histogram ncl control (early|late)$")),
+    "PRECLEAN-C2-DRAW-FIGURES-EFFECTIVE-DEFAULTS-EAGER-20PCT-01": (
+        ("declared", "x_center", 1e-14, 1e-12, r"^delta bin centres$"),
+        ("declared", "signal_count", 0, 0, r"^delta signal count$"),
+        ("declared", "reference_count", 0, 0, r"^delta reference count$"),
+        ("declared", "signal_central", 1e-12, 1e-12, r"^delta signal central$"),
+        ("declared", "reference_central", 1e-12, 1e-12, r"^delta reference central$"),
+        ("declared", "delta_values", 1e-12, 1e-12, r"^delta values$"),
+        ("declared", "valid_bin_mask", 0, 0, r"^delta undefined bins$"),
+        ("declared", "caller_unchanged", 0, 0, r"^caller's specs and defaults unchanged$"),
+        ("declared", "short_form_preserved", 0, 0, r"^short-form plot string preserved$")),
+    "PRECLEAN-C3-RATIO-Y-VECTOR-TRUTH-EAGER-20PCT-01": (
+        ("declared", "x_center", 1e-14, 1e-12, r"^ratio bin centres$"),
+        ("declared", "signal_count", 0, 0, r"^ratio signal count$"),
+        ("declared", "reference_count", 0, 0, r"^ratio reference count$"),
+        ("declared", "signal_central", 1e-12, 1e-12, r"^ratio signal central$"),
+        ("declared", "reference_central", 2e-12, 1e-12, r"^ratio reference central$"),
+        ("declared", "ratio_values", 2e-13, 2e-13, r"^ratio values$"),
+        ("declared", "valid_bin_mask", 0, 0, r"^ratio undefined bins$")),
+    "I4-REAL-PUBLIC-SURFACE-QUALIFIED-VECTOR-EQUIV-EAGER-20PCT-01": (
+        ("declared", "x_center", 1e-14, 1e-12, r"^draw_(batch|figures) x_center == draw$"),
+        ("declared", "signal_central", 1e-12, 1e-10, r"^draw_(batch|figures) signal_central == draw$"),
+        ("declared", "signal_count", 0, 0, r"^draw_(batch|figures) signal_count == draw$"),
+        ("declared", "reference_central", 1e-12, 1e-10, r"^draw_(batch|figures) reference_central == draw$"),
+        ("declared", "reference_count", 0, 0, r"^draw_(batch|figures) reference_count == draw$"),
+        ("declared", "value", 1e-12, 1e-10, r"^draw_(batch|figures) value == draw$"),
+        ("review", "mask_undefined", 0, 0, r"^draw_(batch|figures) mask_undefined == draw$")),
+}
+
+
+def historical_parity(results: list) -> dict:
+    """For every historical gate of a case that ran and passed: at least one new gating comparison carries it,
+    and each of them is at the old tolerance or stricter (atol and rtol both; a rule must be the same rule)."""
+    rows = []
+    for r in results:
+        gating = [c for c in r.comparisons if c["ok"] is not None]
+        for source, old, atol, rtol, pattern in HISTORICAL_GATES.get(r.case_id, ()):
+            new = [c for c in gating if re.search(pattern, c["observable"])]
+            if r.status != PASS:
+                verdict = "case did not pass"
+            elif not new:
+                verdict = "MISSING"
+            elif isinstance(atol, str):
+                verdict = "ok" if all(c["tolerance"] == atol for c in new) else "WEAKER"
+            else:
+                verdict = "ok" if all(c["atol"] <= atol and c["rtol"] <= rtol for c in new) else "WEAKER"
+            rows.append(dict(case_id=r.case_id, source=source, old=old, old_atol=atol, old_rtol=rtol, pattern=pattern,
+                             n_new=len(new), new_atol=max((c["atol"] for c in new), default=None),
+                             new_rtol=max((c["rtol"] for c in new), default=None),
+                             new_tolerances=sorted({c["tolerance"] for c in new}), verdict=verdict))
+    bad = [row for row in rows if row["verdict"] in ("MISSING", "WEAKER")]
+    return {"ok": not bad, "checked": sum(row["verdict"] == "ok" for row in rows), "rows": rows,
+            "failed": [f"{row['case_id']} {row['old']}: {row['verdict']}" for row in bad]}
+
+
 def run_gallery_target(adf, pdf_path: str) -> dict:
     """The gallery as a target: run_all_pdf on the already loaded ADF; record result and page count."""
     import re
@@ -1096,8 +1292,9 @@ CASES = [
     Case("I4-REAL-INJECTED-TRUTH-VECTOR-OVERLAY-EAGER-20PCT-01", G.fig46_injected_truth_vector_overlay,
          "G12.46 four-branch bracket vector: original, clean-distorted, noisy, known_delta",
          aliases=INJECTED_ALIASES, fixture=injected_noise_is_declared,
-         expect=tuple(Profile(y, SELECTED, **SECTOR_BINS, plotted=branch(i))
-                      for i, y in enumerate(["dcar_tpc_vertex", "dcar_distorted_clean", "dcar_oracle", "known_delta"]))),
+         expect=(Branches(4),)
+                + tuple(Profile(y, SELECTED, **SECTOR_BINS, plotted=branch(i))
+                        for i, y in enumerate(["dcar_tpc_vertex", "dcar_distorted_clean", "dcar_oracle", "known_delta"]))),
     Case("I4-REAL-INJECTED-TRUTH-DIRECT-DELTA-EAGER-20PCT-01", G.fig47_injected_truth_direct_delta,
          "G12.47 normalize=delta of clean-distorted minus original recovers known_delta",
          aliases=INJECTED_ALIASES,
@@ -1113,9 +1310,10 @@ CASES = [
     Case("I4-REAL-INJECTED-TRUTH-WEIGHTS-FACET-EAGER-20PCT-01", G.fig49_injected_truth_weights_facet,
          "G12.49 weights_vector flat / tgl-weighted known_delta profile, per side_type",
          aliases=INJECTED_ALIASES, fixture=injected_noise_is_declared,
-         expect=tuple(Profile("known_delta", SIDES_A_C, **SECTOR_BINS, by="side_type", weights=w,
-                              plotted=branch(i, facets), tol=WEIGHTED)
-                      for i, w in enumerate(["oracle_w_flat", "oracle_w_tgl"]))),
+         expect=(Branches(2),)
+                + tuple(Profile("known_delta", SIDES_A_C, **SECTOR_BINS, by="side_type", weights=w,
+                                plotted=branch(i, facets), tol=WEIGHTED)
+                        for i, w in enumerate(["oracle_w_flat", "oracle_w_tgl"]))),
     Case("I4-REAL-INJECTED-TRUTH-GAUSS-FIT-EAGER-20PCT-01", G.fig50_injected_truth_gaussian_fit,
          "G12.50 Gaussian fit of the residual recovers the injected noise (centre, width)",
          aliases=INJECTED_ALIASES, fixture=injected_noise_is_declared,
@@ -1124,9 +1322,9 @@ CASES = [
          "G13.52 histogram vectors: early / late selection, flat / tgl-weighted",
          aliases=TIME_ALIAS, fixture=injected_noise_is_declared,
          expect=(Histogram("ncl", lambda t: (t.ncl > 60) & (t.time_s < t.time_s.median()), bins=20, range=(80.0, 160.0),
-                           plotted=lambda d: bar_heights(d[1][0], 0, 20)),
+                           plotted=lambda d: bar_heights(d[1][0], 0, 20), label="early"),
                  Histogram("ncl", lambda t: (t.ncl > 60) & (t.time_s >= t.time_s.median()), bins=20, range=(80.0, 160.0),
-                           plotted=lambda d: bar_heights(d[1][0], 1, 20)),
+                           plotted=lambda d: bar_heights(d[1][0], 1, 20), label="late"),
                  Histogram("ncl", "ncl > 60", bins=20, range=(80.0, 160.0), weights="oracle_w_flat",
                            plotted=lambda d: bar_heights(d[1][1], 0, 20), tol=HIST_WEIGHTED),
                  Histogram("ncl", "ncl > 60", bins=20, range=(80.0, 160.0), weights="oracle_w_tgl",
@@ -1153,9 +1351,10 @@ CASES = [
          "ADF100-01 two positional Y:X pairs, own min-max edges per pair, six tgl facets",
          aliases=SECTOR_ALIAS, derived={"sector_plus_quarter": lambda t: t.sector + 0.25},
          fixture=paired_x_is_sensitive,
-         expect=tuple(Profile(y, SELECTED, x=x, bins=20, range="minmax", by="tgl", by_bins=6,
-                              plotted=branch(i, facets), tol=F16_MEAN, edges_tol=F16_EDGE)
-                      for i, (y, x) in enumerate([("dcar_tpc_vertex", "sector"), ("dcar_tpc", "sector_plus_quarter")]))),
+         expect=(Branches(2),)
+                + tuple(Profile(y, SELECTED, x=x, bins=20, range="minmax", by="tgl", by_bins=6,
+                                plotted=branch(i, facets), tol=F16_MEAN, edges_tol=F16_EDGE)
+                        for i, (y, x) in enumerate([("dcar_tpc_vertex", "sector"), ("dcar_tpc", "sector_plus_quarter")]))),
     Case("A6-VISUAL-GALLERY-FULL-01", None,
          "the readable gallery itself: run_all_pdf succeeded with all 59 pages",
          expect=(GalleryPages(59),)),
@@ -1169,10 +1368,11 @@ CASES = [
     Case("I4-REAL-HIST-VECTOR-FACET-SELECTION-EAGER-20PCT-01", control_hist_selection_facets,
          "control: histogram early/late branches applied inside each side_type facet",
          aliases=TIME_ALIAS,
-         expect=tuple(Histogram("ncl", lambda t, w=window, s=side: (t.ncl > 60) & (t.side_type == s) & w(t),
-                                bins=40, range=(80.0, 160.0),
-                                plotted=lambda d, i=i, s=side: bar_heights(d[1].flat[s], i, 40))
-                      for side in (0, 1) for i, window in enumerate((early, late)))),
+         expect=(FacetPanels((0, 1), axes=lambda d: d[1]),)
+                + tuple(Histogram("ncl", lambda t, w=window, s=side: (t.ncl > 60) & (t.side_type == s) & w(t),
+                                  bins=40, range=(80.0, 160.0), label=f"side_type={side} {window.__name__}",
+                                  plotted=lambda d, i=i, s=side: bar_heights(facet_panel(d[1], s), i, 40))
+                        for side in (0, 1) for i, window in enumerate((early, late)))),
     Case("I4-REAL-SELECTION-VECTOR-FACET-DELTA-CORRECTNESS-EAGER-20PCT-01", G.fig22_delta_faceted,
          "G4.22 early minus late delta of dcar_tpc_vertex per sector, per side_type",
          aliases={**SECTOR_ALIAS, **TIME_ALIAS},
@@ -1191,16 +1391,17 @@ CASES = [
                 + tuple(SameAsCall(f"weights_vector branch {i} == draw with weights='{expression}'",
                                    scalar_weight_draw(expression), branch_vs_scalar(i), tols={"pol1 parameters": FIT10})
                         for i, expression in enumerate(O2_WEIGHT_EXPRESSIONS))
-                + (SameStyleAcrossFacets(2),)),
+                + (SameStyleAcrossFacets(2), Branches(2))),
     Case("PRECLEAN-C1-HIST-VECTOR-FACET-ACCEPTANCE-EAGER-20PCT-01", G.fig55_preclean_hist_vector_facet_acceptance,
          "G14.55 histogram early/late in each of 3 side_type facets, and the unfaceted control",
          aliases=TIME_ALIAS,
-         expect=tuple(Histogram("ncl", lambda t, w=window, s=side: (t.ncl > 60) & (t.side_type == s) & w(t),
-                                bins=40, range=(80.0, 160.0),
-                                plotted=lambda d, i=i, s=side: bar_heights(d[1]["facets"].flat[s], i, 40))
-                      for side in (0, 1, 2) for i, window in enumerate((early, late)))
+         expect=(FacetPanels((0, 1, 2), axes=lambda d: d[1]["facets"]),)
+                + tuple(Histogram("ncl", lambda t, w=window, s=side: (t.ncl > 60) & (t.side_type == s) & w(t),
+                                  bins=40, range=(80.0, 160.0), label=f"side_type={side} {window.__name__}",
+                                  plotted=lambda d, i=i, s=side: bar_heights(facet_panel(d[1]["facets"], s), i, 40))
+                        for side in (0, 1, 2) for i, window in enumerate((early, late)))
                 + tuple(Histogram("ncl", lambda t, w=window: (t.ncl > 60) & (t.side_type < 3) & w(t),
-                                  bins=40, range=(80.0, 160.0),
+                                  bins=40, range=(80.0, 160.0), label=f"control {window.__name__}",
                                   plotted=lambda d, i=i: bar_heights(d[1]["control"], i, 40))
                         for i, window in enumerate((early, late)))),
     Case("PRECLEAN-C2-DRAW-FIGURES-EFFECTIVE-DEFAULTS-EAGER-20PCT-01", G.fig56_preclean_draw_figures_effective_defaults,
@@ -1217,11 +1418,12 @@ CASES = [
          expect=(Delta(Profile("preclean_ratio_base", SELECTED, **SECTOR_BINS, plotted=None),
                        Profile("preclean_ratio_scaled", SELECTED, **SECTOR_BINS, plotted=None),
                        plotted=lambda d: [(0, d[2]["normalize_data"])], kind="ratio",
-                       tol=C3_RATIO, central_tol=C3_CENTRAL),)),
+                       tol=C3_RATIO, signal_tol=HIST12, reference_tol=C3_REFERENCE),)),
     Case("I4-REAL-PUBLIC-SURFACE-QUALIFIED-VECTOR-EQUIV-EAGER-20PCT-01", G.fig45_public_surface_equivalence_oracle,
          "G11.45 the same subframe-qualified delta request through draw, draw_batch and draw_figures",
-         expect=(SameAcrossSurfaces(("x_center", "value", "mask_undefined", "signal_central", "signal_count",
-                                     "reference_central", "reference_count"),
+         expect=(SameAcrossSurfaces({"x_center": BIN_CENTRES, "value": O4, "mask_undefined": EXACT,
+                                     "signal_central": O4, "signal_count": EXACT,
+                                     "reference_central": O4, "reference_count": EXACT},
                                     plotted=lambda d: {k: v["normalize_data"] for k, v in d[2]["surface_stats"].items()}),
                  Delta(Profile("dcar_tpc_vertex", SIDES_A_C + " & (side_type == 0)", x="tgl", bins=30, range=(-1.5, 1.5),
                                plotted=None),
