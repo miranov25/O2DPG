@@ -16,10 +16,11 @@ pins the remaining parts of the S0 contract:
 * selection and sampling are applied once, before the frame is split;
 * binned facets reuse the existing facet machinery (same groups as hist2d);
 * the automatic title names the requested quantiles;
-* refusals, raised before any Figure is created: ``legend=``, the explicit
+* refusals, raised before any Figure is created: the explicit
   ``layers=[...]`` form with ``facet_by`` (Architect choice D106-3: only the
   string form is supported), two facet columns, channel facets, ``share_x``,
-  expression vectors.
+  expression vectors.  (``legend=`` was refused here until PHASE_13_108,
+  which supports it; see the note at S2_06.)
 
 Seat: Fable5_1:draw-coder, 2026-11-09.
 """
@@ -113,12 +114,15 @@ def test_S2_05_auto_title_names_the_quantiles():
 
 
 @pytest.mark.parametrize('kw,err,match', [
-    (dict(legend='shared'), NotImplementedError, 'legend='),
     (dict(facet_by=['pid', 'x'], facet_by_bins=[None, 2]),
      NotImplementedError, 'exactly one ordinary facet column'),
     (dict(facet_by='vector'), NotImplementedError, 'ordinary data-column'),
     (dict(share_x='row'), NotImplementedError, 'share_x'),
-], ids=['legend', 'two-columns', 'channel-facet', 'share_x'])
+], ids=['two-columns', 'channel-facet', 'share_x'])
+# PHASE_13_108 (Architect D108-C, 2026-11-10): the former 'legend' case
+# (legend='shared' refused) is removed; legend= is now supported through the
+# existing legend system and tested positively in
+# test_phase_13_108_s0_facet_default_style_red.py (C01, C02).
 def test_S2_06_unsupported_forms_refused_before_any_figure(kw, err, match):
     before = set(plt.get_fignums())
     with pytest.raises(err, match=match):

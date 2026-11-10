@@ -18,6 +18,7 @@ from .style import get_style, get_style_value
 # plots/profile.py has no top-level dependency on drawer.py (it imports DFDraw
 # inside draw_profile() only).
 from .plots.profile import _format_interval_label, _interval_sort_key
+from .plots.profile import _quantile_percent_text
 from .plots._facet_label_format import (
     normalize_facet_label_format, validate_facet_label_dimensions,
     facet_label_format_is_legacy, format_facet_dimension,
@@ -134,6 +135,61 @@ def _scope_figure_legend(fig, axes, identities, *, explicit_color=None,
 
 
 
+# PHASE_13_108_DF: default Figure presentation for faceted profiles.
+# Architect decisions 2026-11-10: D108-A shared axis titles are the default
+# (the caller can override), D108-B one shared legend, D108-C the same for the
+# faceted hist2d+profile overlay, D108-D exact quantile labels.
+_FACET_DEFAULT_PRESENTATION_KINDS = ('profile', 'overlay')
+
+
+def _rendered_axis_labels(axes, axis, last_line=False):
+    """Distinct non-empty axis labels as rendered by the visible cells.
+
+    ``last_line`` drops a leading facet heading that the legacy 2-D left-edge
+    cells put in front of the Y label ('row=value\n<label>').
+    """
+    labels = []
+    for ax in axes:
+        if not ax.get_visible():
+            continue
+        text = ax.get_xlabel() if axis == 'x' else ax.get_ylabel()
+        if last_line and text:
+            text = text.split('\n')[-1]
+        if text and text not in labels:
+            labels.append(text)
+    return labels
+
+
+def _default_shared_axis_title(axes, axis, last_line=False):
+    """D108-A: the shared title if every visible cell renders the same label
+    on this axis, otherwise None (the axis keeps its per-cell titles)."""
+    labels = _rendered_axis_labels(axes, axis, last_line=last_line)
+    return labels[0] if len(labels) == 1 else None
+
+
+def _default_shared_legend_allowed(fig, axes, *, group_by, plot_kwargs,
+                                   global_groups):
+    """D108-B: may identical per-cell legends become one Figure legend?
+
+    * only legends that exist are replaced; none is added (band mode and
+      plain profiles draw no legend and get none);
+    * a Figure legend that already exists (PHASE_13_94/13_95 global owners)
+      is left alone;
+    * group intervals resolved separately in each facet (``group_by_bins`` /
+      ``group_by_quantiles`` without global scope) mean different things in
+      different cells, so their per-cell legends stay.
+    """
+    if fig.legends:
+        return False
+    if not any(ax.get_legend() is not None for ax in axes if ax.get_visible()):
+        return False
+    if (group_by is not None and global_groups is None
+            and (plot_kwargs.get('group_by_bins') is not None
+                 or plot_kwargs.get('group_by_quantiles') is not None)):
+        return False
+    return True
+
+
 def _compose_facet_semantic_legend(fig, axes, *, expressions=(),
                                    paired_x_exprs=None,
                                    quantiles=None, legend_spec=None,
@@ -216,7 +272,8 @@ def _compose_facet_semantic_legend(fig, axes, *, expressions=(),
     if quantiles:
         for q in quantiles:
             q = float(q)
-            label = 'median' if abs(q - .5) < 1e-12 else f'q={q:.0%}'
+            label = ('median' if abs(q - .5) < 1e-12
+                     else f'q={_quantile_percent_text(q)}')
             # Authoritative grouped-quantile identity takes priority over
             # anonymous Matplotlib labels. No quantile proxy is invented:
             # every handle below is an actual Line2D drawn by profile.py.
@@ -689,6 +746,68 @@ _ND_FACET_PRESENTATION_KWARGS = frozenset({
 
 
 
+# PHASE_13_108_DF: Figure-level texts that dfdraw writes itself (automatic
+# shared titles and the automatic suptitle) must fit inside the Figure.
+# A long expression is first wrapped at an operator boundary (every character
+# kept, nothing abbreviated), then reduced in size down to a readable
+# minimum.  Explicit caller strings are never changed; for them the
+# positioner's existing diagnostic warns instead.
+_FIT_MIN_FONTSIZE = 7.0
+_WRAP_BREAK_CHARS = '/*+-, '
+
+
+def _wrap_text_line(line, parts):
+    """Split ``line`` into ``parts`` pieces after break characters, as close
+    as possible to equal lengths.  None if there are not enough breaks."""
+    n = len(line)
+    candidates = [i + 1 for i, c in enumerate(line[:-1]) if c in _WRAP_BREAK_CHARS]
+    cuts = []
+    for k in range(1, parts):
+        target = k * n / parts
+        later = [c for c in candidates if not cuts or c > cuts[-1]]
+        if not later:
+            return None
+        cuts.append(min(later, key=lambda c: abs(c - target)))
+    pieces = [line[a:b] for a, b in zip([0] + cuts, cuts + [n])]
+    if any(not p.strip() for p in pieces):
+        return None
+    return '\n'.join(p.rstrip() for p in pieces)
+
+
+def _fit_text_to_extent(text, renderer, limit_px, along):
+    """Make ``text`` no longer than ``limit_px`` along 'x' (width) or 'y'
+    (height): wrap first, then shrink.  Returns True if it was changed."""
+    def length():
+        box = text.get_window_extent(renderer)
+        return box.height if along == 'y' else box.width
+    if limit_px <= 0 or length() <= limit_px:
+        return False
+    original = text.get_text()
+    lines = original.split('\n')
+    if '$' not in original:          # never split mathtext
+        longest = max(range(len(lines)), key=lambda i: len(lines[i]))
+        for parts in (2, 3):
+            wrapped = _wrap_text_line(lines[longest], parts)
+            if wrapped is None:
+                break
+            text.set_text('\n'.join(lines[:longest] + [wrapped]
+                                     + lines[longest + 1:]))
+            if length() <= limit_px:
+                return True
+    size = text.get_fontsize()
+    while length() > limit_px and size > _FIT_MIN_FONTSIZE:
+        size = max(_FIT_MIN_FONTSIZE, size - 1.0)
+        text.set_fontsize(size)
+    return True
+
+
+def _non_grid_axes(fig, axes_grid):
+    """Visible Figure axes that are not data panels: colorbars and similar.
+    Their tick labels also bound the space for Figure-level decorations."""
+    panels = set(np.atleast_2d(np.asarray(axes_grid, dtype=object)).flat)
+    return [ax for ax in fig.axes if ax.get_visible() and ax not in panels]
+
+
 def _reserve_automatic_legend_top_room(fig, axes_grid, legend, *,
                                        margin_override=None,
                                        column_headings=(), row_headings=(),
@@ -707,6 +826,8 @@ def _reserve_automatic_legend_top_room(fig, axes_grid, legend, *,
     if not visible_top:
         return
     bounds = [ax.get_tightbbox(renderer) for ax in visible_top]
+    # PHASE_13_108: colorbar tick labels can rise above the panels.
+    bounds += [ax.get_tightbbox(renderer) for ax in _non_grid_axes(fig, axes_grid)]
     top_edge = max(b.y1 for b in bounds if b is not None)
     gap = 5.0 * fig.dpi / 72.0
     height = legend.get_window_extent(renderer).height + 2 * gap
@@ -742,7 +863,7 @@ def _position_nd_figure_decorations(fig, axes_grid, *,
                                     panel_headings=(), shared_xlabel=None, shared_ylabel=None,
                                     legend=None, suptitle=None,
                                     preserve_legend_placement=False,
-                                    padding_pt=4.0):
+                                    padding_pt=4.0, fit_automatic=()):
     """Place dfdraw-owned Figure annotations within the user's Axes geometry.
 
     This is a *one-shot initial placement*, never a draw/save callback.  It
@@ -796,6 +917,30 @@ def _position_nd_figure_decorations(fig, axes_grid, *,
     left_edge = min(b.x0 for _, j, b in visible_bounds if j == left_col)
     top_edge = max(b.y1 for i, _, b in visible_bounds if i == top_row)
     bottom_edge = min(b.y0 for i, _, b in visible_bounds if i == bottom_row)
+    # PHASE_13_108: colorbars (and other non-panel axes) belong to the inner
+    # boundary too; their tick labels must not touch the legend or titles.
+    for extra in _non_grid_axes(fig, axes):
+        extra_bounds = extra.get_tightbbox(renderer)
+        if extra_bounds is not None:
+            top_edge = max(top_edge, extra_bounds.y1)
+            bottom_edge = min(bottom_edge, extra_bounds.y0)
+
+    # PHASE_13_108: automatic texts (not caller strings) are fitted to their
+    # span before they are placed: the shared Y title to the panel height,
+    # the shared X title to the panel width, the automatic title to the
+    # Figure width.
+    if fit_automatic:
+        frames = [ax.get_window_extent(renderer)
+                  for ax in np.atleast_2d(axes).flat if ax.get_visible()]
+        spans = {
+            'y': max(f.y1 for f in frames) - min(f.y0 for f in frames),
+            'x': max(f.x1 for f in frames) - min(f.x0 for f in frames),
+            'title': width - 2 * gap,
+        }
+        for artist, kind in fit_automatic:
+            if artist is not None:
+                _fit_text_to_extent(artist, renderer, spans[kind],
+                                    'y' if kind == 'y' else 'x')
 
     for heading in row_headings:
         # All row headings share one right-aligned horizontal guide.
@@ -860,9 +1005,18 @@ def _position_nd_figure_decorations(fig, axes_grid, *,
         top_artists.append(legend)
     if suptitle is not None:
         top_artists.append(suptitle)
+    # PHASE_13_108: also a shared Y title taller than the Figure, or a shared
+    # X title / suptitle wider than the Figure.
+    long_artists = [(a, 'y') for a in ([shared_ylabel] if shared_ylabel
+                                       is not None else [])]
+    long_artists += [(a, 'x') for a in bottom_artists + ([suptitle] if suptitle
+                                                         is not None else [])]
     if (any(bbox(a).x0 < gap for a in left_artists) or
             any(bbox(a).y0 < gap for a in bottom_artists) or
-            any(bbox(a).y1 > height - gap for a in top_artists)):
+            any(bbox(a).y1 > height - gap for a in top_artists) or
+            any((bbox(a).y0 < 0 or bbox(a).y1 > height) if d == 'y'
+                else (bbox(a).x0 < 0 or bbox(a).x1 > width)
+                for a, d in long_artists)):
         warnings.warn(
             'PHASE_13_93: Figure margins leave insufficient room for '
             'non-overlapping facet headings, shared labels, legend and title; '
@@ -6242,6 +6396,23 @@ class DFDraw:
                              fontsize=get_style_value("axes.titlesize", 14))
                 plt.subplots_adjust(top=_suptitle_top_for_title(_get_suptitle(fig) or None))
 
+        # PHASE_13_108_DF: default presentation (D108-A/B/C).  For a faceted
+        # profile or hist2d+profile overlay with two or more cells, an axis
+        # title the caller left unset becomes one Figure title when every
+        # cell renders the same label on that axis; an unset legend becomes
+        # one Figure legend when the per-cell legends mean the same thing in
+        # every cell.  Explicit values (True/False/str, any legend mode) win.
+        if plot_kind in _FACET_DEFAULT_PRESENTATION_KINDS and n_groups >= 2:
+            _cells = list(axes_flat[:n_groups])
+            for _key, _axis in (('shared_xlabel', 'x'), ('shared_ylabel', 'y')):
+                if (_one_dim_options.get(_key) is None
+                        and _default_shared_axis_title(_cells, _axis) is not None):
+                    _one_dim_options[_key] = True
+            if _facet_legend_spec is None and _default_shared_legend_allowed(
+                    fig, _cells, group_by=group_by, plot_kwargs=plot_kwargs,
+                    global_groups=global_1d_groups):
+                _facet_legend_spec = _normalize_legend_spec('shared')
+
         # PHASE_13_99: keep one Figure layout owner, then position semantic
         # decorations once using actual rendered glyph bounds.
         _one_dim_active = bool(_one_dim_options) or (
@@ -6260,9 +6431,15 @@ class DFDraw:
                 fig.subplots_adjust(**adjustment)
             legend_artist = _compose_facet_semantic_legend(
                 fig, axes_flat[:n_groups],
-                expressions=(y_expr if isinstance(y_expr, list) else ()),
+                # PHASE_13_108: with facet_by='vector' each cell is one
+                # expression; the cell legends name quantiles, not branches.
+                expressions=(y_expr if isinstance(y_expr, list)
+                             and facet_by != 'vector' else ()),
                 paired_x_exprs=x_expr if isinstance(x_expr, list) else None,
-                quantiles=(quantiles if plot_kind == 'profile' else None),
+                # PHASE_13_108 D108-C: the overlay's profile layer draws the
+                # same quantile lines as a faceted profile.
+                quantiles=(quantiles if plot_kind
+                           in _FACET_DEFAULT_PRESENTATION_KINDS else None),
                 legend_spec=_facet_legend_spec)
             shared_x = _one_dim_options.get('shared_xlabel')
             shared_y = _one_dim_options.get('shared_ylabel')
@@ -6277,8 +6454,12 @@ class DFDraw:
                     ax.set_xlabel('')
                 shared_x_artist = fig.supxlabel(xlabel)
             if shared_y:
+                # PHASE_13_108 (review R4): like X, the shared Y title is the
+                # label the cells rendered, so AliasDataFrame titles survive.
                 ylabel = (shared_y if isinstance(shared_y, str) else
-                          plot_kwargs.get('ylabel') or str(y_expr or ''))
+                          next((ax.get_ylabel() for ax in axes_flat[:n_groups]
+                                if ax.get_ylabel()), None)
+                          or plot_kwargs.get('ylabel') or str(y_expr or ''))
                 for ax in axes_flat[:n_groups]:
                     ax.set_ylabel('')
                 shared_y_artist = fig.supylabel(ylabel, x=.007)
@@ -6310,7 +6491,14 @@ class DFDraw:
                     legend=positioned_legend, suptitle=fig._suptitle,
                     preserve_legend_placement=bool(
                         _facet_legend_spec and
-                        _facet_legend_spec.get('bbox_to_anchor') is not None))
+                        _facet_legend_spec.get('bbox_to_anchor') is not None),
+                    # PHASE_13_108: only texts dfdraw wrote itself are fitted.
+                    fit_automatic=(
+                        ([(shared_x_artist, 'x')]
+                         if not isinstance(shared_x, str) else [])
+                        + ([(shared_y_artist, 'y')]
+                           if not isinstance(shared_y, str) else [])
+                        + ([(fig._suptitle, 'title')] if not title else [])))
         else:
             plt.tight_layout()
             if global_1d_groups is not None:
@@ -6766,6 +6954,23 @@ class DFDraw:
             fig.suptitle(
                 f"{_main}\n{_sub}" if _sub else _main,
                 fontsize=11)
+        # PHASE_13_108_DF: default presentation (D108-A/B), as for 1-D facets.
+        # The legacy left-edge Y label carries a 'row=value' first line; the
+        # semantic label is its last line (row identity moves to the row
+        # headings that the shared Y title already adds).
+        _visible_cells = [ax for ax in axes.flat if ax.get_visible()]
+        if (plot_kind in _FACET_DEFAULT_PRESENTATION_KINDS
+                and len(_visible_cells) >= 2):
+            if (shared_xlabel is None and _default_shared_axis_title(
+                    _visible_cells, 'x') is not None):
+                shared_xlabel = True
+            if (shared_ylabel is None and _default_shared_axis_title(
+                    _visible_cells, 'y', last_line=True) is not None):
+                shared_ylabel = True
+            if _facet_legend_spec is None and _default_shared_legend_allowed(
+                    fig, _visible_cells, group_by=group_by,
+                    plot_kwargs=plot_kwargs, global_groups=nd94_groups):
+                _facet_legend_spec = _normalize_legend_spec('shared')
         # PHASE_13_93 Stage A: a single Figure-level layout calculation,
         # followed by explicit user overrides. Additional text is positioned
         # from final Axes bounding boxes; it must not trigger another pass.
@@ -6818,8 +7023,12 @@ class DFDraw:
         if shared_ylabel:
             # The legacy left-edge cell ylabel embeds 'row_dim=value\n'.
             # Semantic Figure labels must never inherit that facet heading.
+            # PHASE_13_108 (review R4): use the rendered semantic line, so
+            # AliasDataFrame titles survive, as for the X title.
+            _rendered_y = _rendered_axis_labels(axes.flat, 'y', last_line=True)
             label = (shared_ylabel if isinstance(shared_ylabel, str)
-                     else (plot_kwargs.get('ylabel') or str(y_expr or '')))
+                     else (_rendered_y[0] if _rendered_y else None)
+                     or plot_kwargs.get('ylabel') or str(y_expr or ''))
             for ax in axes.flat:
                 ax.set_ylabel('')
             shared_ylabel_artist = fig.supylabel(label, x=0.007)
@@ -7005,7 +7214,14 @@ class DFDraw:
                     _facet_legend_spec and
                     _facet_legend_spec.get('mode') == 'shared' and
                     (_facet_legend_spec.get('loc') is not None or
-                     _facet_legend_spec.get('bbox_to_anchor') is not None)))
+                     _facet_legend_spec.get('bbox_to_anchor') is not None)),
+                # PHASE_13_108: only texts dfdraw wrote itself are fitted.
+                fit_automatic=(
+                    ([(shared_xlabel_artist, 'x')]
+                     if not isinstance(shared_xlabel, str) else [])
+                    + ([(shared_ylabel_artist, 'y')]
+                       if not isinstance(shared_ylabel, str) else [])
+                    + ([(fig._suptitle, 'title')] if not title else [])))
 
         if any(isinstance(k, tuple) for k in stats_grid):
             aggregated_fits = {}
@@ -10634,11 +10850,15 @@ class DFDraw:
     #   density layer only (hist2d): bins (historical routing of a keyword
     #       both layers accept: the profile keeps its own default X bins),
     #       cmap, colorbar, clabel, vmin, vmax;
-    #   profile layer only: quantiles.
+    #   profile layer only: quantiles, quantile_mode (PHASE_13_108);
+    #   Figure legend: legend (PHASE_13_108, existing legend system).
     _FACETED_OVERLAY_ALLOWED = frozenset((
         'selection', 'sample', 'title', 'auto_title', '_suppress_layout',
         'bins', 'cmap', 'colorbar', 'clabel', 'vmin', 'vmax',
         'quantiles',
+        # PHASE_13_108: explicit quantile drawing switch of the profile layer
+        # ('auto', 'discrete' lines, 'band', 'nested_band'); presentation only.
+        'quantile_mode',
     ) + _FACETED_OVERLAY_FIGURE_KEYS)
 
     def _faceted_overlay(self, expr, type_str, *, facet_by, facet_by_bins,
@@ -10658,7 +10878,10 @@ class DFDraw:
         * Axes are independent by default (``sharex=False``,
           ``sharey=False``) so no cell is clipped to another cell's range;
           the caller may pass ``sharex``/``sharey`` explicitly.
-        * Each cell keeps the overlay's own legend; ``legend=`` is refused.
+        * Figure presentation follows the faceted profile (PHASE_13_108):
+          shared axis titles and one Figure legend by default, ``legend=``
+          and ``shared_xlabel``/``shared_ylabel`` override it; one colorbar
+          per cell.
         * Returns ``(fig, axes, stats)`` with the faceted envelope
           (``faceted``, ``facet_by``, ``groups``, ``per_group``,
           ``n_total``); each ``per_group[label]`` is
@@ -10678,7 +10901,7 @@ class DFDraw:
         keyword not in the accepted list, including ``selection_vector``,
         ``weights_vector`` and their label/categorical options, ``group_by``,
         ``same``, ``normalize``, ``fit``, ``range`` and ``nan_policy``;
-        ``legend=``; channel facets (``'vector'``, ``'group_by'``,
+        channel facets (``'vector'``, ``'group_by'``,
         ``'quantiles'``); more than one facet column; vector expressions;
         ``ax=``; and non-default ``share_x``/``share_y``/
         ``share_across_figures``.
@@ -10716,13 +10939,13 @@ class DFDraw:
         auto_title = kw.pop('auto_title', False)
         figure_kw = {k: kw.pop(k) for k in self._FACETED_OVERLAY_FIGURE_KEYS
                      if k in kw}
-        if figure_kw.get('legend') is not None:
-            # Each cell keeps the overlay's own legend; a Figure-level shared
-            # legend for overlays is not implemented.  Refuse instead of
-            # silently ignoring the request.
-            raise NotImplementedError(
-                "faceted overlay keeps one legend per cell; legend= is not "
-                "supported (PHASE_13_106)")
+        # PHASE_13_108_DF D108-C: legend= / show_legend= use the existing
+        # legend system.  "shared" (and the dict form) goes to the facet
+        # coordinator's Figure legend composer; per-cell modes ('all',
+        # 'first', 'none', False) are applied after drawing; unset means the
+        # D108-B default (one Figure legend when the cells draw one).
+        # (PHASE_13_106 refused legend= here: test S2_06[legend], replaced.)
+        legend_spec = _normalize_legend_spec(figure_kw.pop('legend', None))
         # A cell is the unfaceted overlay of its rows, with its own automatic
         # x/y range.  Shared axes would clip cells with a wider range, so the
         # default is independent axes; the caller may still ask for sharing.
@@ -10743,11 +10966,20 @@ class DFDraw:
             and v is not None and v is not False})
         if refused:
             accepted = sorted(k for k in self._FACETED_OVERLAY_ALLOWED
-                              if not k.startswith('_') and k != 'legend')
+                              if not k.startswith('_'))
             raise NotImplementedError(
                 "faceted overlay (PHASE_13_106) does not support "
                 + ", ".join(f"{k}=" for k in refused)
                 + "; accepted keywords: " + ", ".join(accepted))
+        # PHASE_13_108: check the quantile drawing switch before any Figure
+        # exists (the profile owner would only reject it inside the first
+        # cell).  Same values and message as plots/profile.py.
+        _quantile_mode = kw.get('quantile_mode')
+        if _quantile_mode is not None and _quantile_mode not in (
+                'auto', 'error_bars', 'band', 'discrete', 'nested_band'):
+            raise ValueError(
+                f"quantile_mode must be 'auto', 'error_bars', 'band', "
+                f"'discrete', or 'nested_band', got {_quantile_mode!r}")
         y_expr, x_expr = self._parse_expr(expr)
         if isinstance(y_expr, list) or isinstance(x_expr, list):
             raise NotImplementedError(
@@ -10769,7 +11001,11 @@ class DFDraw:
             quantiles=kw.get('quantiles'),
             selection=selection, facet_by_bins=facet_by_bins,
             facet_by_quantiles=facet_by_quantiles,
-            _overlay_layers=layers, **figure_kw)
+            _overlay_layers=layers,
+            _facet_legend_spec=legend_spec,
+            **figure_kw)
+        if legend_spec is not None and legend_spec['mode'] != 'shared':
+            _apply_legend_mode(fig, legend_spec)
         if save:
             fig.savefig(save)
         return fig, axes, stats

@@ -41,9 +41,12 @@ def test_BD1_vector_facets_use_per_component_axis_title_metadata(door):
             r'$Y_0$ metadata title',
             r'$Y_1$ metadata title',
         ]
-        assert [ax.get_xlabel() for ax in axes[:2]] == [
-            'X metadata title', 'X metadata title'
-        ]
+        # PHASE_13_108 (Architect D108-A, 2026-11-10): both cells render the
+        # same X metadata title, so it is now the one Figure X title; the Y
+        # titles differ per component and stay in the cells (review R1).
+        # Previously each cell carried the X title.
+        assert [ax.get_xlabel() for ax in axes[:2]] == ['', '']
+        assert fig._supxlabel.get_text() == 'X metadata title'
     finally:
         plt.close(fig)
 
@@ -56,9 +59,12 @@ def test_BD2_explicit_ylabel_still_wins_over_metadata():
     )
     try:
         axes = np.asarray(axes, dtype=object).ravel()
-        assert [ax.get_ylabel() for ax in axes[:2]] == [
-            'explicit y label', 'explicit y label'
-        ]
+        # PHASE_13_108 (Architect D108-A, 2026-11-10): the explicit label is
+        # the same in every cell, so it becomes the one Figure Y title; it
+        # still wins over the metadata titles.  Previously it was repeated
+        # in each cell.
+        assert [ax.get_ylabel() for ax in axes[:2]] == ['', '']
+        assert fig._supylabel.get_text() == 'explicit y label'
     finally:
         plt.close(fig)
 

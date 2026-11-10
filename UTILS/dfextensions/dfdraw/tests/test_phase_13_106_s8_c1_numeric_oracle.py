@@ -52,7 +52,9 @@ from matplotlib.collections import QuadMesh
 from dfextensions.dfdraw.drawer import DFDraw
 
 QUANTILES = [0.05, 0.101, 0.5, 0.9, 0.95]
-QUANTILE_LABELS = ['q=5%', 'q=10%', 'median', 'q=90%', 'q=95%']
+# PHASE_13_108 (Architect D108-D, 2026-11-10): 0.101 is labelled 'q=10.1%'
+# (before: 'q=10%', which could merge with a requested 0.1).
+QUANTILE_LABELS = ['q=5%', 'q=10.1%', 'median', 'q=90%', 'q=95%']
 SELECTION = 'x > 0.1'
 PROFILE_BINS = 50          # profile default X bins (see S7_06)
 MIN_ENTRIES = 3            # profile default for drawn bins

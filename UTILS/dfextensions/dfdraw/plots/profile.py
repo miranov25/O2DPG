@@ -39,6 +39,17 @@ from ._time_coords import to_date_coords
 from ._validation import validate_column_references
 
 
+def _quantile_percent_text(q):
+    """PHASE_13_108 D108-D: one formatter for a quantile level as a percent.
+
+    Up to six significant digits, without trailing zeros: 0.05 -> '5%',
+    0.1 -> '10%', 0.101 -> '10.1%', 0.5 -> '50%'.  The former '{:.0%}'
+    format rounded 0.101 to '10%', so two requested levels could share one
+    label (and one shared legend entry).  Round levels keep their text.
+    """
+    return f'{round(100.0 * float(q), 6):g}%'
+
+
 # =============================================================================
 # Phase 13.12.DF: Interval label formatting (AD-3)
 # =============================================================================
@@ -995,7 +1006,8 @@ def draw_profile(
                 if (_stat_quantile_combo and 'median' in stat_list
                         and abs(q_val - .5) < 1e-12):
                     continue  # the explicit median statistic owns q=0.5
-                q_label = f'q={q_val:.0%}' if abs(q_val - 0.5) > 1e-9 else 'median'
+                q_label = (f'q={_quantile_percent_text(q_val)}'
+                           if abs(q_val - 0.5) > 1e-9 else 'median')
                 if _qs_kind == 'linestyle':
                     q_ls = _qs_cycle[j % len(_qs_cycle)]
                     line, = ax.plot(
@@ -1026,7 +1038,7 @@ def draw_profile(
                     if n_valid > 2:
                         idx = np.where(valid)[0][int(0.4 * n_valid)]
                         ax.annotate(
-                            f'{q_val:.0%}',
+                            _quantile_percent_text(q_val),
                             xy=(bin_centers[idx], q_per_bin[idx]),
                             fontsize=7, fontweight='bold',
                             color=line.get_color(),

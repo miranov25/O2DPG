@@ -41,8 +41,18 @@ def _df(n=900):
 
 
 def _count_tight_layout(call):
-    original = plt.tight_layout
-    with patch.object(plt, "tight_layout", wraps=original) as mocked:
+    """Count whole-figure tight_layout passes through either door.
+
+    PHASE_13_108: the facet presentation owner calls ``fig.tight_layout``
+    directly (it did so before for explicit shared labels/legends, and now
+    does by default for faceted profiles).  ``pyplot.tight_layout`` delegates
+    to ``Figure.tight_layout``, so counting the Figure method counts every
+    pass exactly once, whichever door was used.
+    """
+    from matplotlib.figure import Figure
+    original = Figure.tight_layout
+    with patch.object(Figure, "tight_layout", autospec=True,
+                      side_effect=original) as mocked:
         fig, axes, stats = call()
     return mocked.call_count, fig, axes, stats
 
