@@ -1,6 +1,6 @@
 # ARCHITECT_DECISIONS.md
 # dfdraw — Architect Decision Registry
-# Version: 1.3.0 (PHASE_13_107_DF — AD-1/13.107.DF to AD-6/13.107.DF added: histogram quantile markers, weighted quantiles, one histogram normalization, datetime default, faceted histogram legend owner and quantile text, shared axis titles for every faceted kind)
+# Version: 1.3.0 (PHASE_13_107_DF — AD-1/13.107.DF to AD-7/13.107.DF added: histogram quantile markers, weighted quantiles, one histogram normalization, datetime default, faceted histogram legend owner and quantile text, shared axis titles for every faceted kind, S2e review corrections)
 # Date: 2026-11-10 (v1.3.0, v1.2.1, v1.2.0); 2026-06-06 (v1.1.0); 2026-06-04 (v1.0 / v1.0.1)
 # Maintainer: Marian Ivanov (architect)
 #
@@ -2080,7 +2080,7 @@ The four D108 identifiers of the proposal map to the registry identifiers AD-1 t
 
 ---
 
-## Phase 13.107.DF — Histogram quantile markers and unit-integral normalization (AD-1/13.107.DF to AD-6/13.107.DF)
+## Phase 13.107.DF — Histogram quantile markers and unit-integral normalization (AD-1/13.107.DF to AD-7/13.107.DF)
 
 **Phase trigger:** proposal `PHASE_13_107_DF_Histogram_UnitIntegral_and_Vertical_Quantiles_Proposal_v0_4_GPT29_20261110.md` (MD5 `dd2554b0afd80e26604dfb0d77a245b0`), consolidated review GPT27 2026-11-10: APPROVED WITH COMMENTS (3/3), with the W2 formula as the open gate. Coder S0 report `PHASE_13_107_DF_S0_Inventory_and_Contract_Fable5_1coder_20261110.md` (route inventory, defects N1–N4, W1/W2 truth table, decisions D-1..D-9).
 
@@ -2215,6 +2215,41 @@ The Architect chose option B: fix the faceted histogram legend inside this phase
 
 ---
 
+## AD-7/13.107.DF — S2e corrections after the S2d code review: stacked normalized histograms, weighted probability, exact W1
+
+**Phase:** 13.107.DF | **Date:** 2026-11-11 | **Original notation:** review findings F1–F4, F7b (`PHASE_13_107_DF_S2d_v0_1_Official_Code_Review_Summary_GPT27_20261111.md`, 5/5 REVISION_REQUESTED)
+
+S2d was committed by Architect decision as `6a150638`. This decision fixes the confirmed defects in S2e.
+
+**Decision:**
+
+1. **Stacked, normalized histograms.** Matplotlib conventions apply, and no combination crashes.
+   - `stacked=True, norm='density'`: the whole stack has unit area. This is Matplotlib's `stacked=True, density=True`; height of layer g = counts_g / (N_in · Δx), where N_in is the number of in-range rows of all groups.
+   - `stacked=True, norm='probability'`: the whole stack sums to 1. Each row weighs 1/N, where N is the number of finite rows of all groups.
+   - `stacked=True, hist_norm='density'|'probability'`: each group is normalized on its own and then stacked, so the stack totals the number of groups. For density, layer g = counts_g / (n_in,g · Δx); for probability, layer g = counts_g / n_g.
+   - `hist_norm` wins over `norm`.
+   - Before, the stacked branch drew raw counts under a Density/Probability title.
+2. **Weighted `norm='probability'`.** Each bin's share of the total physical weight, Σ_bin w / Σ w, so the bars of all rows sum to 1. The error bar is √(Σ_bin w²) / Σ w. Before, the bars were divided by the row count and summed to the mean weight; historical test HSW_3 was changed under the change rule.
+3. **W1 (`inverted_cdf`).** Exactly NumPy's arithmetic: the first x whose cumulative weight share `cumsum(w)/sum(w)` (float64) is ≥ q, with no tolerance. The `1 − 1e-12` margin of S2d is removed.
+4. **Line styles.** The quantile line styles repeat for any number of levels.
+5. **Negative-weight check.** It counts only the rows that are drawn: selected, sampled with the routes' fixed seed, with a finite X, and inside at least one `selection_vector` branch.
+
+**Ratification:** Architect 2026-11-11:
+
+> C. We can describe the mathematical formulation, and we should follow the same conventions as matplotlib. And do not crash. We need stacked, normalized histograms.
+
+> I am not sure what it is. We should use a common-sense value or the matplotlib convention.
+
+(the second answers the weighted-probability question)
+
+**Source:**
+
+- `plots/_hist_quantiles.py`;
+- `plots/histogram.py` (stacked branch, weighted probability);
+- `drawer.py` (`DFDraw.hist` preflight, `_hist_drawn_rows`).
+
+---
+
 ## Phase TS_v6 — Technical Summary v6 governance cycle (AD-1/TS_v6.DF to AD-2/TS_v6.DF)
 
 **Phase trigger:** Multi-session restructure of `dfdraw_Technical_Summary.md` (v6.0 → v6.3) and `dfdraw_PLOTTING_LIBRARY_COMPARISON.md` (v1.2 → v2.1) to align with the architect's December 2025 dfextensions presentation and 2026-06-05 verbal context. Cycle close formalized retroactively per GP-9.
@@ -2254,7 +2289,7 @@ The Architect chose option B: fix the faceted histogram legend inside this phase
 ---
 
 *dfdraw ARCHITECT_DECISIONS.md v1.3.0 — 2026-11-10*
-*v1.3.0 — 2026-11-10/11 (PHASE_13_107_DF: AD-1/13.107.DF to AD-6/13.107.DF)*
+*v1.3.0 — 2026-11-10/11 (PHASE_13_107_DF: AD-1/13.107.DF to AD-7/13.107.DF)*
 *v1.2.1 — 2026-11-10 (PHASE_13_108_DF: AD-5/13.108.DF, numeric bins never merged by their names)*
 *v1.2.0 — 2026-11-10 (PHASE_13_108_DF: AD-1/13.108.DF to AD-4/13.108.DF, Architect decision D108-A–D)*
 *v1.0 / v1.0.1 — 2026-06-04 (Org panel convergent touch-ups: header, AD-37/50 supersession, GP transitional authority, GP Date fields, About additions)*

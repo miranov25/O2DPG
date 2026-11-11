@@ -242,7 +242,8 @@ def _hist_bin_values_and_errors(x_data, bins, used_range, hist_weights,
     bars.  ``density`` divides by the weight **inside** the shown bins
     (Matplotlib's ``density=True``: unit area), not by all rows;
     ``probability`` uses the already scaled drawing weights unchanged (the
-    bars are ``sum(w)/n_rows``).  Before, the error bars of a density
+    bars are ``sum(w)/n_rows`` without physical weights and, since S2e,
+    ``sum(w)/sum(all w)`` with them).  Before, the error bars of a density
     histogram with a ``range=`` sat at the in-range fraction of the bar
     height, and weighted probability error bars used ``sum(w)`` instead of
     ``n_rows``.
@@ -254,7 +255,8 @@ def _hist_bin_values_and_errors(x_data, bins, used_range, hist_weights,
         sum_w2, _ = np.histogram(x_data, bins=bins, range=used_range,
                                  weights=_w**2)
         if norm == "probability":
-            # _w already carries the 1/n_rows scale of the drawn bars.
+            # _w already carries the scale of the drawn bars (1/n_rows, or
+            # 1/sum(w) with physical weights).
             heights = sum_w.astype(float)
             errs = np.sqrt(sum_w2)
         elif norm == "density" or density:
@@ -633,9 +635,14 @@ def draw_hist(
         density = True
     elif norm == "probability":
         if _hist_weights is not None:
-            # Explicit user weights × probability normalization: per-row weight
-            # multiplied by 1/n. Matches the "probability per row" semantic.
-            _hist_weights = (_hist_weights / len(x_data)) if len(x_data) > 0 else _hist_weights
+            # PHASE_13_107_DF S2e (Architect 2026-11-11, common sense): with
+            # physical weights, probability is each bin's share of the total
+            # weight, so the bars of all rows sum to 1.  Before, the weights
+            # were divided by the row count and the bars summed to the mean
+            # weight.  A curve without positive weight stays at zero.
+            _w_total = float(np.sum(_hist_weights))
+            if _w_total > 0:
+                _hist_weights = _hist_weights / _w_total
         else:
             # Pre-FIX1 behavior: synthesize uniform 1/n weights.
             _hist_weights = np.ones_like(x_data) / len(x_data) if len(x_data) > 0 else None
@@ -1176,6 +1183,44 @@ def _draw_hist_grouped(
             _stacked_ec = _user_edgecolor if _user_edgecolor is not None else hist_kwargs.pop('edgecolor', None)
         # Strip 'edgecolor' from hist_kwargs to avoid passing twice
         hist_kwargs.pop('edgecolor', None)
+        # PHASE_13_107_DF S2e (review finding F2; Architect 2026-11-11:
+        # "We need stacked, normalized histograms", Matplotlib conventions):
+        #   norm='density'      whole stack has unit area (Matplotlib
+        #                       stacked=True, density=True);
+        #   norm='probability'  whole stack sums to 1: every row weighs
+        #                       1/N, N = all finite rows of all groups;
+        #   hist_norm=...       each group is normalized on its own (density:
+        #                       unit area over its in-range rows; probability:
+        #                       its rows sum to 1), then the groups are
+        #                       stacked, so the stack totals the group count.
+        # hist_norm wins over norm.  Before, the stacked branch ignored
+        # norm='probability' and hist_norm and drew raw counts under a
+        # Density/Probability title.
+        _stack_weights = None
+        _stack_density = _outer_density and hist_norm is None
+        if hist_norm in ('density', 'probability') or (
+                hist_norm is None and _norm == 'probability'):
+            _stack_density = False
+            if isinstance(bins_arg, (int, np.integer, str)):
+                bins_arg = np.histogram_bin_edges(
+                    np.concatenate(data_list), bins=bins_arg,
+                    range=hist_kwargs.get('range'))
+            _edges = np.asarray(bins_arg, dtype=float)
+            _widths = np.diff(_edges)
+            _n_all = sum(len(d) for d in data_list)
+            _stack_weights = []
+            for d in data_list:
+                if hist_norm == 'density':
+                    _in = (d >= _edges[0]) & (d <= _edges[-1])
+                    _k = np.clip(np.searchsorted(_edges, d, side='right') - 1,
+                                 0, len(_widths) - 1)
+                    _n_in = int(_in.sum())
+                    _w = np.where(_in, 1.0 / (max(_n_in, 1) * _widths[_k]), 0.0)
+                elif hist_norm == 'probability':
+                    _w = np.full(len(d), 1.0 / max(len(d), 1))
+                else:   # norm='probability' on the whole stack
+                    _w = np.full(len(d), 1.0 / _n_all)
+                _stack_weights.append(_w)
         ax.hist(data_list, bins=bins_arg, label=labels,
                 color=surviving_colors, edgecolor=_stacked_ec,
                 stacked=True,
@@ -1183,7 +1228,8 @@ def _draw_hist_grouped(
                 # site 2/4 — stacked branch). v1.1 spec missed this site;
                 # added in v1.2 per Sonet50 panel. Locked by §9.CH.10.
                 cumulative=cumulative,
-                density=_outer_density,
+                density=_stack_density,
+                weights=_stack_weights,
                 **hist_kwargs)
         # PHASE_13_107_DF: stacking changes only the drawn heights; each
         # group's X distribution (and so its quantiles) is its own.

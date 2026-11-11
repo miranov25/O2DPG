@@ -17,7 +17,10 @@ Estimators (Architect decisions 2026-11-10, PHASE_13_107 S0 report):
 
 * no physical weights: NumPy ``method='linear'``;
 * weights, ``weighted_quantile_method='inverted_cdf'`` (default, W1): the
-  first x whose cumulative weight reaches q*W (NumPy's weighted method);
+  first x whose cumulative weight share ``cumsum(w)/sum(w)`` (float64) is
+  >= q, exactly NumPy's weighted ``inverted_cdf`` (no tolerance; S2e fix of
+  review finding F1: a ``1 - 1e-12`` margin returned the neighbouring value
+  when q lay on or next to a step);
 * weights, ``weighted_quantile_method='linear'`` (W2, Julia StatsBase
   definition): h = q*(W - w1) + w1, linear interpolation of x over the
   cumulative weights; equals NumPy ``linear`` for equal weights.
@@ -39,6 +42,7 @@ the identity used by the shared Figure legend; names come from
 ``plots/_numeric_labels.py`` (distinct names for distinct levels, 'median'
 only for exactly 0.5).
 """
+import itertools
 import numbers
 
 import numpy as np
@@ -137,18 +141,18 @@ def _sorted_positive(x, w):
 
 
 def weighted_inverted_cdf(x, w, levels):
-    """W1: first x with cumulative weight >= q*W (q=0: smallest x)."""
+    """W1: first x whose cumulative weight share is >= q (q=0: smallest x).
+
+    The same arithmetic as NumPy's weighted ``inverted_cdf``: the share is
+    ``cumsum(w, float64) / sum`` and the index is
+    ``searchsorted(share, q, side='left')``.  Zero weights were removed, so
+    q=0 gives the smallest x with positive weight.
+    """
     x, w = _sorted_positive(x, w)
-    cum = np.cumsum(w)
-    total = cum[-1]
-    out = []
-    for q in levels:
-        if q == 0.0:
-            out.append(float(x[0]))
-            continue
-        k = int(np.searchsorted(cum, q * total * (1.0 - 1e-12), side='left'))
-        out.append(float(x[min(k, len(x) - 1)]))
-    return out
+    cdf = np.cumsum(w, dtype=np.float64)
+    cdf /= cdf[-1]
+    k = np.searchsorted(cdf, np.asarray(levels, dtype=np.float64), side='left')
+    return [float(x[min(int(i), len(x) - 1)]) for i in k]
 
 
 def weighted_linear(x, w, levels):
@@ -226,7 +230,10 @@ def draw_markers(ax, record, color, shown_range, text=None, time_axis=False):
     lo, hi = (float(shown_range[0]), float(shown_range[1]))
     already = {getattr(line, '_dfdraw_quantile', None) for line in ax.lines}
     visible = []
-    styles = iter(_LEVEL_LINESTYLES * 8)
+    # S2e (review finding F3): the styles repeat for any number of levels
+    # (before, 66 or more levels exhausted a fixed list after the Figure
+    # existed).  The level identity is the number, never the style.
+    styles = itertools.cycle(_LEVEL_LINESTYLES)
     curve = len({getattr(t, '_dfdraw_quantile_curve') for t in ax.texts
                  if hasattr(t, '_dfdraw_quantile_curve')})
     side = 'right' if curve % 2 == 0 else 'left'

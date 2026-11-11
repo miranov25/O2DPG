@@ -1937,6 +1937,39 @@ class DFDraw:
                 f"Cannot evaluate expression '{expr}': {e}"
             )
     
+    def _hist_drawn_rows(self, df, expr, selection_vector):
+        """PHASE_13_107_DF S2e: boolean mask of the rows of ``df`` (already
+        selected and sampled) that a histogram draws: a finite X in at least
+        one expression of ``expr``, and inside at least one branch of
+        ``selection_vector`` when given.  Anything that cannot be resolved
+        here keeps the row (the check then stays conservative)."""
+        keep = np.ones(len(df), dtype=bool)
+        try:
+            y_expr, _ = self._parse_expr(expr)
+            parts = y_expr if isinstance(y_expr, list) else [y_expr]
+            finite = np.zeros(len(df), dtype=bool)
+            for part in parts:
+                col = (df[part] if part in df.columns
+                       else self._eval_column(part, df=df))
+                values = np.asarray(col)
+                if values.dtype.kind in 'biuf':
+                    finite |= np.isfinite(values.astype(float))
+                else:
+                    finite |= np.asarray(pd.notna(col))
+            keep &= finite
+        except Exception:
+            pass
+        if selection_vector is not None and len(selection_vector) >= 1:
+            try:
+                inside = np.zeros(len(df), dtype=bool)
+                for branch in selection_vector:
+                    inside |= df.index.isin(
+                        self._apply_selection(df, branch).index)
+                keep &= inside
+            except Exception:
+                pass
+        return keep
+
     def _apply_selection(
         self, 
         df: pd.DataFrame, 
@@ -8468,11 +8501,19 @@ class DFDraw:
                 has_weights=(weights is not None
                              or bool(weights_vector)))
             # Negative physical weights do not define a distribution: refuse
-            # before any Figure (checked on the selected rows).
+            # before any Figure.  S2e (review finding F4): checked only on
+            # the rows that are drawn - selected, then sampled exactly as the
+            # routes sample (fixed seed), with a finite X in at least one
+            # expression and inside at least one selection_vector branch.
+            # Before, rows dropped by sample= (or outside every branch, or
+            # with a missing X) still caused a refusal.
             _w_exprs = [w for w in ([weights] + list(weights_vector or []))
                         if isinstance(w, str)]
             if _w_exprs:
-                _w_df = self._apply_selection(self.df, selection)
+                _w_df = self._apply_sampling(
+                    self._apply_selection(self.df, selection), sample)
+                _w_df = _w_df[self._hist_drawn_rows(
+                    _w_df, expr, selection_vector)]
                 for _w_expr in _w_exprs:
                     _w_vals = np.asarray(
                         _w_df[_w_expr] if _w_expr in _w_df.columns

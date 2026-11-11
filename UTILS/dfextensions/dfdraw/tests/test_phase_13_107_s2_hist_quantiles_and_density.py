@@ -89,15 +89,25 @@ def _frame(n=6000, seed=10741):
 
 
 def ref_w1(x, w, levels):
-    x, w = np.asarray(x, float), np.asarray(w, float)
-    keep = w > 0
-    x, w = x[keep], w[keep]
-    order = np.lexsort((w, x))
-    x, w = x[order], w[order]
-    cum = np.cumsum(w) / w.sum()
-    return [float(x[0]) if q == 0 else
-            float(x[min(int(np.argmax(cum >= q - 1e-12)), len(x) - 1)])
-            for q in levels]
+    """Independent W1 reference in exact rational arithmetic: the first x
+    (sorted) whose cumulative weight share is >= q, with no tolerance.
+    (S2e: the S2d reference repeated the production 1e-12 margin, review
+    finding F1, so it could not detect it.)"""
+    from fractions import Fraction
+    pairs = sorted((float(a), float(b)) for a, b in zip(x, w) if b > 0)
+    total = sum(Fraction(b) for _, b in pairs)
+    out = []
+    for q in levels:
+        target = Fraction(float(q)) * total
+        cum = Fraction(0)
+        for value, weight in pairs:
+            cum += Fraction(weight)
+            if cum >= target:
+                out.append(value)
+                break
+        else:
+            out.append(pairs[-1][0])
+    return out
 
 
 def ref_w2(x, w, levels):

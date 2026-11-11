@@ -933,17 +933,21 @@ class TestPhase_13_27_Commit2_FIX1:
         np.testing.assert_allclose(heights, expected, rtol=1e-12, atol=1e-15)
 
     def test_HSW_3_hist_weights_with_norm_probability(self, df_selection):
-        """§9.HSW.3 (FIX1 §7b): hist + weights= + norm='probability' scales
-        per-row weights by 1/n_clean. Sum of heights ≈ mean(weights)."""
+        """§9.HSW.3 (FIX1 §7b; changed by PHASE_13_107_DF S2e, Architect
+        2026-11-11): hist + weights= + norm='probability' gives each bin its
+        share of the total weight, so the bars of all rows sum to 1.
+        Before S2e the weights were divided by the row count and the bars
+        summed to mean(weights)."""
         d = DFDraw(df_selection)
         fig, ax, stats = d.hist(
             "x", weights="w_a", bins=10, range=(0, 10),
             norm="probability", histtype="bar",
         )
         heights = np.array([p.get_height() for p in ax.containers[0].patches])
-        # Sum of probability-normalized weighted bin heights == mean(w_a)
-        n_clean = len(df_selection)  # df_selection has no NaN/Inf
-        expected_sum = df_selection['w_a'].sum() / n_clean
+        # df_selection has no NaN/Inf; the share inside range=(0, 10)
+        inside = (df_selection['x'] >= 0) & (df_selection['x'] <= 10)
+        expected_sum = (df_selection.loc[inside, 'w_a'].sum()
+                        / df_selection['w_a'].sum())
         np.testing.assert_allclose(heights.sum(), expected_sum, rtol=1e-12)
 
     def test_HSW_4_hist_weights_with_group_by_raises(self, df_selection):
