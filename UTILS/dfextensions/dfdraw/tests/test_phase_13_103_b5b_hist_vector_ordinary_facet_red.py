@@ -176,12 +176,27 @@ def test_B5_09_empty_nan_and_range_filtered_cells():
         plt.close(fig)
 
 
-def test_B5_10_quantiles_refused_before_figure_allocation():
+def test_B5_10_quantiles_drawn_per_branch_and_cell():
+    """PHASE_13_107_DF (change rule): histogram quantiles were refused on
+    this route because their semantics were undefined; PHASE_13_107 defines
+    them (all selected finite values of each drawn curve).  Every branch of
+    every cell now carries its own record, equal to NumPy on its rows."""
     df = _frame()
-    before = set(plt.get_fignums())
-    with pytest.raises((NotImplementedError, ValueError), match='quantiles'):
-        DFDraw(df).draw('[y0,y1]', type='hist', facet_by='B', quantiles=[.2, .8])
-    assert set(plt.get_fignums()) == before
+    fig, axes, stats = DFDraw(df).draw('[y0,y1]', type='hist', facet_by='B',
+                                       quantiles=[.2, .8])
+    try:
+        for branch, expr in zip(stats, ('y0', 'y1')):
+            for cell, cell_stats in branch['per_group'].items():
+                rows = df[df.B.astype(str) == str(cell)][expr].to_numpy(float)
+                rows = rows[np.isfinite(rows)]
+                got = cell_stats['hist_quantiles']['x']
+                if rows.size == 0:      # an all-NaN cell has no quantiles
+                    assert all(np.isnan(got))
+                    continue
+                assert got == pytest.approx(np.quantile(rows, [.2, .8]),
+                                            abs=1e-12)
+    finally:
+        plt.close(fig)
 
 
 def test_B5_duplicate_expression_identity_refused_preallocation():

@@ -21,6 +21,8 @@ from ._auto_title import build_auto_title, apply_auto_title, parse_auto_title_pa
 from ._data_sanitize import sanitize_for_plot
 from ._autorange import compute_autorange, VALID_STRATEGIES
 from ._time_coords import to_date_coords
+# PHASE_13_107_DF: one owner for histogram X-quantile markers.
+from . import _hist_quantiles as _hq
 # Phase 13.30.DF: Class-2 column-reference parameter validation
 from ._validation import validate_column_references
 # Phase 13.37.DF (BUG-016): pd.Interval-aware sort key for legend ordering.
@@ -189,6 +191,22 @@ def _group_weights(
     )
 
 
+def _patch_color(patches):
+    """Colour of a drawn histogram curve (outline for step, fill otherwise).
+
+    ``patches`` is the third return value of ``ax.hist`` for one dataset:
+    a BarContainer (bar types) or a list of Polygons (step types).
+    """
+    from matplotlib.patches import Polygon
+    items = list(getattr(patches, 'patches', patches))
+    if not items:
+        return None
+    first = items[0]
+    if isinstance(first, Polygon) and not first.get_fill():
+        return first.get_edgecolor()
+    return first.get_facecolor()
+
+
 def _hist_bin_values_and_errors(x_data, bins, used_range, hist_weights,
                                 norm, density):
     """
@@ -219,6 +237,15 @@ def _hist_bin_values_and_errors(x_data, bins, used_range, hist_weights,
         counts_for_mask is the per-bin content used to skip empty bins;
         sum_w and sum_w2 are the unscaled sufficient accumulators
         (for unweighted data both equal the raw counts).
+
+    PHASE_13_107_DF (S1, defects N1/N5): the heights are exactly the drawn
+    bars.  ``density`` divides by the weight **inside** the shown bins
+    (Matplotlib's ``density=True``: unit area), not by all rows;
+    ``probability`` uses the already scaled drawing weights unchanged (the
+    bars are ``sum(w)/n_rows``).  Before, the error bars of a density
+    histogram with a ``range=`` sat at the in-range fraction of the bar
+    height, and weighted probability error bars used ``sum(w)`` instead of
+    ``n_rows``.
     """
     if hist_weights is not None:
         _w = np.asarray(hist_weights)
@@ -226,14 +253,15 @@ def _hist_bin_values_and_errors(x_data, bins, used_range, hist_weights,
                                      weights=_w)
         sum_w2, _ = np.histogram(x_data, bins=bins, range=used_range,
                                  weights=_w**2)
-        total_w = float(_w.sum()) if len(_w) > 0 else 1.0
         if norm == "probability":
-            heights = sum_w / total_w
-            errs = np.sqrt(sum_w2) / total_w
+            # _w already carries the 1/n_rows scale of the drawn bars.
+            heights = sum_w.astype(float)
+            errs = np.sqrt(sum_w2)
         elif norm == "density" or density:
             bws = np.diff(_edges)
-            heights = sum_w / (total_w * bws)
-            errs = np.sqrt(sum_w2) / (total_w * bws)
+            inside = float(sum_w.sum()) or 1.0
+            heights = sum_w / (inside * bws)
+            errs = np.sqrt(sum_w2) / (inside * bws)
         else:
             heights = sum_w.astype(float)
             errs = np.sqrt(sum_w2)
@@ -246,8 +274,9 @@ def _hist_bin_values_and_errors(x_data, bins, used_range, hist_weights,
             errs = np.sqrt(counts) / n_total
         elif norm == "density" or density:
             bws = np.diff(_edges)
-            heights = counts / (n_total * bws)
-            errs = np.sqrt(counts) / (n_total * bws)
+            inside = float(counts.sum()) or 1.0
+            heights = counts / (inside * bws)
+            errs = np.sqrt(counts) / (inside * bws)
         else:
             heights = counts.astype(float)
             errs = np.sqrt(counts)
@@ -324,6 +353,14 @@ def draw_hist(
     # 'show_fields' (list of str). None → use style defaults. Sub-key names +
     # accepted enum values are LOCKED at FIX1 close.
     fit_textbox_kwargs: Optional[Dict[str, Any]] = None,
+    # PHASE_13_107_DF: X-quantile markers.  Validated public values travel
+    # from DFDraw.hist() under these private names (they never reach
+    # matplotlib); levels = list of distinct probabilities, method = None
+    # (unweighted / default) or 'inverted_cdf' / 'linear' (weighted).
+    _hist_quantiles: Optional[List[float]] = None,
+    _hist_quantile_method: Optional[str] = None,
+    # PHASE_13_107_DF: None, 'level', 'value' or 'both' (validated).
+    _hist_quantile_text: Optional[str] = None,
     **kwargs
 ) -> Tuple[plt.Figure, plt.Axes, Dict[str, Any]]:
     """
@@ -437,6 +474,11 @@ def draw_hist(
         isinstance(x, str) and x in df.columns
         and np.issubdtype(df[x].dtype, np.datetime64)
     )
+    # PHASE_13_107_DF (decision D-8): a datetime column without time_format
+    # failed in the statistics (np.mean of datetime64).  Use the existing
+    # date-coordinate route with automatic date ticks instead.
+    if _x_is_datetime and time_format is None:
+        time_format = "auto"
 
     # Phase 13.40.DF M5 correctness guard: hist_errors + cumulative is
     # statistically wrong. Poisson per-bin errors assume independent counts;
@@ -655,6 +697,7 @@ def draw_hist(
             x_data, bins=_bins_for_edges, range=_used_range
         )
 
+        _group_quantile_records = {}
         n_rendered = _draw_hist_grouped(
             df, x, ax, group_by, top_k, stacked,
             bin_edges=shared_edges,
@@ -684,13 +727,24 @@ def draw_hist(
             # 2 overlaid branches at ~847/853). Without this, all 3 grouped
             # call sites silently drop cumulative.
             cumulative=cumulative,
+            # PHASE_13_107_DF: norm= is honoured per group (S1 defects
+            # N3/N4) and every group curve gets its own quantile markers.
+            _norm=norm,
+            _quantile_levels=_hist_quantiles,
+            _quantile_method=_hist_quantile_method,
+            _quantile_records=_group_quantile_records,
+            _shown_range=_hq.shown_range(shared_edges, _used_range),
+            _time_coords=time_format is not None,
+            _quantile_text=_hist_quantile_text,
             **kwargs   # group_by_bins/hist_norm/min_entries already consumed
         )
         stats_dict["grouped"] = True
         stats_dict["n_groups"] = n_rendered   # was missing — T1 observation
+        if _hist_quantiles is not None:
+            stats_dict["hist_quantiles"] = _group_quantile_records
     else:
         # Single histogram
-        ax.hist(
+        _hist_artists = ax.hist(
             x_data, bins=bins, range=_used_range, density=density, weights=_hist_weights,
             color=color, alpha=alpha, histtype=histtype, edgecolor=edgecolor,
             linewidth=linewidth, label=label,
@@ -698,6 +752,19 @@ def draw_hist(
             cumulative=cumulative,
             **kwargs
         )
+        # PHASE_13_107_DF: X-quantile markers of this curve, from all its
+        # selected finite values (x_data is not range-clipped) and its
+        # physical weights (w_data; display weights never count).
+        if _hist_quantiles is not None:
+            _record = _hq.curve_quantiles(
+                x_data, w_data, _hist_quantiles, _hist_quantile_method)
+            _curve_color = color if color is not None else _patch_color(
+                _hist_artists[2])
+            _hq.draw_markers(
+                ax, _record, _curve_color,
+                _hq.shown_range(bins, _used_range),
+                text=_hist_quantile_text, time_axis=time_format is not None)
+            stats_dict["hist_quantiles"] = _record
         # Phase 13.37.DF: Poisson error bar overlay for ungrouped path.
         # CP1-7: use edges from np.histogram() return (bins= may be int).
         # CP1-6: weighted Poisson via Σw² when weights= column is set.
@@ -880,11 +947,17 @@ def draw_hist(
 
     # Labels
     ax.set_xlabel(xlabel or x_name)
+    # PHASE_13_107_DF: the Y title names the normalization actually drawn;
+    # on the grouped path hist_norm wins over norm (it said "Count" for
+    # grouped hist_norm='density').
+    _drawn_norm = norm
+    if group_by is not None and hist_norm is not None:
+        _drawn_norm = hist_norm
     if ylabel:
         ax.set_ylabel(ylabel)
-    elif norm == "density":
+    elif _drawn_norm == "density":
         ax.set_ylabel("Density")
-    elif norm == "probability":
+    elif _drawn_norm == "probability":
         ax.set_ylabel("Probability")
     else:
         ax.set_ylabel("Count")
@@ -907,6 +980,10 @@ def draw_hist(
     # Legend for grouped
     if not _suppress_legend:
         if group_by is not None:
+            ax.legend(loc=get_style_value("legend.loc", "best"))
+        elif any(getattr(line, '_dfdraw_quantile', None) is not None
+                 for line in ax.lines):
+            # PHASE_13_107_DF: name the quantile markers of a single curve.
             ax.legend(loc=get_style_value("legend.loc", "best"))
     
     if not _suppress_layout:
@@ -960,6 +1037,15 @@ def _draw_hist_grouped(
     # forwarding per QRC v1.32 #6 — DFDraw.hist → draw_hist → _draw_hist_grouped
     # → ax.hist. NEVER access via kwargs.get/**hist_kwargs.
     cumulative: Union[bool, int] = False,
+    # PHASE_13_107_DF: the outer norm= (honoured per group, S1 defects
+    # N3/N4) and the quantile-marker request of every group curve.
+    _norm: Optional[str] = None,
+    _quantile_levels: Optional[List[float]] = None,
+    _quantile_method: Optional[str] = None,
+    _quantile_records: Optional[Dict[str, Any]] = None,
+    _shown_range: Optional[Tuple[float, float]] = None,
+    _time_coords: bool = False,
+    _quantile_text: Optional[str] = None,
     **hist_kwargs
 ) -> int:
     """Draw grouped/overlaid histograms.
@@ -982,6 +1068,18 @@ def _draw_hist_grouped(
     # group_by + column-name weights raises NotImplementedError earlier).
     # Without this pop, ax.hist sees 'weights' twice (TypeError).
     hist_kwargs.pop('weights', None)
+    # PHASE_13_107_DF (S1, defects N2-N4): one normalization per group,
+    # applied identically to the bars and to the error bars.  hist_norm wins;
+    # otherwise the outer norm= acts per group (before: norm='probability'
+    # was dropped and drew raw counts, norm='density' bars had raw-count
+    # error bars, hist_norm='density' used the mean bin width and all rows).
+    _outer_density = hist_kwargs.pop('density', False)
+    _group_norm = hist_norm
+    if _group_norm is None:
+        if _norm in ('probability', 'density'):
+            _group_norm = _norm
+        elif _outer_density:
+            _group_norm = 'density'
 
     # Get groups (pd.Interval objects when group_by_bins/_quantiles was used;
     # scalar values otherwise).
@@ -991,6 +1089,17 @@ def _draw_hist_grouped(
     # because '(1' < '(2' lexicographically. Categorical string groups are
     # unaffected — _interval_sort_key falls through to string order for those.
     groups = sorted(df[group_by].unique(), key=_interval_sort_key)
+
+    # PHASE_13_107_DF: with time_format (also the automatic one for a
+    # datetime column) draw_hist bins in date coordinates; the groups must
+    # use the same conversion owner.  Before, the grouped path read the raw
+    # column (datetime nanoseconds or epoch seconds), so group bars and any
+    # quantile markers fell far outside the date-coordinate bins.
+    def _column_values(frame):
+        col = frame[x]
+        if _time_coords:
+            return to_date_coords(col.to_numpy())
+        return pd.to_numeric(col, errors="coerce").to_numpy(dtype=float)
 
     # Top-K filtering (existing behavior)
     if top_k is not None and len(groups) > top_k:
@@ -1042,7 +1151,8 @@ def _draw_hist_grouped(
         # also skipped in stacked mode (one ax.hist call shared across stacks).
         data_list, labels, surviving_colors = [], [], []
         for i, g in enumerate(groups):
-            d = df[df[group_by] == g][x].dropna().values.astype(float)
+            d = _column_values(df[df[group_by] == g])
+            d = d[np.isfinite(d)]   # PHASE_13_107_DF: as the overlaid route
             if len(d) >= min_entries:
                 data_list.append(d)
                 # Label: str(g) handles both scalars and pd.Interval objects.
@@ -1073,7 +1183,17 @@ def _draw_hist_grouped(
                 # site 2/4 — stacked branch). v1.1 spec missed this site;
                 # added in v1.2 per Sonet50 panel. Locked by §9.CH.10.
                 cumulative=cumulative,
+                density=_outer_density,
                 **hist_kwargs)
+        # PHASE_13_107_DF: stacking changes only the drawn heights; each
+        # group's X distribution (and so its quantiles) is its own.
+        if _quantile_levels is not None:
+            for _d, _lab, _col in zip(data_list, labels, surviving_colors):
+                _rec = _hq.curve_quantiles(_d, None, _quantile_levels,
+                                           _quantile_method)
+                _hq.draw_markers(ax, _rec, _col, _shown_range,
+                                 text=_quantile_text, time_axis=_time_coords)
+                _quantile_records[_lab] = _rec
         return len(data_list)
     else:
         # Overlaid histograms — one ax.hist call per surviving group.
@@ -1088,6 +1208,7 @@ def _draw_hist_grouped(
         _style_edgecolor = hist_kwargs.pop('edgecolor', None)
 
         n_rendered = 0
+        _pending_markers = []   # PHASE_13_107_DF: drawn after all groups
         for i, group in enumerate(groups):
             # BUG_dfdraw_20260505: cast to float for boolean expressions
             group_mask = df[group_by] == group
@@ -1097,18 +1218,28 @@ def _draw_hist_grouped(
             # single-plot _mask). Otherwise keep the original x-only dropna.
             if _user_weights_arr is not None:
                 _wfull = np.asarray(_user_weights_arr, dtype=float)
-                _xfull = pd.to_numeric(df[x], errors="coerce").to_numpy(dtype=float)
+                _xfull = _column_values(df)
                 _gm = group_mask.to_numpy() & np.isfinite(_xfull) & np.isfinite(_wfull)
                 group_data = _xfull[_gm]
                 _group_w = _wfull[_gm]
             else:
-                group_data = df[group_mask][x].dropna().values.astype(float)
+                group_data = _column_values(df[group_mask])
+                # PHASE_13_107_DF: finite values only, as the single-curve
+                # route (sanitize) and the weighted route (joint finite
+                # mask) already do; +/-inf was counted in the per-group
+                # probability denominator but never drawn.
+                group_data = group_data[np.isfinite(group_data)]
                 _group_w = None
             if len(group_data) < min_entries:
                 continue
-            weights = _group_weights(group_data, bin_edges, hist_norm)
+            # PHASE_13_107_DF: probability = 1/n_group per row (all rows of
+            # the group, as for a single histogram); density = Matplotlib's
+            # per-bin-width unit area over the rows inside the bins.
+            _group_density = _group_norm == 'density'
+            weights = (_group_weights(group_data, bin_edges, 'probability')
+                       if _group_norm == 'probability' else None)
             # PHASE 13.63.1: raw weighted counts — per-row weights are the render
-            # weights (hist_norm is None on this path, so _group_weights is None).
+            # weights (normalized weighted grouping is refused upstream).
             if _group_w is not None:
                 weights = _group_w if weights is None else _group_w * weights
             # Phase 13.36.DF: user override > palette
@@ -1139,6 +1270,7 @@ def _draw_hist_grouped(
                         # linestyle_cycle path. Phase 13.37 split overlaid into
                         # 2 branches; both need explicit forward.)
                         cumulative=cumulative,
+                        density=_group_density,
                         **hist_kwargs)
             else:
                 # No cycle OR user explicit → existing flow (linestyle in **kwargs)
@@ -1149,50 +1281,27 @@ def _draw_hist_grouped(
                         # Phase 13.40.DF: cumulative (call site 4/4 — overlaid
                         # default path).
                         cumulative=cumulative,
+                        density=_group_density,
                         **hist_kwargs)
+            # PHASE_13_107_DF: this group's quantile markers (its own rows,
+            # its own physical weights, never the display weights).  They
+            # are drawn after all groups, so the legend lists the groups
+            # first and the quantile levels after them.
+            if _quantile_levels is not None:
+                _pending_markers.append(
+                    (str(group), group_data, _group_w, group_color))
 
             # Phase 13.37.DF: Poisson error bar overlay (CP1-1/CP1-2 fix:
             # color=group_color follows Phase 13.36 sentinel, NOT colors[i]).
             if hist_errors:
-                if _group_w is not None or _hist_weights_arr is not None:
-                    # Weighted Poisson: variance per bin = Σw² (CP1-6 fix)
-                    if _group_w is not None:
-                        # PHASE 13.63.1: joint-masked user weights, already
-                        # aligned to group_data (no rough re-slice needed).
-                        _w = _group_w
-                    else:
-                        _w = np.asarray(_hist_weights_arr)[group_mask.values]
-                        # Sanitize to match group_data
-                        _w = _w[~np.isnan(_w)][:len(group_data)] if len(_w) >= len(group_data) else _w
-                    sum_w, _edges = np.histogram(group_data, bins=bins_arg, weights=_w)
-                    sum_w2, _ = np.histogram(group_data, bins=bins_arg, weights=_w**2)
-                    total_w = float(_w.sum()) if len(_w) > 0 else 1.0
-                    if hist_norm == "probability":
-                        heights = sum_w / total_w
-                        errs = np.sqrt(sum_w2) / total_w
-                    elif hist_norm == "density":
-                        bws = np.diff(_edges)
-                        heights = sum_w / (total_w * bws)
-                        errs = np.sqrt(sum_w2) / (total_w * bws)
-                    else:
-                        heights = sum_w.astype(float)
-                        errs = np.sqrt(sum_w2)
-                    counts_for_mask = sum_w
-                else:
-                    counts, _edges = np.histogram(group_data, bins=bins_arg)
-                    n_total = len(group_data)
-                    if hist_norm == "probability":
-                        heights = counts / n_total
-                        errs = np.sqrt(counts) / n_total
-                    elif hist_norm == "density":
-                        # Per-bin width (CP1-8 fix — was mean width in v1.0)
-                        bws = np.diff(_edges)
-                        heights = counts / (n_total * bws)
-                        errs = np.sqrt(counts) / (n_total * bws)
-                    else:
-                        heights = counts.astype(float)
-                        errs = np.sqrt(counts)
-                    counts_for_mask = counts
+                # PHASE_13_107_DF: the error bars use exactly the weights and
+                # normalization the bars of this group were drawn with (the
+                # one owner _hist_bin_values_and_errors), so they sit on the
+                # bars for every hist_norm/norm (defects N2/N3/N4).
+                (_edges, heights, errs, counts_for_mask,
+                 _sw, _sw2) = _hist_bin_values_and_errors(
+                    group_data, bins_arg, None, weights, _group_norm,
+                    _group_density)
                 bin_centers = 0.5 * (_edges[:-1] + _edges[1:])
                 mask = counts_for_mask > 0
                 ax.errorbar(bin_centers[mask], heights[mask], yerr=errs[mask],
@@ -1203,6 +1312,12 @@ def _draw_hist_grouped(
                             zorder=3)
 
             n_rendered += 1   # count post-skip (v1.1 P1-C from review panel)
+        for _lab, _d, _w, _col in _pending_markers:
+            _rec = _hq.curve_quantiles(_d, _w, _quantile_levels,
+                                       _quantile_method)
+            _hq.draw_markers(ax, _rec, _col, _shown_range,
+                             text=_quantile_text, time_axis=_time_coords)
+            _quantile_records[_lab] = _rec
         if n_rendered > 0:
             ax.legend()
         return n_rendered

@@ -292,7 +292,12 @@ def test_A_R12_explicit_subplot_spacing_survives_final_layout():
         plt.close(fig)
 
 
-def test_A_R13_legacy_2d_facet_presentation_unchanged_without_new_options():
+def test_A_R13_legacy_2d_facet_row_identity_kept_with_default_shared_titles():
+    """Changed by PHASE_13_107_DF AD-6 (Architect 2026-11-11): the shared
+    X/Y titles are the default for every faceted plot kind, so the legacy
+    'row=value' first line of the left Y label moves to the row headings
+    that the shared Y title adds (as for profiles since PHASE_13_108).
+    Column titles are unchanged."""
     rows, cols = ["R0", "R1"], ["C0", "C1"]
     df = _dense_df(rows=rows, cols=cols)
     df["row_dim"] = df["row_dim"].astype(object)
@@ -306,8 +311,11 @@ def test_A_R13_legacy_2d_facet_presentation_unchanged_without_new_options():
         assert axes.shape == (2, 2)
         assert axes[0, 0].get_title() == "col_dim=C0"
         assert axes[0, 1].get_title() == "col_dim=C1"
-        assert axes[0, 0].get_ylabel().startswith("row_dim=R0")
-        assert axes[1, 0].get_ylabel().startswith("row_dim=R1")
+        texts = [t.get_text() for t in fig.texts]
+        assert "row_dim=R0" in texts and "row_dim=R1" in texts
+        assert fig._supxlabel.get_text() == "x"
+        assert fig._supylabel.get_text() == "y"
+        assert all(ax.get_ylabel() == "" for ax in axes.flat)
     finally:
         plt.close(fig)
 

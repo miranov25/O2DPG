@@ -448,7 +448,14 @@ def test_R18_explicit_group_color_override_remains_authoritative():
 
 
 def test_R19_group_bins_without_group_column_fail_before_figure():
+    # PHASE_13_107_DF: compare the open Figures before and after the call.
+    # The former global check (no Figure open at all) failed whenever an
+    # earlier test in the same pytest worker had left a Figure open (590
+    # tests do), i.e. it depended on test order, not on this refusal; it
+    # failed once in the canonical run of 2026-11-10 22:25.  Same pattern
+    # as the other refusal tests (13.95 R21, 13.107 Q09).
     df = _categorical_data()
+    before = set(plt.get_fignums())
     with pytest.raises(ValueError, match='require group_by'):
         _call(df, facet_by=['row', 'col'], group_by_bins=5)
-    assert not plt.get_fignums()
+    assert set(plt.get_fignums()) == before

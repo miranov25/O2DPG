@@ -177,6 +177,14 @@ def _apply_legend_mode(fig, canonical: Optional[Dict[str, Any]]) -> None:
     if canonical is None:
         return  # no override — keep current default
 
+    # PHASE_13_107_DF: a 3-D facet request returns one Figure per page; the
+    # mode applies to every page (before, any mode except 'all' failed with
+    # AttributeError on the list, for hist, profile and scatter).
+    if isinstance(fig, (list, tuple)):
+        for one in fig:
+            _apply_legend_mode(one, canonical)
+        return
+
     mode = canonical['mode']
 
     if mode == 'all':

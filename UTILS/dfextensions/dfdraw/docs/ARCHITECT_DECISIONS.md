@@ -1,7 +1,7 @@
 # ARCHITECT_DECISIONS.md
 # dfdraw — Architect Decision Registry
-# Version: 1.2.1 (PHASE_13_108_DF — AD-5/13.108.DF added: numeric bins never merged by their names)
-# Date: 2026-11-10 (v1.2.1, v1.2.0); 2026-06-06 (v1.1.0); 2026-06-04 (v1.0 / v1.0.1)
+# Version: 1.3.0 (PHASE_13_107_DF — AD-1/13.107.DF to AD-6/13.107.DF added: histogram quantile markers, weighted quantiles, one histogram normalization, datetime default, faceted histogram legend owner and quantile text, shared axis titles for every faceted kind)
+# Date: 2026-11-10 (v1.3.0, v1.2.1, v1.2.0); 2026-06-06 (v1.1.0); 2026-06-04 (v1.0 / v1.0.1)
 # Maintainer: Marian Ivanov (architect)
 #
 # This document is the canonical AD registry for the dfdraw project.
@@ -2080,6 +2080,141 @@ The four D108 identifiers of the proposal map to the registry identifiers AD-1 t
 
 ---
 
+## Phase 13.107.DF — Histogram quantile markers and unit-integral normalization (AD-1/13.107.DF to AD-6/13.107.DF)
+
+**Phase trigger:** proposal `PHASE_13_107_DF_Histogram_UnitIntegral_and_Vertical_Quantiles_Proposal_v0_4_GPT29_20261110.md` (MD5 `dd2554b0afd80e26604dfb0d77a245b0`), consolidated review GPT27 2026-11-10: APPROVED WITH COMMENTS (3/3), with the W2 formula as the open gate. Coder S0 report `PHASE_13_107_DF_S0_Inventory_and_Contract_Fable5_1coder_20261110.md` (route inventory, defects N1–N4, W1/W2 truth table, decisions D-1..D-9).
+
+**Architect decisions, 2026-11-10 (GP-3, quoted from the coder session record):**
+
+> OK. Linar
+
+(answer to the W2 choice: the linear-compatible weighted interpolation), and, after the S0 decision list D-1..D-9 with the coder's recommendations,
+
+> Distributed. You can start
+
+recorded here as acceptance of D-1..D-9 as recommended. **The Architect confirms this reading at commit.**
+
+---
+
+## AD-1/13.107.DF — Histogram X-quantile markers for every drawn curve
+
+**Phase:** 13.107.DF | **Date:** 2026-11-10 | **Original notation:** D107-2, D107-3, D107-4, D107-6, D107-7; S0 D-4, D-5, D-7
+
+**Decision:** `hist(..., quantiles=[...])` (also `draw(type='hist')` and AliasDataFrame) draws one vertical line per requested level for every drawn histogram curve: each facet cell, group (also stacked), expression branch, selection or weights branch, and the two input distributions of `normalize=` (not the ratio panel). The quantiles of a curve use **all its selected, sampled, finite values**, independent of `range=`, bin edges or autorange. Without physical weights the estimator is NumPy `linear`. A level outside the shown X range is computed and returned but drawn without a line (`marker_visible=False`); axis limits never change. Lines carry the numeric level (`_dfdraw_quantile`) and the names of `plots/_numeric_labels.py` (distinct names, `median` only for exactly 0.5); a level requested twice is drawn once. Results: `stats['hist_quantiles']` per curve (`levels`, `x`, `marker_visible`, `method`, `weighted`, `n`, `n_positive_weight`, `weight_sum`, `population='all_finite_selected_x'`). Invalid levels are refused before any Figure.
+
+**Ratification:** proposal v0.4 review (GPT27, 3/3); Architect 2026-11-10 (above).
+
+**Source:** `plots/_hist_quantiles.py`, `plots/histogram.py` (`draw_hist`, `_draw_hist_grouped`), `drawer.py` (`DFDraw.hist`, normalize dispatcher, draw-level routing)
+
+---
+
+## AD-2/13.107.DF — Weighted histogram quantiles: W1 inverted_cdf (default) and W2 linear
+
+**Phase:** 13.107.DF | **Date:** 2026-11-10 | **Original notation:** D107-5; S0 D-1, D-2, D-3
+
+**Decision:** With physical `weights=` / `weights_vector=`, `weighted_quantile_method='inverted_cdf'` (default, W1: the first x whose cumulative weight reaches q·W, NumPy's weighted method) or `'linear'` (W2: h = q·(W − w₁) + w₁, linear interpolation of x over the cumulative weights; Julia StatsBase definition; equal to NumPy `linear` for equal weights; the weight of the smallest point enters only through h). Both: rows with non-finite x or weight are dropped as the histogram drops them; zero weights carry no mass; equal x are ordered by weight (row-order free); a curve without positive mass has undefined quantiles; negative weights are refused before any Figure. `weighted_quantile_method` without weights is refused. Display normalizations (`norm`, `hist_norm`) never make a quantile weighted.
+
+**Ratification:** Architect 2026-11-10 ("OK. Linar", above); S0 truth table and invariants.
+
+**Source:** `plots/_hist_quantiles.py`
+
+---
+
+## AD-3/13.107.DF — One histogram normalization owner (bars = error bars = bin data)
+
+**Phase:** 13.107.DF | **Date:** 2026-11-10 | **Original notation:** D107-1; S0 D-6, D-9 (defects N1–N5)
+
+**Decision:** The bars, the error bars and the returned bin data of a histogram use one rule. `norm='density'` (and per group `hist_norm='density'`) has unit area over the rows inside the shown bins, with the per-bin width. `norm='probability'` is the share of all selected finite rows (per group in grouped histograms). On the grouped path `norm=` is honoured per group (it was dropped for 'probability'); `hist_norm=` wins when both are given. This changes grouped density bars (area now 1), grouped probability bars (no longer raw counts) and the position of error bars and returned bin data for density with a range and for weighted probability.
+
+**Ratification:** proposal v0.4 review (D107-1 verification and whole-category repair); Architect 2026-11-10 (above).
+
+**Also (real-data review of the S2 candidate):** the Y title names the normalization the bars use. Grouped `hist_norm=` (which wins over `norm=`) and the top panel of `normalize=` say "Density" / "Probability", not "Count".
+
+**Source:** `plots/histogram.py` (`_hist_bin_values_and_errors`, `_draw_hist_grouped`, Y title), `drawer.py` (normalize top-panel Y title)
+
+---
+
+## AD-4/13.107.DF — Datetime histogram without time_format
+
+**Phase:** 13.107.DF | **Date:** 2026-11-10 | **Original notation:** S0 D-8
+
+**Decision:** A histogram of a datetime column without `time_format` uses the existing date-coordinate route with automatic date ticks (`time_format='auto'`) instead of failing; grouped time histograms (datetime, or epoch seconds with `time_format`) bin their groups in the same date coordinates (before, the group values stayed raw and fell outside the bins). Also fixed with this phase: the shared X range of 3-D facet Figures uses finite values only (one infinite value made it infinite for hist, scatter and profile).
+
+**Ratification:** Architect 2026-11-10 (above).
+
+**Source:** `plots/histogram.py` (`draw_hist`), `drawer.py` (3-D shared-range helper)
+
+---
+
+## AD-5/13.107.DF — Faceted histogram legend: one owner, default shared quantile legend, legend modes on 3-D pages, quantile text
+
+**Phase:** 13.107.DF | **Date:** 2026-11-10 | **Original notation:** S2 D-10, option B, `quantile_text`
+
+**Why:** on the real-data Figures of the S2 candidate, the same quantile legend was repeated in every facet cell and covered the data. The existing `legend='shared'` for histograms was no remedy: it was added after the facet coordinator had finished, over the bottom row of cells, read only the first cell, and failed on 3-D facets.
+
+**Decision:**
+
+1. **One owner.** The facet coordinator owns the Figure legend of a faceted histogram, as it does for profiles (PHASE_13_99/13_108). `legend='shared'` is composed from all cells and placed above the grid. The per-cell modes `'all'`, `'none'` and `'first'` are applied after the coordinator.
+2. **Default (D-10).** A faceted histogram with quantile markers gets one shared Figure legend by default, under the D108-B rules of AD-2/13.108.DF:
+   - an explicit `legend=` / `show_legend=` wins;
+   - cell legends that mean different things (facet-local group intervals) stay in their cells;
+   - the axis titles keep the histogram presentation.
+
+   In a grouped legend, the groups come first, then the quantile levels.
+
+   The shared axis titles that the shared presentation needs come from AD-6/13.107.DF. In S2b, the long expression repeated as the X title of every narrower cell overlapped the neighbouring cells (real-data review).
+3. **3-D pages.** A 3-D facet request returns one Figure per page. Every legend mode applies to each page, for hist, profile and scatter; before, every mode except `'all'` failed with `AttributeError`.
+4. **Quantile text.** The new `hist(quantile_text=...)` option is `None` by default (no text). It writes vertical text at the top of each drawn quantile line, in the curve colour:
+   - `'level'`: `10%` (`median` for 0.5);
+   - `'value'`: the X position, with 4 significant digits, or the date and time on a time axis;
+   - `'both'`: `10%: -1.28`.
+
+   Several curves on one axis alternate the side of the line, then step down. A level outside the shown range gets no text.
+
+**Ratification:** Architect 2026-11-10:
+
+> OK. Option B + qutile_text option
+
+The Architect chose option B: fix the faceted histogram legend inside this phase, rather than option A, which would have deferred it.
+
+**Source:**
+
+- `drawer.py`:
+  - `DFDraw.hist` (the legend spec goes to the coordinator; `quantile_text`);
+  - the 1-D and 2-D facet coordinators (D-10, hist composer);
+  - the 3-D forwarding;
+  - `_apply_cell_legend_mode`.
+- `plots/_legend.py`: `_apply_legend_mode` per page.
+- `plots/_hist_quantiles.py`: text.
+- `plots/histogram.py`: grouped markers drawn after all groups.
+
+---
+
+## AD-6/13.107.DF — One Figure X/Y title by default for every faceted plot kind
+
+**Phase:** 13.107.DF | **Date:** 2026-11-11 | **Original notation:** —
+
+**Decision:** The D108-A rule of AD-1/13.108.DF is now the default for every faceted plot kind (hist, hist2d, scatter, and as before profile and the `hist2d+profile` overlay), on 1-D, 2-D and 3-D facets:
+
+- When every cell renders the same X (or Y) title, one Figure title replaces the cell titles.
+- An explicit `shared_xlabel=` / `shared_ylabel=` (True, False or a string) wins.
+- On 2-D grids, the row identity (`row=value`) moves from the left Y title to the row headings.
+- The default Figure legend (D108-B) is **not** extended by this decision. It stays with profiles and overlays and, by AD-5, with histograms that draw quantile markers.
+
+**Ratification:** Architect 2026-11-11:
+
+> In general for factd plots shared_xlabel=True,
+> shared_ylabel=True shuld be dafult.
+
+**Changed historical tests (change rule):**
+
+- `test_phase_13_108_s0…::test_CTL_08_…`: it said non-profile facets keep cell titles; it now checks that they share titles and get no default legend.
+- `test_phase_13_93_stage_a…::test_A_R13_…`: the row identity is checked in the row headings, not in the left Y title.
+
+**Source:** `drawer.py` (the 1-D and 2-D facet coordinators; 3-D pages use the 2-D one)
+
+---
+
 ## Phase TS_v6 — Technical Summary v6 governance cycle (AD-1/TS_v6.DF to AD-2/TS_v6.DF)
 
 **Phase trigger:** Multi-session restructure of `dfdraw_Technical_Summary.md` (v6.0 → v6.3) and `dfdraw_PLOTTING_LIBRARY_COMPARISON.md` (v1.2 → v2.1) to align with the architect's December 2025 dfextensions presentation and 2026-06-05 verbal context. Cycle close formalized retroactively per GP-9.
@@ -2118,7 +2253,8 @@ The four D108 identifiers of the proposal map to the registry identifiers AD-1 t
 
 ---
 
-*dfdraw ARCHITECT_DECISIONS.md v1.2.1 — 2026-11-10*
+*dfdraw ARCHITECT_DECISIONS.md v1.3.0 — 2026-11-10*
+*v1.3.0 — 2026-11-10/11 (PHASE_13_107_DF: AD-1/13.107.DF to AD-6/13.107.DF)*
 *v1.2.1 — 2026-11-10 (PHASE_13_108_DF: AD-5/13.108.DF, numeric bins never merged by their names)*
 *v1.2.0 — 2026-11-10 (PHASE_13_108_DF: AD-1/13.108.DF to AD-4/13.108.DF, Architect decision D108-A–D)*
 *v1.0 / v1.0.1 — 2026-06-04 (Org panel convergent touch-ups: header, AD-37/50 supersession, GP transitional authority, GP Date fields, About additions)*

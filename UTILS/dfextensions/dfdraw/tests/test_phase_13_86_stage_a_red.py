@@ -406,7 +406,15 @@ _FACET_DISPOSITIONS = {
             "save",         # post-render save
             "facet",        # normalized to facet_by='group_by' legacy form
             "normalize_layout",  # meaningful only with normalize (refused under facet)
-            "legend", "show_legend",          # post-render figure legend owner
+            # Normalized once at hist() entry; PHASE_13_107_DF: for facets
+            # the normalized spec goes to the facet coordinator (private
+            # _facet_legend_spec, as for profiles), per-cell modes after it.
+            "legend", "show_legend",
+            # PHASE_13_107_DF: validated at hist() entry and carried inward
+            # under the private names _hist_quantiles/_hist_quantile_method/
+            # _hist_quantile_text (only when requested) to every cell and
+            # branch.
+            "quantiles", "weighted_quantile_method", "quantile_text",
         },
         "REFUSED": {
             "normalize",    # PHASE_13_84: hist normalize= + facet_by is unsupported

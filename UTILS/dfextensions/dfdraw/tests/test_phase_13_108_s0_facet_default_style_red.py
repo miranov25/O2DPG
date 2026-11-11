@@ -490,12 +490,17 @@ def test_CTL_07_phase_13_94_vector_2d_route_keeps_its_defaults():
 @pytest.mark.parametrize('kind,expr', [
     ('hist', 'y0'), ('hist2d', 'y0:x'), ('scatter', 'y0:x'),
 ])
-def test_CTL_08_non_profile_facets_keep_their_defaults(kind, expr):
+def test_CTL_08_non_profile_facets_share_titles_without_default_legend(kind, expr):
+    """Changed by PHASE_13_107_DF AD-6 (Architect 2026-11-11): the D108-A
+    shared X/Y titles are the default for every faceted plot kind.  The
+    default Figure legend (D108-B) is still not added for these kinds
+    (before: they kept per-cell titles)."""
     fig, axes, _ = _draw(expr, type=kind, facet_by='f')
     try:
         s = _state(fig, axes)
-        assert not s['sup_x'] and not s['sup_y']
-        assert s['cell_x'] != ['']
+        assert s['sup_x'] and s['sup_y']
+        assert s['cell_x'] == [''] and s['cell_y'] == ['']
+        assert s['fig_legends'] == []
     finally:
         _close(fig)
 

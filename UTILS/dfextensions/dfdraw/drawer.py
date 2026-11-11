@@ -1258,41 +1258,63 @@ def _compute_global_ranges(df, x_expr, y_expr, plot_kind):
             except Exception:
                 return None
         return None
-    
+
+    def _finite_range(values):
+        """(min, max) of the finite values, or None.  PHASE_13_107_DF:
+        nanmin/nanmax kept +/-inf, so one infinite value made the shared
+        3-D range infinite and every hist/scatter/profile 3-D facet failed
+        ('supplied range ... is not finite')."""
+        try:
+            arr = np.asarray(values, dtype=float)
+        except (ValueError, TypeError):
+            return None
+        arr = arr[np.isfinite(arr)]
+        if arr.size == 0:
+            return None
+        return float(arr.min()), float(arr.max())
+
     if plot_kind == 'hist':
         # Hist convention: x_expr=None, y_expr=column being histogrammed.
         # The histogrammed column appears on the x-axis of the plot.
         data = _eval_expr(y_expr)
         if data is None or len(data) == 0:
             return None, None
-        try:
-            x_range = (float(np.nanmin(data)), float(np.nanmax(data)))
-        except (ValueError, TypeError):
-            x_range = None
-        return x_range, None    # y is bin count → auto-scale per figure
+        return _finite_range(data), None    # y is bin count → auto-scale per figure
     
     x_data = _eval_expr(x_expr)
     if x_data is None or len(x_data) == 0:
         return None, None
     
-    try:
-        x_range = (float(np.nanmin(x_data)), float(np.nanmax(x_data)))
-    except (ValueError, TypeError):
-        x_range = None
-    
+    x_range = _finite_range(x_data)
+
     if plot_kind == 'scatter':
         y_data = _eval_expr(y_expr)
         if y_data is None or len(y_data) == 0:
             return x_range, None
-        try:
-            y_range = (float(np.nanmin(y_data)), float(np.nanmax(y_data)))
-        except (ValueError, TypeError):
-            y_range = None
-        return x_range, y_range
+        return x_range, _finite_range(y_data)
     elif plot_kind == 'profile':
         return x_range, None   # x only; y aggregate auto-scales (CP1-2 design)
     else:
         return None, None       # hist2d / profile2d / unknown
+
+
+
+def _hist_marker_levels(plot_kind, plot_kwargs):
+    """PHASE_13_107_DF D-10: the quantile levels a faceted histogram draws
+    (None when it draws no quantile markers)."""
+    if plot_kind != 'hist':
+        return None
+    return plot_kwargs.get('_hist_quantiles')
+
+
+def _apply_cell_legend_mode(fig, spec):
+    """Apply a per-cell legend mode ('all', 'none', 'first') after a facet
+    coordinator returned; 'shared' is composed and placed by the coordinator
+    itself (PHASE_13_107_DF).  A 3-D facet request returns a list of
+    Figures: each one gets the mode."""
+    if spec is None or spec.get('mode') == 'shared':
+        return
+    _apply_legend_mode(fig, spec)
 
 
 class DFDraw:
@@ -3940,6 +3962,7 @@ class DFDraw:
         _histtype = passthrough.get('histtype') or get_style_value("hist.histtype", "bar")
         per_branch_stats = []
         branch_data = []
+        _branch_quantiles = {}   # PHASE_13_107_DF: markers per input branch
         for branch_idx, (y_idx, sel_idx, w_idx) in enumerate(indices):
             branch_color = (color if color is not None
                             else _cycle_colors[branch_idx % len(_cycle_colors)])
@@ -4004,6 +4027,14 @@ class DFDraw:
                 _return_bin_data=True,
                 **branch_kwargs
             )
+            if 'hist_quantiles' in sd:
+                # PHASE_13_107_DF (decision D-7): the two input
+                # distributions carry markers in the overlay panel; the
+                # ratio/difference panel is not a distribution and has none.
+                if _local_fig is not None:   # diff_only: nothing is shown
+                    sd['hist_quantiles']['marker_visible'] = [
+                        False] * len(sd['hist_quantiles']['levels'])
+                _branch_quantiles[branch_label] = sd['hist_quantiles']
             if _local_fig is not None:
                 plt.close(_local_fig)
             hd = sd.get('hist_data')
@@ -4055,7 +4086,11 @@ class DFDraw:
         elif isinstance(y_list[0], str):
             ax_diff.set_xlabel(y_list[0])
         if ax_top is not None:
-            ax_top.set_ylabel(ylabel if ylabel is not None else 'Count')
+            # PHASE_13_107_DF: name the normalization the panel draws.
+            _top_norm = hist_norm or norm
+            ax_top.set_ylabel(ylabel if ylabel is not None else
+                              {'density': 'Density',
+                               'probability': 'Probability'}.get(_top_norm, 'Count'))
             if ax_top.get_legend_handles_labels()[1]:
                 ax_top.legend(loc='best', fontsize=get_style_value('legend.fontsize', 10))
         _title_ax = ax_top if ax_top is not None else ax_diff
@@ -4099,6 +4134,8 @@ class DFDraw:
             # per branch) — the same per-bin table the histogram owner drew.
             'hist_branch_data': branch_data,
         }
+        if _branch_quantiles:
+            stats_dict['hist_quantiles'] = _branch_quantiles
         if save:
             fig.savefig(save)
         return fig, (ax_top if ax_top is not None else ax_diff), stats_dict
@@ -5538,6 +5575,9 @@ class DFDraw:
                     title=title, group_by=group_by, top_k=top_k,
                     quantiles=quantiles, quantile_mode=quantile_mode,
                     _user_auto_title=_user_auto_title,
+                    # PHASE_13_107_DF: each 3-D page is a 2-D facet Figure
+                    # and owns its legend request (before, it was dropped).
+                    _facet_legend_spec=_facet_legend_spec,
                     **_nd_options, **plot_kwargs)
         # =====================================================================
         # End Phase 13.41 N-D branch — existing 1D code follows unchanged
@@ -6455,15 +6495,25 @@ class DFDraw:
         # cell renders the same label on that axis; an unset legend becomes
         # one Figure legend when the per-cell legends mean the same thing in
         # every cell.  Explicit values (True/False/str, any legend mode) win.
-        if plot_kind in _FACET_DEFAULT_PRESENTATION_KINDS and n_groups >= 2:
+        # PHASE_13_107_DF AD-6: D108-A (one Figure X/Y title when every cell
+        # renders the same title; explicit True/False/str wins) is the
+        # default for every faceted plot kind, not only profiles.  The
+        # default Figure legend (D108-B) stays with profiles/overlays and,
+        # D-10, histograms with quantile markers.
+        if n_groups >= 2:
             _cells = list(axes_flat[:n_groups])
             for _key, _axis in (('shared_xlabel', 'x'), ('shared_ylabel', 'y')):
                 if (_one_dim_options.get(_key) is None
                         and _default_shared_axis_title(_cells, _axis) is not None):
                     _one_dim_options[_key] = True
-            if _facet_legend_spec is None and _default_shared_legend_allowed(
-                    fig, _cells, group_by=group_by, plot_kwargs=plot_kwargs,
-                    global_groups=global_1d_groups):
+            if (_facet_legend_spec is None
+                    and (plot_kind in _FACET_DEFAULT_PRESENTATION_KINDS
+                         or _hist_marker_levels(plot_kind, plot_kwargs)
+                         is not None)
+                    and _default_shared_legend_allowed(
+                        fig, _cells, group_by=group_by,
+                        plot_kwargs=plot_kwargs,
+                        global_groups=global_1d_groups)):
                 _facet_legend_spec = _normalize_legend_spec('shared')
 
         # PHASE_13_99: keep one Figure layout owner, then position semantic
@@ -6492,7 +6542,8 @@ class DFDraw:
                 # PHASE_13_108 D108-C: the overlay's profile layer draws the
                 # same quantile lines as a faceted profile.
                 quantiles=(quantiles if plot_kind
-                           in _FACET_DEFAULT_PRESENTATION_KINDS else None),
+                           in _FACET_DEFAULT_PRESENTATION_KINDS
+                           else _hist_marker_levels(plot_kind, plot_kwargs)),
                 legend_spec=_facet_legend_spec)
             shared_x = _one_dim_options.get('shared_xlabel')
             shared_y = _one_dim_options.get('shared_ylabel')
@@ -7015,17 +7066,22 @@ class DFDraw:
         # cell keeps its original label (``_dfdraw_semantic_ylabel``) and the
         # row identity moves to the row headings that the shared Y title adds.
         _visible_cells = [ax for ax in axes.flat if ax.get_visible()]
-        if (plot_kind in _FACET_DEFAULT_PRESENTATION_KINDS
-                and len(_visible_cells) >= 2):
+        # PHASE_13_107_DF AD-6: D108-A for every faceted plot kind; the
+        # default Figure legend as for 1-D facets.
+        if len(_visible_cells) >= 2:
             if (shared_xlabel is None and _default_shared_axis_title(
                     _visible_cells, 'x') is not None):
                 shared_xlabel = True
             if (shared_ylabel is None and _default_shared_axis_title(
                     _visible_cells, 'y') is not None):
                 shared_ylabel = True
-            if _facet_legend_spec is None and _default_shared_legend_allowed(
-                    fig, _visible_cells, group_by=group_by,
-                    plot_kwargs=plot_kwargs, global_groups=nd94_groups):
+            if (_facet_legend_spec is None
+                    and (plot_kind in _FACET_DEFAULT_PRESENTATION_KINDS
+                         or _hist_marker_levels(plot_kind, plot_kwargs)
+                         is not None)
+                    and _default_shared_legend_allowed(
+                        fig, _visible_cells, group_by=group_by,
+                        plot_kwargs=plot_kwargs, global_groups=nd94_groups)):
                 _facet_legend_spec = _normalize_legend_spec('shared')
         # PHASE_13_93 Stage A: a single Figure-level layout calculation,
         # followed by explicit user overrides. Additional text is positioned
@@ -7245,6 +7301,14 @@ class DFDraw:
                 fig, axes, expressions=y_expr if isinstance(y_expr, list) else (),
                 quantiles=quantiles, legend_spec=_facet_legend_spec,
                 existing=legend_artist)
+        # PHASE_13_107_DF: a shared histogram legend uses the same composer
+        # and the same placement below (before, hist legend='shared' was
+        # added afterwards over the bottom row of cells).
+        elif (plot_kind == 'hist' and _facet_legend_spec is not None
+                and _facet_legend_spec.get('mode') == 'shared'):
+            legend_artist = _compose_facet_semantic_legend(
+                fig, axes, quantiles=_hist_marker_levels(plot_kind, plot_kwargs),
+                legend_spec=_facet_legend_spec, existing=legend_artist)
 
         # PHASE_13_93 closure repair: use rendered glyph/axes extents, not
         # fixed Figure fractions, for the annotations owned by this N-D grid.
@@ -7717,10 +7781,16 @@ class DFDraw:
             # hand the list to the existing facet coordinator.
             # PHASE_13_103 B5-B: one ordinary histogram facet column is a
             # typed histogram owner, not a flattened generic vector overlay.
+            # PHASE_13_107_DF: a histogram quantile request is owned by
+            # hist() as well (the generic vector engine would read
+            # quantiles= as profile quantiles and add profile channels).
             if type == "hist" and (
                 normalize is not None or facet_by == "vector"
                 or (isinstance(facet_by, str) and facet_by not in
                     ('vector', 'group_by', 'quantiles'))
+                or kwargs.get('quantiles') is not None
+                or kwargs.get('weighted_quantile_method') is not None
+                or kwargs.get('quantile_text') is not None
             ):
                 return self.hist(
                     expr, selection=selection, bins=bins, stats=stats,
@@ -8280,6 +8350,18 @@ class DFDraw:
         # Phase 13.50.DF step 4 — see draw() signature for full rationale.
         legend: Optional[Union[bool, str, Dict]] = None,
         show_legend: Optional[bool] = None,
+        # PHASE_13_107_DF: vertical X-quantile markers for every drawn
+        # histogram curve, computed from all its selected finite values
+        # (independent of range=/bins=).  weighted_quantile_method selects
+        # the weighted estimator when weights= is given: 'inverted_cdf'
+        # (default, NumPy's weighted method) or 'linear' (equals NumPy
+        # 'linear' for equal weights).  Results: stats['hist_quantiles'].
+        quantiles: Optional[List[float]] = None,
+        weighted_quantile_method: Optional[str] = None,
+        # PHASE_13_107_DF: optional text at the top of each quantile line:
+        # None (default, no text), 'level' ('10%', 'median'), 'value' (the
+        # X position) or 'both' ('10%: -1.28').
+        quantile_text: Optional[str] = None,
         **kwargs
     ) -> DrawResult:
         """
@@ -8323,6 +8405,25 @@ class DFDraw:
             Show only top K groups.
         same : bool, default False
             If True, overlay on last axes. Phase 13.13.DF (AD-15).
+        legend, show_legend : optional
+            Legend mode ('all', 'none', 'first', 'shared', or a dict).  On
+            facets, 'shared' is one Figure legend composed from all cells and
+            placed above the grid.  Faceted histograms with ``quantiles=``
+            get that shared legend by default (PHASE_13_107_DF AD-5).
+        quantiles : list of float, optional
+            Probabilities in [0, 1], e.g. ``[0.05, 0.5, 0.95]``: one vertical
+            line per level for every drawn curve (cell, group, branch),
+            computed from all selected finite values of the curve, also
+            those outside ``range=``/``bins=``.  X positions are returned in
+            ``stats['hist_quantiles']``.
+        weighted_quantile_method : {'inverted_cdf', 'linear'}, optional
+            With ``weights=``: 'inverted_cdf' (default; first x whose
+            cumulative weight reaches q*W, NumPy's weighted method) or
+            'linear' (interpolated; equals NumPy 'linear' for equal weights).
+        quantile_text : {None, 'level', 'value', 'both'}, optional
+            Text at the top of each quantile line: 'level' ('10%', 'median'),
+            'value' (the X position; a date on a time axis) or 'both'
+            ('10%: -1.28').  Default None: no text.
         **kwargs
             Additional arguments to plt.hist().
         
@@ -8342,6 +8443,46 @@ class DFDraw:
         # clean error; genuinely unknown -> warning.
         if kwargs:
             self._kwarg_typo_guard(kwargs, method='hist')
+
+        # PHASE_13_107_DF: validate the quantile request before any Figure
+        # exists, then carry it inward under private names that every
+        # existing route (single, group, facet, vector, normalize) already
+        # forwards to the one low-level owner draw_hist(), where the markers
+        # are drawn per curve.  A recursive call receives the private names
+        # through **kwargs and leaves them unchanged.
+        # PHASE_13_107_DF: the Figure legend of a faceted histogram belongs
+        # to the facet coordinator (as for profiles), which composes and
+        # places one shared legend; per-cell modes are applied afterwards.
+        _hist_legend_spec = _normalize_legend_spec(legend, show_legend)
+        if (quantiles is not None or weighted_quantile_method is not None
+                or quantile_text is not None):
+            from .plots import _hist_quantiles as _hq
+            if quantiles is None:
+                raise ValueError(
+                    'weighted_quantile_method= and quantile_text= need '
+                    'quantiles=[...]')
+            kwargs['_hist_quantiles'] = _hq.validate_levels(quantiles)
+            kwargs['_hist_quantile_text'] = _hq.validate_text(quantile_text)
+            kwargs['_hist_quantile_method'] = _hq.validate_method(
+                weighted_quantile_method,
+                has_weights=(weights is not None
+                             or bool(weights_vector)))
+            # Negative physical weights do not define a distribution: refuse
+            # before any Figure (checked on the selected rows).
+            _w_exprs = [w for w in ([weights] + list(weights_vector or []))
+                        if isinstance(w, str)]
+            if _w_exprs:
+                _w_df = self._apply_selection(self.df, selection)
+                for _w_expr in _w_exprs:
+                    _w_vals = np.asarray(
+                        _w_df[_w_expr] if _w_expr in _w_df.columns
+                        else self._eval_column(_w_expr, df=_w_df),
+                        dtype=float)
+                    if np.any(_w_vals[np.isfinite(_w_vals)] < 0):
+                        raise ValueError(
+                            f'hist quantiles: weights {_w_expr!r} contain '
+                            'negative values; weighted quantiles need '
+                            'non-negative weights')
 
         # PHASE_13_83 BUG-01 / AD-67: singleton list-valued channels have
         # zero vector cost but retain their scalar semantic effect.  Lower
@@ -8515,6 +8656,7 @@ class DFDraw:
             fig, axes, stats_dict = self._dispatch_faceted_render(
                 df=df_for_facet, x_expr=None, y_expr=y_expr,
                 facet_by="vector", plot_kind="hist",
+                _facet_legend_spec=_hist_legend_spec,
                 bins=bins, range=range, norm=norm,
                 stats=stats, title=title, xlabel=xlabel, ylabel=ylabel,
                 group_by=group_by, top_k=top_k, ncols=ncols,
@@ -8545,9 +8687,7 @@ class DFDraw:
                 group_by=group_by, facet_by=facet_by,
                 expr_for_auto_title=expr, fig=fig
             )
-            _apply_legend_mode(
-                fig, _normalize_legend_spec(legend, show_legend)
-            )
+            _apply_cell_legend_mode(fig, _hist_legend_spec)
             return fig, axes, stats_dict
 
         # PHASE_13_103_DF B5-B: compose an expression-vector histogram inside
@@ -8559,10 +8699,9 @@ class DFDraw:
             if facet:
                 raise ValueError('facet=True cannot combine with ordinary '
                                  'histogram vector facet_by=')
-            if kwargs.get('quantiles') is not None:
-                raise NotImplementedError(
-                    'hist vector × ordinary facet does not support quantiles=; '
-                    'histogram quantile semantics are not defined')
+            # PHASE_13_107_DF: quantile markers are defined per drawn curve
+            # (the former refusal is removed; the private request travels in
+            # **kwargs to every branch of every cell).
             if selection_vector is not None and len(selection_vector) >= 2:
                 raise NotImplementedError(
                     'hist vector × ordinary facet with selection_vector is '
@@ -8607,6 +8746,7 @@ class DFDraw:
             fig, axes, stats_dict = self._dispatch_faceted_render(
                 df=df_for_facet, x_expr=None, y_expr=y_expr,
                 facet_by=facet_by, plot_kind='hist',
+                _facet_legend_spec=_hist_legend_spec,
                 bins=bins, range=range, norm=norm,
                 stats=stats, title=title, xlabel=xlabel, ylabel=ylabel,
                 group_by=None, top_k=top_k, ncols=ncols,
@@ -8631,7 +8771,7 @@ class DFDraw:
             self._maybe_attach_summary_fit(
                 stats_dict, summary_fit, group_by=None, facet_by=facet_by,
                 expr_for_auto_title=expr, fig=fig)
-            _apply_legend_mode(fig, _normalize_legend_spec(legend, show_legend))
+            _apply_cell_legend_mode(fig, _hist_legend_spec)
             return fig, axes, stats_dict
 
         # Other histogram expression-vector × facet combinations remain
@@ -8754,6 +8894,7 @@ class DFDraw:
             fig, axes, stats_dict = self._dispatch_faceted_render(
                 df=df, x_expr=None, y_expr=col_expr,
                 facet_by=_effective_facet_by, plot_kind='hist',
+                _facet_legend_spec=_hist_legend_spec,
                 bins=bins, range=range, norm=norm,
                 stats=stats, title=title, xlabel=xlabel, ylabel=ylabel,
                 group_by=group_by, top_k=top_k, ncols=ncols,
@@ -8885,7 +9026,11 @@ class DFDraw:
         # summary_fit. Both legend= and show_legend= are Pattern A
         # (popped at this layer; NOT in _*_FORWARDED_NAMES). Normalizer
         # returns None for "no override", in which case applier no-ops.
-        _apply_legend_mode(fig, _normalize_legend_spec(legend, show_legend))
+        if _effective_facet_by is not None:
+            # PHASE_13_107_DF: the coordinator owns a shared Figure legend.
+            _apply_cell_legend_mode(fig, _hist_legend_spec)
+        else:
+            _apply_legend_mode(fig, _hist_legend_spec)
         return fig, axes, stats_dict
     
     def scatter(

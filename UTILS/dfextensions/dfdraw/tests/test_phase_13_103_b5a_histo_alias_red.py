@@ -95,6 +95,18 @@ def test_B5A_03_hist_vector_ordinary_facet_alias_and_refusals(data, case):
         opts['quantiles'] = [0.10, 0.50, 0.90]
     if case == 'normalize':
         opts['normalize'] = 'ratio'
+    if case == 'quantiles':
+        # PHASE_13_107_DF (change rule): histogram quantiles are now defined
+        # (per drawn curve); both spellings give identical records.
+        first = DFDraw(data).draw('[a,b]', type='hist', **opts)
+        second = DFDraw(data).draw('[a,b]', type='histo', **opts)
+        for left, right in zip(first[2], second[2]):
+            for cell in left['per_group']:
+                assert (left['per_group'][cell]['hist_quantiles']
+                        == right['per_group'][cell]['hist_quantiles'])
+        plt.close(first[0])
+        plt.close(second[0])
+        return
     if case == 'ordinary-facet':
         # B5-B changes this one previously refused neighbor to supported.
         first = DFDraw(data).draw('[a,b]', type='hist', **opts)
