@@ -12,6 +12,7 @@ Setup (once per shell session):
 Interactive use (IPython):
 import sys,os; sys.path.insert(1, os.environ[f"O2DPG"]+"/UTILS/dfextensions/AliasDataFrame/examples/time_series");
 from time_series import *
+
 adf = root_to_adf("time_series_tracks_0.root")
     adf = root_to_adf("time_series_tracks_0.root")
     adf.draw_lazy=True
@@ -1003,3 +1004,7 @@ def loadADFLazy():
 
 if __name__ == "__main__":
     makePlots()
+"""
+from time_series import *
+adf=loadADFLazy()
+"""
