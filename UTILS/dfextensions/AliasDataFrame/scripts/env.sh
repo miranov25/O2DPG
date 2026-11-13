@@ -12,3 +12,4 @@ fi
 echo "AliasDataFrame environment"
 echo "  ADF_CODE = ${ADF_CODE:-<unset>}"
 echo "  ADF_DOCS = ${ADF_DOCS:-<unset>}"
+source "$ADF_DIR/../scripts/env.local.sh"
