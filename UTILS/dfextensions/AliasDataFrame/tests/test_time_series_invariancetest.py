@@ -1107,7 +1107,10 @@ def test_S1_committed_freeze_names_the_product_files():
                    "_numba_accelerators.py", "adf_metadata_compat.py", "exceptions.py"}
     assert len(frozen) == 36 and {"adf/" + m for m in adf_modules} <= set(frozen)                    # S1 v0.2: all 11
     assert {"dfdraw/drawer.py", "dfdraw/plots/histogram.py"} <= set(frozen) and sum(k.startswith("dfdraw/") for k in frozen) == 25
-    assert frozen["adf/AliasDataFrame.py"].startswith("d4ce2c7b") and frozen["dfdraw/drawer.py"].startswith("e8e3fd33")
+    # re-ratified 2026-11-15: the BUG_AliasDataFrame_20261114 hotfix (S0 value d4ce2c7b...)
+    assert frozen["adf/AliasDataFrame.py"].startswith("45f8a994") and frozen["dfdraw/drawer.py"].startswith("e8e3fd33")
+    rr = json.load(open(T.SOURCE_FREEZE))["re_ratified"]
+    assert [(r["file"], r["s0_sha256"][:8], r["new_sha256"][:8]) for r in rr] == [("adf/AliasDataFrame.py", "d4ce2c7b", "45f8a994")]
     assert all(len(h) == 64 and int(h, 16) >= 0 for h in frozen.values())
 
 

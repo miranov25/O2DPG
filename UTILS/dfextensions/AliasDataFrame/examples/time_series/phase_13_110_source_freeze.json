@@ -3,7 +3,7 @@
  "frozen_at": "S0, 2026-11-13, host alma2, ADF HEAD 78281b26 (tag PHASE_13_110_ADF_BEGIN); the later hand commits 358e729f, c3003418, 6d8804ed touch no product file",
  "phase": "PHASE_13_110_ADFDF",
  "product_sha256": {
-  "adf/AliasDataFrame.py": "d4ce2c7b518a4c01b87629cd1bd869a23359bd41d264869f0ed8d2a9c9a1390b",
+  "adf/AliasDataFrame.py": "45f8a994b012f1877b58435ed97026726979bbc4d410778b18c851e4909142f4",
   "adf/AliasDataFrameRDF.py": "5fa20b4ce78db3e152bb8473ed43bb853a46342c776b76248b56c1f27ea95f54",
   "adf/LazyChainReader.py": "2de96434d3bc595c2ce5d9ceb0f12f8f1b712d11a95ab2e84b0def5cf383a3d0",
   "adf/LazyTreeReader.py": "cf1de59b56b6ab1345dafede69d689e145f34938d1f22ebd5650f8ad7fd90543",
@@ -40,6 +40,16 @@
   "dfdraw/stats.py": "8970ce250cd657cd31bd429c87cb2e873ca4d8ec2b904d62e0b98f42411c20f6",
   "dfdraw/style.py": "d6ad2f15d2a6d3944acdb2fae6d9df9ed2dcb17d061e820556920cd9a266ff6e"
  },
- "version": "S1 v0.2 (v0.1 froze only AliasDataFrame.py on the ADF side)",
+ "re_ratified": [
+  {
+   "date": "2026-11-15",
+   "evidence": "behaviour-neutral for 13.110: run gallery_20261114_215404_7qElTr (S0 bytes) vs gallery_20261115_095154_lG3unG (hotfix bytes): 22/22 case statuses and 534/534 comparisons identical (observable, ok, worst difference, tolerance, level)",
+   "file": "adf/AliasDataFrame.py",
+   "new_sha256": "45f8a994b012f1877b58435ed97026726979bbc4d410778b18c851e4909142f4",
+   "reason": "BUG_AliasDataFrame_20261114 hotfix (add_alias cycle check reads the alias map once; _resolve_dependencies, +6 -2 lines), separately reviewed and committed as f241ad7b; its CRR decision D-1 asks for this re-pin",
+   "s0_sha256": "d4ce2c7b518a4c01b87629cd1bd869a23359bd41d264869f0ed8d2a9c9a1390b"
+  }
+ ],
+ "version": "S1 v0.3, 2026-11-15: adf/AliasDataFrame.py re-ratified after the BUG_AliasDataFrame_20261114 hotfix (v0.2 covered all 11 ADF modules; v0.1 froze only AliasDataFrame.py on the ADF side)",
  "what": "product source bytes at S0: the 11 top-level AliasDataFrame modules and the dfdraw package and plots/ modules. The tests compare the imported bytes with these and mark a run 'not comparable' when they differ"
 }

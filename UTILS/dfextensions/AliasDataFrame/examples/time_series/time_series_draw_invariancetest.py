@@ -1415,7 +1415,8 @@ CASES = [
                                   "selection": SELECTED, "facet_by": "side_type"}]}], lazy=True),
                          "facet_by is not supported",
                          orphan_known_defect="KD-5b (owner ADF): draw_figures creates the Figure "
-                                             "(AliasDataFrame.py:24179) before it refuses facet_by (:24264)"),)),
+                                             "(_draw_single_figure: plt.subplots) before it refuses facet_by "
+                                             "('facet_by is not supported in draw_figures panels')"),)),
     # ---- batch A: the rest of the injected-truth family, the histogram vector, the qualified-subframe chain
     Case("I4-REAL-INJECTED-TRUTH-VECTOR-OVERLAY-EAGER-20PCT-01", G.fig46_injected_truth_vector_overlay,
          "G12.46 four-branch bracket vector: original, clean-distorted, noisy, known_delta",
