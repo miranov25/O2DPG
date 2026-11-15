@@ -9902,7 +9902,11 @@ class AliasDataFrame:
         if hasattr(self, '_subframes') and hasattr(self._subframes, 'subframes'):
             subframe_names = set(self._subframes.subframes.keys())
         
-        for name, expr in self.aliases.items():
+        # BUG_AliasDataFrame_20261114: `self.aliases` is a property that rebuilds the whole
+        # {name: expr} mapping on every access, so reading it once per token made each
+        # add_alias() cost O(N^2 x tokens). Read it once; nothing below writes the schema.
+        aliases = self.aliases
+        for name, expr in aliases.items():
             # Find all word tokens, but handle dotted expressions specially
             # First, remove subframe references like "subframe.column" from consideration
             expr_cleaned = expr
@@ -9921,7 +9925,7 @@ class AliasDataFrame:
                 if token in subframe_names:
                     continue
                 # Only add if token is actually an alias
-                if token in self.aliases:
+                if token in aliases:
                     dependencies[name].add(token)
         
         return dependencies
