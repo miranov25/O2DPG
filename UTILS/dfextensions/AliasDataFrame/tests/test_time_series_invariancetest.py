@@ -6,7 +6,9 @@
     red on the previous bytes before the fix and green afterwards (CRR v0.4 §3, CRR v0.6 §3);
   * the truth engine agrees with plain NumPy and with dfdraw's bin-edge rule;
   * S3-FIX1: one mutant per restored historical gate, accepted by the pre-fix checker and red now, and the
-    historical-parity guard (HISTORICAL_GATES) red when a tolerance is weakened or a check is dropped.
+    historical-parity guard (HISTORICAL_GATES) red when a tolerance is weakened or a check is dropped;
+  * PHASE_13_110 S1 (test_S1_*): headings by role, numeric groups by interval, a Figure left open by a refusal
+    (gating, or KNOWN_DEFECT when declared), the product-source check against the S0 freeze, the end-of-run report.
 No ROOT data file is needed; real-data runs go through run_gallery.sh on alma2.
 """
 from __future__ import annotations
@@ -81,13 +83,20 @@ def run_alone(the_case, adf=None) -> T.CaseResult:
 VISUAL = "A6-VISUAL-GALLERY-FULL-01"
 
 
+KNOWN_ON_HONEST_FRAME = {REFUSAL: "KD-5b"}   # 13_110 S1: declared product defects that reproduce on synthetic data too
+
+
 @pytest.mark.parametrize("case_id", [c.case_id for c in T.CASES])
 def test_every_case_passes_on_honest_frame(case_id, monkeypatch):
     monkeypatch.setitem(T.RUN_CONTEXT, "gallery", {"ok": True, "pages": 59})
     result = run_alone(case(case_id))
-    assert result.status == T.PASS, result.detail
+    if case_id in KNOWN_ON_HONEST_FRAME:
+        assert result.status == T.KNOWN, result.detail
+        assert len(result.known_defects) == 1 and result.known_defects[0].startswith(KNOWN_ON_HONEST_FRAME[case_id])
+    else:
+        assert result.status == T.PASS, result.detail
     gating = [c for c in result.comparisons if c["ok"] is not None]
-    assert gating and all(c["ok"] for c in gating)
+    assert gating and all(c["ok"] for c in gating if not c["known_defect"])
     levels = {c["level"] for c in gating}
     if case_id in (REFUSAL, VISUAL):
         assert levels == {"L3"}
@@ -161,18 +170,52 @@ def test_missing_refusal_is_red_at_L3():
     assert "did NOT refuse" in red(adf, REFUSAL, None).detail
 
 
-def test_refusal_records_figures_allocated_before_refusing():                       # F-S2-1, D14
-    adf = make_adf()
+# ------------------------------------------------------------------ 13_110 S1: a Figure left open by a refusal is gating
+def leaky_refusal(*a, **k):
+    plt.figure()                                    # the Figure exists before the refusal, as in draw_figures
+    raise ValueError("facet_by is not supported")
 
-    def leaky(*a, **k):
-        plt.figure()
-        raise ValueError("facet_by is not supported")
-    adf.draw_figures = leaky
-    result = T.CaseResult(REFUSAL)
-    T.evaluate(adf, case(REFUSAL), None, result)
-    diag = [c for c in result.comparisons if c["observable"].startswith("Figures allocated")]
-    assert len(diag) == 1 and diag[0]["ok"] is None and diag[0]["worst_abs"] == 1.0
-    plt.close("all")
+
+def clean_refusal(*a, **k):
+    raise ValueError("facet_by is not supported")
+
+
+def refusal_case(known_defect: str):
+    import dataclasses
+    spec = case(REFUSAL).expect[0]
+    return dataclasses.replace(case(REFUSAL), expect=(dataclasses.replace(spec, orphan_known_defect=known_defect),))
+
+
+def test_S1_leaky_refusal_without_a_known_defect_is_red_at_L3():
+    adf = make_adf()
+    adf.draw_figures = leaky_refusal
+    result = run_alone(refusal_case(""), adf)
+    assert result.status == T.FAIL and result.failure_level == "L3"
+    assert "Figures left open by the refusal" in result.detail and not plt.get_fignums()   # and it was closed
+
+
+def test_S1_leaky_refusal_with_its_known_defect_is_reported_not_gating():
+    adf = make_adf()
+    adf.draw_figures = leaky_refusal
+    result = run_alone(refusal_case("KD-TEST"), adf)
+    assert result.status == T.KNOWN and result.failure_level == ""
+    assert result.known_defects == ["KD-TEST -- Figures left open by the refusal: worst |diff| 1.000e+00"]
+    row = [c for c in result.comparisons if c["observable"] == "Figures left open by the refusal"]
+    assert len(row) == 1 and row[0]["ok"] is False and row[0]["known_defect"] == "KD-TEST"
+
+
+def test_S1_clean_refusal_with_a_declared_known_defect_fails_no_longer_reproduces():
+    adf = make_adf()
+    adf.draw_figures = clean_refusal
+    result = run_alone(refusal_case("KD-TEST"), adf)
+    assert result.status == T.FAIL and result.failure_level == "L3"
+    assert T.NO_LONGER in result.detail and "KD-TEST" in result.detail and "ledger" in result.detail
+
+
+def test_S1_clean_refusal_without_a_known_defect_passes():
+    adf = make_adf()
+    adf.draw_figures = clean_refusal
+    assert run_alone(refusal_case(""), adf).status == T.PASS
 
 
 def test_gallery_function_crash_is_fail_never_pass():
@@ -235,7 +278,7 @@ def test_F_S2_05_wrong_binned_group_labels_are_red_at_L2():
 def test_F_S2_05_binned_labels_match_dfdraw_format():
     result = run_alone(case(GROUPING))
     labels = [c for c in result.comparisons if c["observable"] == "known_delta groups of tgl"]
-    assert len(labels) == 1 and labels[0]["ok"] and labels[0]["tolerance"] == "exact labels"
+    assert len(labels) == 1 and labels[0]["ok"] and labels[0]["tolerance"] == "exact interval identities"
 
 
 def test_new_sector_alias_check_catches_a_wrong_sector_at_L1():
@@ -443,6 +486,9 @@ def test_S30_crosswalk_fails_a_case_in_neither_list_and_a_case_in_both():
     assert x["ok"] is False and x["migrated_but_not_pass"] == [GROUPING]
     new_manifest["cases"][1]["status"] = T.PASS
     assert T.migration_crosswalk([FACET_RESIDUAL, GROUPING, "ADF99-01"], new_manifest)["ok"] is True
+    new_manifest["cases"][1]["status"] = T.KNOWN                              # 13_110 S1: a reported known defect
+    x = T.migration_crosswalk([FACET_RESIDUAL, GROUPING, "ADF99-01"], new_manifest)
+    assert x["ok"] is True and x["migrated_but_not_pass"] == [] and x["migrated_known_defect"] == [GROUPING]
 
 
 def test_S30_gallery_target_records_pages_and_result(tmp_path, monkeypatch):
@@ -705,7 +751,7 @@ def test_B_evidence_page_follows_every_case_with_verdict_and_comparisons():
         def attach_note(self, text): pass
         def savefig(self, fig, **k): texts.append(" ".join(t.get_text() for t in fig.texts))
     T.run_case(make_adf(), case(REFUSAL), RecordingPdf(), [0])               # machine-only: evidence page only
-    assert len(texts) == 1 and REFUSAL in texts[0] and "verdict: PASS" in texts[0]
+    assert len(texts) == 1 and REFUSAL in texts[0] and "verdict: KNOWN_DEFECT" in texts[0] and "KD-5b" in texts[0]
     texts.clear()
     T.run_case(make_adf(), case(C3), RecordingPdf(), [0])
     assert len(texts) == 2 and "verdict: PASS" in texts[1] and "ratio" in texts[1]
@@ -933,3 +979,268 @@ def test_manifest_has_the_fields_the_consumers_read(tmp_path, monkeypatch):
     for row in manifest["cases"]:
         assert set(row) >= {"case_id", "status", "failure_level", "comparisons", "detail", "page", "wall_time_s"}
     assert os.path.getsize(tmp_path / "p.pdf") > 1000
+
+
+# ------------------------------------------------------------------ 13_110 S1: outer facet headings found by role
+ADF99_02 = "ADF99-02"
+
+
+def heading_texts(fig) -> list:
+    return [t for t in T.facet_headings(fig)]
+
+
+def green(adf, case_id: str, drawn) -> T.CaseResult:
+    result = T.CaseResult(case_id)
+    T.evaluate(adf, case(case_id), drawn, result)
+    plt.close("all")
+    return result
+
+
+def test_S1_shared_y_label_in_brackets_is_not_a_heading():
+    adf = make_adf()
+    drawn = G.fig_adf99_02_quantile_facet_groups(adf)
+    fig = drawn[0]
+    fig.supylabel("[y0, y1]")                                   # the shape that made the old filter count six
+    old_rule = [t.get_text() for t in fig.texts
+                if t.get_text().startswith(("(", "[")) and "'" not in t.get_text() and '"' not in t.get_text()]
+    assert len(old_rule) == 6                                   # red on the previous rule ...
+    assert len(heading_texts(fig)) == 5                         # ... green by role
+    green(adf, ADF99_02, drawn)                                 # evaluate raises nothing
+
+
+def test_S1_heading_that_does_not_look_like_an_interval_still_counts():
+    adf = make_adf()
+    drawn = G.fig_adf99_02_quantile_facet_groups(adf)
+    heading_texts(drawn[0])[0].set_text("side A")               # the old text filter would have lost it
+    green(adf, ADF99_02, drawn)
+
+
+def test_S1_missing_outer_heading_is_red_at_L3():
+    adf = make_adf()
+    drawn = G.fig_adf99_02_quantile_facet_groups(adf)
+    heading_texts(drawn[0])[0].remove()
+    r = red(adf, ADF99_02, drawn)
+    assert r.failure_level == "L3" and "outer facet heading artists" in r.detail
+
+
+def test_S1_duplicated_outer_heading_is_red_at_L3():
+    adf = make_adf()
+    drawn = G.fig_adf99_02_quantile_facet_groups(adf)
+    h = heading_texts(drawn[0])
+    h[1].set_text(h[0].get_text())
+    r = red(adf, ADF99_02, drawn)
+    assert r.failure_level == "L3" and "distinct outer facet headings" in r.detail
+
+
+def test_S1_hidden_heading_is_not_counted():
+    adf = make_adf()
+    drawn = G.fig_adf99_02_quantile_facet_groups(adf)
+    heading_texts(drawn[0])[0].set_visible(False)
+    assert red(adf, ADF99_02, drawn).failure_level == "L3"
+
+
+# ------------------------------------------------------------------ 13_110 S1: numeric groups identified by interval
+def test_S1_interval_of_label_uses_the_printed_precision():
+    iv = list(pd.IntervalIndex.from_breaks([-1.4028, -0.7, 0.0, 0.7, 1.4]))
+    assert [T.interval_of_label(s, iv) for s in ("-1.40--0.70", "-0.70-0.00", "0.00-0.70", "0.70-1.40")] == [0, 1, 2, 3]
+    assert T.interval_of_label("-1.4--0.7", iv) == 0                       # one decimal: half a unit is 0.05
+    assert T.interval_of_label("-1.39--0.70", iv) == -1                    # off by more than half a printed unit
+    assert T.interval_of_label("WRONG", iv) == -1
+    close = list(pd.IntervalIndex.from_breaks([0.001, 0.002, 0.003]))
+    assert T.interval_of_label("0.00-0.00", close) == -2                   # two intervals print the same: ambiguous
+    assert [T.interval_of_label(s, close) for s in ("0.001-0.002", "0.002-0.003")] == [0, 1]
+
+
+def tiny_tgl_profile():
+    adf = make_adf()
+    adf.df["tgl"] = np.linspace(0.0001, 0.0039, len(adf.df)).astype(np.float32)
+    drawn = adf.draw("dcar_tpc_vertex:sector", type="profile", bins=36, range=(-0.5, 35.5), selection="ncl > 0",
+                     group_by="tgl", group_by_bins=2, min_entries=1, return_data=True)
+    spec = T.Profile("dcar_tpc_vertex", "ncl > 0", **T.SECTOR_BINS, by="tgl", by_bins=2,
+                     plotted=lambda d: T.groups(d[2]))
+    return adf.df.copy(), spec, drawn
+
+
+def test_S1_two_intervals_with_the_same_two_decimal_text_stay_separate_in_the_truth():
+    t, spec, drawn = tiny_tgl_profile()
+    truth = T.truth_profile(t, spec)
+    assert len(truth) == 2 and all(isinstance(k, pd.Interval) for k in truth)
+    assert [f"{k.left:.2f}-{k.right:.2f}" for k in truth] == ["0.00-0.00", "0.00-0.00"]   # one text, two groups
+    in_range = int(((t.sector.astype(float) >= -0.5) & (t.sector.astype(float) <= 35.5)).sum())
+    assert all(v[0].sum() > 0 for v in truth.values()) and sum(v[0].sum() for v in truth.values()) == in_range
+    result = T.CaseResult("X-TINY-01")
+    T.check_profile(t, spec, drawn, result)                    # dfdraw prints 3 decimals here: identified, green
+    plt.close("all")
+
+
+def test_S1_ambiguous_group_labels_are_red_at_L2_never_merged():
+    t, spec, drawn = tiny_tgl_profile()
+    frame = drawn[2]["profile_data"]
+    frame["group"] = frame["group"].map({g: "0.00-0.00" for g in pd.unique(frame["group"])})   # 2 decimals
+    with pytest.raises(T.CheckFailure) as info:
+        T.check_profile(t, spec, drawn, T.CaseResult("X-TINY-02"))
+    assert info.value.level == "L2" and "groups of tgl" in str(info.value) and "-2" in str(info.value)
+    plt.close("all")
+
+
+def test_S1_label_of_the_wrong_interval_is_red_at_L2():
+    adf = make_adf()
+    drawn = G.fig53_grouping_truth(adf)
+    frame = drawn[2]["binned_stats"]["profile_data"]
+    names = list(pd.unique(frame["group"]))
+    frame["group"] = frame["group"].map(dict(zip(names, names[1:] + names[:1])))   # valid labels, wrong groups
+    r = red(adf, GROUPING, drawn)
+    assert r.failure_level == "L2" and "groups of tgl" in r.detail
+
+
+# ------------------------------------------------------------------ 13_110 S1: product bytes against the S0 freeze
+def freeze_file(tmp_path, product: dict) -> str:
+    path = tmp_path / "freeze.json"
+    path.write_text(json.dumps({"product_sha256": product}))
+    return str(path)
+
+
+def test_S1_committed_freeze_names_the_product_files():
+    frozen = json.load(open(T.SOURCE_FREEZE))["product_sha256"]
+    adf_modules = {"AliasDataFrame.py", "AliasDataFrameRDF.py", "LazyChainReader.py", "LazyTreeReader.py",
+                   "PolynomialSpec.py", "__init__.py", "_arrow_compute.py", "_composite_keys.py",
+                   "_numba_accelerators.py", "adf_metadata_compat.py", "exceptions.py"}
+    assert len(frozen) == 36 and {"adf/" + m for m in adf_modules} <= set(frozen)                    # S1 v0.2: all 11
+    assert {"dfdraw/drawer.py", "dfdraw/plots/histogram.py"} <= set(frozen) and sum(k.startswith("dfdraw/") for k in frozen) == 25
+    assert frozen["adf/AliasDataFrame.py"].startswith("d4ce2c7b") and frozen["dfdraw/drawer.py"].startswith("e8e3fd33")
+    assert all(len(h) == 64 and int(h, 16) >= 0 for h in frozen.values())
+
+
+def test_S1_identical_product_bytes_are_comparable(tmp_path):
+    adf = make_adf()
+    measured = T.product_fingerprints(adf)
+    assert {"adf/AliasDataFrame.py", "adf/LazyTreeReader.py", "dfdraw/drawer.py", "dfdraw/plots/histogram.py"} <= set(measured)
+    out = T.source_versus_freeze(adf, freeze_file(tmp_path, measured))
+    assert out["ok"] is True and out["changed"] == out["missing"] == out["not_in_freeze"] == []
+
+
+def test_S1_changed_or_missing_product_file_is_not_comparable(tmp_path):
+    adf = make_adf()
+    measured = T.product_fingerprints(adf)
+    changed = {**measured, "dfdraw/drawer.py": "0" * 64}
+    out = T.source_versus_freeze(adf, freeze_file(tmp_path, changed))
+    assert out["ok"] is False and out["changed"] == ["dfdraw/drawer.py"]
+    gone = {**measured, "dfdraw/plots/removed_module.py": "0" * 64}
+    out = T.source_versus_freeze(adf, freeze_file(tmp_path, gone))
+    assert out["ok"] is False and out["missing"] == ["dfdraw/plots/removed_module.py"]
+    out = T.source_versus_freeze(adf, str(tmp_path / "no_such_freeze.json"))
+    assert out["ok"] is False and out["problem"] == "freeze file missing"
+
+
+def test_S1_changed_adf_module_other_than_AliasDataFrame_py_is_not_comparable(tmp_path):
+    # S1 v0.1 froze only AliasDataFrame.py on the ADF side: a change in LazyTreeReader.py (it reads the ROOT file)
+    # went unnoticed. v0.2 freezes every top-level ADF module.
+    adf = make_adf()
+    measured = T.product_fingerprints(adf)
+    out = T.source_versus_freeze(adf, freeze_file(tmp_path, {**measured, "adf/LazyTreeReader.py": "0" * 64}))
+    assert out["ok"] is False and out["changed"] == ["adf/LazyTreeReader.py"]
+
+
+def test_S1_extra_unfrozen_file_is_listed_not_failed(tmp_path):
+    adf = make_adf()
+    measured = T.product_fingerprints(adf)
+    fewer = {k: v for k, v in measured.items() if k != "dfdraw/style.py"}
+    out = T.source_versus_freeze(adf, freeze_file(tmp_path, fewer))
+    assert out["ok"] is True and out["not_in_freeze"] == ["dfdraw/style.py"]
+
+
+def test_S1_source_difference_runs_every_case_then_exit_1(tmp_path, capsys):
+    code = T.run_cases(make_adf(), [case(GROUPING), case(REFUSAL)], pdf_path=None,
+                       manifest_path=str(tmp_path / "m.json"), provenance={}, mandatory=(), source_ok=False)
+    rec = json.load(open(tmp_path / "m.json"))["reconciliation"]
+    assert code == 1 and rec["source_frozen_ok"] is False and rec["n_results"] == rec["n_selected"] == 2
+    assert rec["gating"] == [] and "not comparable to the S0 baseline" in capsys.readouterr().out
+
+
+@pytest.mark.parametrize("matches", [True, False])
+def test_S1_main_records_the_source_check_and_sets_the_exit_code(tmp_path, monkeypatch, matches):
+    adf = make_adf()
+    product = T.product_fingerprints(adf)
+    if not matches:
+        product = {**product, "adf/AliasDataFrame.py": "f" * 64}
+    monkeypatch.setattr(T, "SOURCE_FREEZE", freeze_file(tmp_path, product))
+    monkeypatch.setattr(G, "build_adf", lambda *a, **k: adf)
+    monkeypatch.setattr(T, "check_input", lambda adf, args: (True, {}))
+    manifest = tmp_path / "m.json"
+    T.main(["unused.root", "--bounded-entries", "6000", "--manifest", str(manifest), "--target", "13_105",
+            "--case", GROUPING])
+    m = json.load(open(manifest))
+    assert m["provenance"]["source_versus_freeze"]["ok"] is matches
+    assert m["reconciliation"]["source_frozen_ok"] is matches and m["reconciliation"]["exit_code"] == int(not matches)
+    assert m["cases"][0]["status"] == T.PASS                    # the case itself still ran and passed
+
+
+# ------------------------------------------------------------------ 13_110 S1: the end-of-run report
+def test_S1_run_report_lists_known_defects_and_stays_green(tmp_path, capsys):
+    code = T.run_cases(make_adf(), [case(REFUSAL)], pdf_path=None, manifest_path=str(tmp_path / "m.json"),
+                       provenance={}, mandatory=())
+    rec = json.load(open(tmp_path / "m.json"))["reconciliation"]
+    out = capsys.readouterr().out
+    assert code == 0 and list(rec["known_defects"]) == [REFUSAL] and rec["known_defects_no_longer_reproducing"] == []
+    assert "KNOWN DEFECT still reproduces (reported, not gating)" in out and "KD-5b" in out
+    assert "known_defects: 1  STRICT GATE: PASS" in out
+
+
+def test_S1_run_report_fails_a_known_defect_that_no_longer_reproduces(tmp_path, capsys):
+    adf = make_adf()
+    adf.draw_figures = clean_refusal                            # as if KD-5b had been fixed in the product
+    code = T.run_cases(adf, [case(REFUSAL)], pdf_path=None, manifest_path=str(tmp_path / "m.json"),
+                       provenance={}, mandatory=())
+    rec = json.load(open(tmp_path / "m.json"))["reconciliation"]
+    assert code == 1 and rec["known_defects_no_longer_reproducing"] == [REFUSAL] and rec["gating"] == [REFUSAL]
+    assert f"FAIL  {T.NO_LONGER}: {REFUSAL}" in capsys.readouterr().out
+
+
+def test_S1_new_failure_is_listed_separately_from_known_defects(tmp_path, capsys):
+    adf = make_adf()
+    adf.draw_figures = lambda *a, **k: None                     # stops refusing: a new failure, not a known defect
+    code = T.run_cases(adf, [case(REFUSAL), case(GROUPING)], pdf_path=None, manifest_path=str(tmp_path / "m.json"),
+                       provenance={}, mandatory=())
+    rec = json.load(open(tmp_path / "m.json"))["reconciliation"]
+    assert code == 1 and rec["gating"] == [REFUSAL] and rec["known_defects"] == {}
+    assert rec["known_defects_no_longer_reproducing"] == [] and rec["new_failures"] == [REFUSAL]
+    assert f"FAIL  new failures (not a declared known defect): ['{REFUSAL}']" in capsys.readouterr().out
+
+
+# ------------------------------------------------------------------ 13_110 S1: the evidence audit of run_gallery.sh
+ADF_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
+
+def run_audit(tmp_path, adf, source: dict):
+    """Write a 13_105 manifest + PDF as main() does, then run the audit embedded in run_gallery.sh on it."""
+    import subprocess
+    folder = tmp_path / "run"
+    folder.mkdir()
+    provenance = {"source_versus_freeze": source, "input_identity_versus_s0": {"ok": True},
+                  "loaded_equals_raw": {"x": True}}
+    T.run_cases(adf, [case(REFUSAL)], pdf_path=str(folder / "new_13_105.pdf"),
+                manifest_path=str(folder / "new_13_105_manifest.json"), provenance=provenance, mandatory=(),
+                source_ok=source["ok"])
+    script = open(os.path.join(ADF_ROOT, "run_gallery.sh")).read()
+    audit = script.split("<<'PY'\n", 1)[1].split("\nPY\n", 1)[0]
+    (tmp_path / "audit.py").write_text(audit)
+    return subprocess.run([sys.executable, str(tmp_path / "audit.py"), str(folder), "subset", "13_105"],
+                          cwd=ADF_ROOT, capture_output=True, text=True)
+
+
+def test_S1_audit_accepts_a_known_defect_and_prints_it(tmp_path):
+    out = run_audit(tmp_path, make_adf(), {"ok": True})
+    assert out.returncode == 0, out.stdout + out.stderr
+    assert "KNOWN DEFECT (reported, not gating) " + REFUSAL in out.stdout and "EVIDENCE PASS" in out.stdout
+
+
+def test_S1_audit_fails_a_run_on_changed_product_source(tmp_path):
+    out = run_audit(tmp_path, make_adf(), {"ok": False, "changed": ["dfdraw/drawer.py"]})
+    assert out.returncode != 0 and "EVIDENCE FAIL: product source differs from the S0 freeze" in out.stdout
+
+
+def test_S1_audit_fails_a_known_defect_that_no_longer_reproduces(tmp_path):
+    adf = make_adf()
+    adf.draw_figures = clean_refusal
+    out = run_audit(tmp_path, adf, {"ok": True})
+    assert out.returncode != 0 and "known defects no longer reproduce" in out.stdout

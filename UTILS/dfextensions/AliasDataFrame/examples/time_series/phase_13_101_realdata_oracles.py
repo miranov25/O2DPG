@@ -436,10 +436,12 @@ def _one_case(adf, case, raw, pdf):
             leg_count, observed_labels = _figure_legend(fig, expected_labels)
             comparisons += leg_count
             if is_grouped:
-                headings = [
-                    t.get_text() for t in fig.texts
-                    if t.get_text().startswith(("(", "[")) and "'" not in t.get_text() and '"' not in t.get_text()
-                ]
+                # headings by role, not by text shape (PHASE_13_110 S1): the Figure title and shared x/y labels
+                # are excluded by identity; a shared y label like '[y0, y1]' is not a heading
+                figure_labels = {id(a) for a in (getattr(fig, "_suptitle", None), getattr(fig, "_supxlabel", None),
+                                                 getattr(fig, "_supylabel", None)) if a is not None}
+                headings = [t.get_text() for t in fig.texts
+                            if id(t) not in figure_labels and t.get_visible() and t.get_text().strip()]
                 if len(headings) != 5 or len(set(headings)) != 5:
                     raise AssertionError(f"L3: expected 5 distinct outer headings, got {headings}")
                 comparisons += 5

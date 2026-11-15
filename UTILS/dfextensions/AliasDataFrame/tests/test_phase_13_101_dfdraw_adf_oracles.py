@@ -291,14 +291,17 @@ def _sparse_gvq_frame():
 
 
 def _interval_headings(fig):
-    # Interval labels never contain quotes; vector-expression Figure titles do.
-    # Filter those titles out instead of counting them as facet headings.
+    # Outer facet headings found by role (PHASE_13_110 S1): every visible, non-empty
+    # Figure-level text except the Figure title and the shared x/y labels.  The text
+    # is not inspected: a shared y label such as '[y0, y1]' starts with '[' too and
+    # was counted as a sixth heading by the former text-shape filter.
+    figure_labels = {id(a) for a in (getattr(fig, "_suptitle", None),
+                                     getattr(fig, "_supxlabel", None),
+                                     getattr(fig, "_supylabel", None)) if a is not None}
     return [
         t.get_text()
         for t in fig.texts
-        if t.get_text().startswith(("(", "["))
-        and "'" not in t.get_text()
-        and '"' not in t.get_text()
+        if id(t) not in figure_labels and t.get_visible() and t.get_text().strip()
     ]
 
 

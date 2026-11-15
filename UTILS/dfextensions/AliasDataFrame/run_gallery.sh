@@ -135,13 +135,26 @@ if "13_105" in targets or "gallery" in targets:
     new = load("new_13_105_manifest.json")
 if new is not None:
     prov, rec = new.get("provenance", {}), new.get("reconciliation", {})
+    source = prov.get("source_versus_freeze") or {}
+    print(f"SOURCE vs PHASE_13_110 S0 freeze: {'identical' if source.get('ok') else 'DIFFERS'}"
+          f" {({k: source[k] for k in ('problem', 'changed', 'missing') if source.get(k)}) or ''}")
+    if source.get("ok") is not True:
+        failures.append(f"product source differs from the S0 freeze, run not comparable: "
+                        f"{({k: source.get(k) for k in ('problem', 'changed', 'missing') if source.get(k)})}")
     if rec.get("exit_code") != 0:
         failures.append("new_13_105_manifest.json: strict gate failed (nonzero code)")
     if "13_105" in targets:
         if rec.get("missing_mandatory"):
             failures.append(f"new manifest: mandatory cases missing {rec['missing_mandatory']}")
-        if any(c.get("status") != "PASS" for c in new.get("cases", [])):
-            failures.append("new manifest: not all cases PASS")
+        # PHASE_13_110: KNOWN_DEFECT = a declared product defect still reproduces; reported, not gating
+        if any(c.get("status") not in ("PASS", "KNOWN_DEFECT") for c in new.get("cases", [])):
+            failures.append("new manifest: not all cases PASS or KNOWN_DEFECT")
+        for case_id, defects in sorted((rec.get("known_defects") or {}).items()):
+            for d in defects:
+                print(f"KNOWN DEFECT (reported, not gating) {case_id}: {d}")
+        if rec.get("known_defects_no_longer_reproducing"):
+            failures.append(f"new manifest: known defects no longer reproduce, update the ledger: "
+                            f"{rec['known_defects_no_longer_reproducing']}")
         versus = prov.get("input_identity_versus_s0") or {}
         if versus.get("ok") is not True:
             failures.append(f"new manifest: input identity does not match S0: {versus}")
@@ -158,7 +171,8 @@ if mode == "all" and new is not None and old_ids:
     import time_series_draw_invariancetest as T
     x = T.migration_crosswalk(old_ids, new)
     print(f"CROSSWALK old {len(old_ids)} = migrated {len(x['migrated'])} + still old {len(x['still_old'])}"
-          f" | in both {x['in_both']} | in neither {x['in_neither']} | migrated but not PASS {x['migrated_but_not_pass']}")
+          f" | in both {x['in_both']} | in neither {x['in_neither']} | migrated but not PASS {x['migrated_but_not_pass']}"
+          f" | migrated, known defect {x.get('migrated_known_defect', [])}")
     if not x["ok"]:
         failures.append(f"migration crosswalk: in_both={x['in_both']} in_neither={x['in_neither']} "
                         f"not_pass={x['migrated_but_not_pass']}")
@@ -242,6 +256,7 @@ main() {
         examples/time_series/time_series_draw_invariance.py \
         examples/time_series/time_series_draw_invariancetest.py \
         examples/time_series/phase_13_101_realdata_oracles.py \
+        examples/time_series/phase_13_110_source_freeze.json \
         tests/test_time_series_invariancetest.py \
         tests/test_phase_13_101_realdata_fast_registry.py \
         tests/test_phase_13_101_dfdraw_adf_oracles.py \

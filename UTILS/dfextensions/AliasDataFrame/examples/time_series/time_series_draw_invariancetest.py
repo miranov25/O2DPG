@@ -29,6 +29,12 @@ HOW TO READ THIS FILE (navigation note, ~2 minutes)
   * Failure owners (OWNER): L0 input data, L1 ADF alias, L2 the plotted result (ADF -> dfdraw,
     not isolated between the two), L3 a public-call contract, H this test itself.
   * A case passes only if at least one gating comparison ran and all of them passed.
+  * KNOWN_DEFECT (13_110 S1): a comparison may name a declared product defect (known_defect=...). While
+    it fails, the case is KNOWN_DEFECT: reported every run, not gating. When it starts to pass, the case
+    FAILS ("known defect no longer reproduces") so the known-defect ledger is updated. Nothing stops the
+    run early; the end-of-run report lists new failures, known defects still failing, and known defects
+    that no longer reproduce. The product bytes are compared with phase_13_110_source_freeze.json; a
+    difference marks the run not comparable to the S0 baseline (exit code 1 after all cases ran).
   * run_gallery.sh is the entry point that calls main(); this file does no orchestration beyond
     running the requested TARGETS on ONE loaded data set:
         gallery   the readable 59-page gallery, time_series_draw.run_all_pdf, on the same loaded ADF
@@ -72,6 +78,8 @@ import pandas as pd
 import time_series_draw as G          # the gallery: every adf.draw() of a page lives there
 
 PASS, FAIL, SKIP = "PASS", "FAIL", "SKIP"
+KNOWN = "KNOWN_DEFECT"     # PHASE_13_110 S1: a declared product defect still reproduces; reported every run, not gating
+NO_LONGER = "KNOWN DEFECT NO LONGER REPRODUCES"   # its opposite: gating, so the known-defect ledger gets updated
 RUN_CONTEXT: dict = {}                       # results of other targets of the same run (the gallery), set by main()
 OWNER = {"L0": "INPUT DATA", "L1": "ADF ALIAS", "L2": "PLOTTED RESULT (ADF->dfdraw, not isolated)",
          "L3": "PUBLIC CALL CONTRACT", "H": "TEST HARNESS"}
@@ -298,7 +306,8 @@ class Legend:
 
 @dataclasses.dataclass(frozen=True)
 class Headings:
-    """The figure shows `n` distinct outer facet headings (texts that start with "(" or "[")."""
+    """The figure shows `n` outer facet headings, all different. A heading is found by its role (a Figure-level
+    text that is not the Figure's title or shared axis label), never by the shape of its text (13_110 S1)."""
     n: int
 
 
@@ -310,9 +319,12 @@ class GalleryPages:
 
 @dataclasses.dataclass(frozen=True)
 class Refuses:
-    """`call(adf)` must raise with `message` in its text (L3)."""
+    """`call(adf)` must raise with `message` in its text, and leave no Figure open (L3).
+    `orphan_known_defect` names a known product defect when the refusal is known to leave a Figure open: the open
+    Figure is then reported as that known defect, and a refusal that no longer leaves one fails the run."""
     call: Callable[[Any], Any]
     message: str
+    orphan_known_defect: str = ""
 
 
 @dataclasses.dataclass(frozen=True)
@@ -466,11 +478,16 @@ class CaseResult:
     detail: str = ""
     page: int | None = None
     wall_time_s: float = 0.0
+    known_defects: list = dataclasses.field(default_factory=list)   # known product defects that still reproduce
 
 
 def compare(result: CaseResult, observable: str, got, want, tol: Tol, level: str,
-            diagnostic: bool = False) -> None:
-    """Record one numeric comparison (worst |diff|, where, NaN mismatches); raise unless it passes or is diagnostic."""
+            diagnostic: bool = False, known_defect: str = "") -> None:
+    """Record one numeric comparison (worst |diff|, where, NaN mismatches); raise unless it passes or is diagnostic.
+
+    known_defect: the comparison checks the CORRECT behaviour of a declared known product defect. While the
+    defect reproduces (the comparison fails) it is recorded and reported, and the run goes on. When it passes,
+    the defect no longer reproduces: that fails the case, so the known-defect ledger is updated (13_110 S1)."""
     a, b = np.atleast_1d(np.asarray(got, dtype=float)), np.atleast_1d(np.asarray(want, dtype=float))
     if a.shape != b.shape:
         raise CheckFailure(level, f"{observable}: shape {a.shape} != {b.shape}")
@@ -483,20 +500,46 @@ def compare(result: CaseResult, observable: str, got, want, tol: Tol, level: str
           else bool(np.allclose(a, b, atol=tol.atol, rtol=tol.rtol, equal_nan=True)))
     result.comparisons.append(dict(observable=observable, tolerance=tol.name, atol=tol.atol, rtol=tol.rtol,
                                    ok=None if diagnostic else bool(ok), worst_abs=worst, where=where,
-                                   nonfinite_mismatches=int(special.size), level=level))
+                                   nonfinite_mismatches=int(special.size), level=level, known_defect=known_defect))
+    if known_defect and not diagnostic:
+        if ok:
+            raise CheckFailure(level, f"{NO_LONGER}: {known_defect} -- {observable} now passes; "
+                                      f"update the known-defect ledger")
+        result.known_defects.append(f"{known_defect} -- {observable}: worst |diff| {worst:.3e}")
+        return
     if not ok and not diagnostic:
         raise CheckFailure(level, f"{observable}: worst |diff| {worst:.3e}, {special.size} NaN/inf mismatch(es), "
                                   f"first at [{where}] ({tol.name})")
 
 
-def compare_labels(result: CaseResult, observable: str, got: list, want: list, level: str) -> None:
-    """Record one exact comparison of group labels, in order."""
+def compare_labels(result: CaseResult, observable: str, got: list, want: list, level: str,
+                   tolerance: str = "exact labels") -> None:
+    """Record one exact comparison of group labels (or group identities), in order."""
     ok = [str(g) for g in got] == [str(w) for w in want]
-    result.comparisons.append(dict(observable=observable, tolerance="exact labels", atol=0.0, rtol=0.0, ok=ok,
+    result.comparisons.append(dict(observable=observable, tolerance=tolerance, atol=0.0, rtol=0.0, ok=ok,
                                    worst_abs=0.0 if ok else 1.0, where="" if ok else f"{list(got)}",
-                                   nonfinite_mismatches=0, level=level))
+                                   nonfinite_mismatches=0, level=level, known_defect=""))
     if not ok:
         raise CheckFailure(level, f"{observable}: plotted {list(got)} != truth {list(want)}")
+
+
+INTERVAL_LABEL = re.compile(r"^\s*(-?\d+(?:\.(\d+))?)-(-?\d+(?:\.(\d+))?)\s*$")   # dfdraw's "left-right" group label
+
+
+def interval_of_label(label: str, intervals: list) -> int:
+    """Index of the one truth interval a plotted group label denotes; -1 if none, -2 if several.
+
+    The label's numbers must equal the interval's edges to the precision the label prints (half a unit in its
+    last digit). Group identity is the interval, not the label text: two intervals that print the same text
+    are ambiguous and fail, they are never merged (13_110 S1)."""
+    match = INTERVAL_LABEL.match(str(label))
+    if match is None:
+        return -1
+    left, right = float(match.group(1)), float(match.group(3))
+    half_left = 0.5 * 10.0 ** -len(match.group(2) or "") + 1e-12
+    half_right = 0.5 * 10.0 ** -len(match.group(4) or "") + 1e-12
+    found = [i for i, iv in enumerate(intervals) if abs(left - iv.left) <= half_left and abs(right - iv.right) <= half_right]
+    return found[0] if len(found) == 1 else (-1 if not found else -2)
 
 
 def truth_frame(adf, case: Case, result: CaseResult) -> pd.DataFrame:
@@ -528,13 +571,14 @@ def profile_edges(x: pd.Series, y: pd.Series, spec) -> np.ndarray:
 
 
 def truth_profile(t: pd.DataFrame, spec: Profile) -> dict:
-    """{group: (count, sum of weights, weighted float64 mean) per bin} by pandas cut/groupby; bins [a, b), last closed."""
+    """{group: (count, sum of weights, weighted float64 mean, std, sem) per bin} by pandas cut/groupby; bins [a, b),
+    last closed. A numeric group (by_bins) is keyed by its pd.Interval, never by a formatted label (13_110 S1)."""
     r = select(t, spec.rows)
     if spec.by_bins:
         r = r[np.isfinite(r[spec.by].astype(float))]
         cut = pd.cut(r[spec.by].astype(float), spec.by_bins)
-        names = [f"{iv.left:.2f}-{iv.right:.2f}" for iv in cut.cat.categories]   # dfdraw's group label format
-        key = pd.Series(np.asarray(names, dtype=object)[cut.cat.codes], index=r.index)
+        names = list(cut.cat.categories)                       # the intervals themselves are the group identity
+        key = pd.Series(cut.cat.codes.to_numpy(), index=r.index)
     else:
         key = r[spec.by].astype(int) if spec.by else pd.Series(0, index=r.index)
     x, y = r[spec.x].astype(float), r[spec.y].astype(float)
@@ -551,25 +595,37 @@ def truth_profile(t: pd.DataFrame, spec: Profile) -> dict:
     frame["dev2"] = frame.w * (frame.y - cell.wy.transform("sum") / cell.w.transform("sum")) ** 2   # two-pass
     table = frame.groupby(["g", frame.b.astype(int)]).agg(
         count=("w", "size"), sum_w=("w", "sum"), sum_wy=("wy", "sum"), sum_ww=("ww", "sum"), dev2=("dev2", "sum"))
-    labels = names if spec.by_bins else sorted(frame.g.unique())
-    table = table.reindex(pd.MultiIndex.from_product([labels, range(spec.bins)])).fillna({"count": 0})
+    keys = list(range(len(names))) if spec.by_bins else sorted(frame.g.unique())
+    table = table.reindex(pd.MultiIndex.from_product([keys, range(spec.bins)])).fillna({"count": 0})
     filled = table["count"] > 0                    # empty bins: count 0, every other quantity NaN
     table["mean"] = table["sum_wy"] / table["sum_w"].where(filled)
     table["std"] = np.sqrt(table["dev2"] / table["sum_w"]).where(table["count"] > 1)
     table["sem"] = table["std"] / np.sqrt(table["sum_w"] ** 2 / table["sum_ww"])
-    return {g: (table.loc[g, "count"].to_numpy(int), table.loc[g, "sum_w"].to_numpy(float),
+    return {(names[g] if spec.by_bins else g): (
+                table.loc[g, "count"].to_numpy(int), table.loc[g, "sum_w"].to_numpy(float),
                 table.loc[g, "mean"].to_numpy(float), table.loc[g, "std"].to_numpy(float),
-                table.loc[g, "sem"].to_numpy(float)) for g in labels}
+                table.loc[g, "sem"].to_numpy(float)) for g in keys}
 
 
 def check_profile(t: pd.DataFrame, spec: Profile, drawn, result: CaseResult) -> None:
-    """Compare the plotted tables with the truth: group labels in order, then count and mean per group (L2)."""
+    """Compare the plotted tables with the truth: group identities in order, then count and mean per group (L2).
+    A numeric group is identified by the interval its label denotes (interval_of_label), not by label text."""
     truth = truth_profile(t, spec)
     plotted = spec.plotted(drawn)
-    labels = [str(g) if spec.by_bins else int(float(g)) for g, _ in plotted]
-    compare_labels(result, f"{spec.y} groups of {spec.by or 'the whole selection'}", labels, list(truth), "L2")
-    for label, (_, table) in zip(labels, plotted):
-        count, sum_w, mean, std, sem = truth[label]
+    observable = f"{spec.y} groups of {spec.by or 'the whole selection'}"
+    if spec.by_bins:
+        intervals = list(truth)
+        found = [interval_of_label(g, intervals) for g, _ in plotted]
+        compare_labels(result, observable, found, list(range(len(intervals))), "L2",
+                       tolerance="exact interval identities")
+        keys = [intervals[i] for i in found]
+        labels = [str(g) for g, _ in plotted]
+    else:
+        labels = [int(float(g)) for g, _ in plotted]
+        compare_labels(result, observable, labels, list(truth), "L2")
+        keys = labels
+    for key, label, (_, table) in zip(keys, labels, plotted):
+        count, sum_w, mean, std, sem = truth[key]
         tag = spec.y + (f" {spec.by}={label}" if spec.by else "") + (f" weights={spec.weights}" if spec.weights else "")
         compare(result, f"{tag} count", table["count"], count, EXACT, "L2")
         if spec.weights:
@@ -779,11 +835,20 @@ def check_legend(spec: Legend, drawn, result: CaseResult) -> None:
     compare_labels(result, "legend identities", sorted(labels), sorted(spec.labels), "L3")
 
 
+def facet_headings(fig) -> list:
+    """The outer facet headings of a Figure, found by role: every visible, non-empty Figure-level text except the
+    Figure's title and its shared x and y labels. The text itself is never inspected, so a shared y label such as
+    '[y0, y1]' is not a heading and a heading that does not start with '(' is still one (13_110 S1, finding F1)."""
+    figure_labels = {id(a) for a in (getattr(fig, "_suptitle", None), getattr(fig, "_supxlabel", None),
+                                     getattr(fig, "_supylabel", None)) if a is not None}
+    return [t for t in fig.texts if id(t) not in figure_labels and t.get_visible() and t.get_text().strip()]
+
+
 def check_headings(spec: Headings, drawn, result: CaseResult) -> None:
-    """Distinct outer facet headings on the figure (L3)."""
-    texts = [t.get_text() for t in drawn[0].texts]
-    headings = [h for h in texts if h.startswith(("(", "[")) and "'" not in h and '"' not in h]
-    compare(result, "distinct outer facet headings", len(set(headings)), spec.n, EXACT, "L3")
+    """The declared number of outer facet headings, each drawn once and all different (L3)."""
+    texts = [t.get_text() for t in facet_headings(drawn[0])]
+    compare(result, "outer facet heading artists", len(texts), spec.n, EXACT, "L3")
+    compare(result, "distinct outer facet headings", len(set(texts)), spec.n, EXACT, "L3")
 
 
 def check_gallery_pages(spec: GalleryPages, result: CaseResult) -> None:
@@ -815,16 +880,17 @@ def check_gauss_fit(t: pd.DataFrame, spec: GaussFit, drawn, result: CaseResult) 
 
 
 def check_refusal(adf, spec: Refuses, result: CaseResult) -> None:
-    """The call must raise with the declared message; Figures allocated before refusing are recorded (F-S2-1, D14)."""
+    """The call must raise with the declared message and leave no Figure open (gating since 13_110 S1; it was a
+    diagnostic in 13.105). A refusal declared with `orphan_known_defect` reports its open Figure as that defect."""
     before = set(plt.get_fignums())
     try:
         spec.call(adf)
     except Exception as exc:  # the refusal is the expected outcome
         named = spec.message in str(exc)
-        compare(result, f"refusal names {spec.message!r}", int(named), 1, EXACT, "L3")
-        compare(result, "Figures allocated before refusal", len(set(plt.get_fignums()) - before), 0,
-                EXACT, "L3", diagnostic=True)
         result.detail = f"refused as required: {str(exc)[:100]}"
+        compare(result, f"refusal names {spec.message!r}", int(named), 1, EXACT, "L3")
+        compare(result, "Figures left open by the refusal", len(set(plt.get_fignums()) - before), 0,
+                EXACT, "L3", known_defect=spec.orphan_known_defect)
         return
     raise CheckFailure("L3", "did NOT refuse")
 
@@ -900,7 +966,9 @@ def run_case(adf, case: Case, pdf: PdfPages | None, page_counter: list) -> CaseR
             page_counter[0] += 1
             result.page = page_counter[0]
         evaluate(adf, case, drawn, result)
-        result.status = PASS
+        result.status = KNOWN if result.known_defects else PASS
+        if result.known_defects:
+            result.detail = "known defect still reproduces: " + "; ".join(result.known_defects)
     except CheckFailure as exc:
         result.status, result.failure_level, result.detail = FAIL, exc.level, str(exc)
     except Exception as exc:  # an error inside this test file: never a silent PASS, never blamed on the product
@@ -920,11 +988,15 @@ def run_case(adf, case: Case, pdf: PdfPages | None, page_counter: list) -> CaseR
 
 
 def run_cases(adf, cases: list, *, pdf_path: str | None, manifest_path: str, provenance: dict,
-              selection: list | None = None, input_ok: bool = True, mandatory: tuple = None) -> int:
+              selection: list | None = None, input_ok: bool = True, mandatory: tuple = None,
+              source_ok: bool = True) -> int:
     """Run the selected cases of the full table once; write PDF and manifest; return the strict exit code.
 
+    Every case runs to the end of the table; nothing stops the run early (Architect decision D4, 13_110).
     `mandatory` is the inventory the table must contain (default MANDATORY_CASE_IDS); a case deleted
-    from the table is a failure, not a smaller table."""
+    from the table is a failure, not a smaller table. A KNOWN_DEFECT case is reported, not gating; a
+    known defect that no longer reproduces is a FAIL. `source_ok` False (product bytes differ from the S0
+    freeze) makes the run not comparable to S0 and the exit code 1, after all cases have run."""
     declared = [c.case_id for c in cases]
     mandatory = MANDATORY_CASE_IDS if mandatory is None else mandatory
     missing_mandatory = [i for i in mandatory if i not in declared]
@@ -949,13 +1021,19 @@ def run_cases(adf, cases: list, *, pdf_path: str | None, manifest_path: str, pro
            "n_results": len(results), "not_selected": [i for i in declared if i not in ids],
            "duplicated": sorted({i for i in declared if declared.count(i) > 1}),
            "gating": [r.case_id for r in results if r.status == FAIL],
-           "not_executed": [r.case_id for r in results if r.status == SKIP], "input_identity_ok": input_ok}
+           "not_executed": [r.case_id for r in results if r.status == SKIP], "input_identity_ok": input_ok,
+           "source_frozen_ok": source_ok,
+           "known_defects": {r.case_id: list(r.known_defects) for r in results if r.status == KNOWN},
+           "known_defects_no_longer_reproducing": [r.case_id for r in results
+                                                   if r.status == FAIL and NO_LONGER in r.detail]}
+    rec["new_failures"] = [i for i in rec["gating"] if i not in rec["known_defects_no_longer_reproducing"]]
     parity = historical_parity(results)
     rec["historical_parity_failed"] = parity["failed"]
     rec["exit_code"] = int(bool(rec["duplicated"] or rec["gating"] or rec["not_executed"] or not input_ok
-                                or missing_mandatory or rec["n_results"] != rec["n_selected"] or not parity["ok"]))
+                                or not source_ok or missing_mandatory or rec["n_results"] != rec["n_selected"]
+                                or not parity["ok"]))
     with open(manifest_path, "w") as fh:
-        json.dump({"schema_version": "13.105-invariancetest-5", "provenance": provenance,
+        json.dump({"schema_version": "13.110-invariancetest-6", "provenance": provenance,
                    "cases": [dataclasses.asdict(r) for r in results], "reconciliation": rec,
                    "historical_parity": parity,
                    "not_yet_migrated": list(NOT_YET_MIGRATED), "targets": provenance.get("targets", {})},
@@ -964,8 +1042,19 @@ def run_cases(adf, cases: list, *, pdf_path: str | None, manifest_path: str, pro
         print(f"FAIL  mandatory case(s) missing from the table: {missing_mandatory}")
     print(f"HISTORICAL PARITY: {parity['checked']}/{len(parity['rows'])} old gates carried at their old tolerance "
           f"or stricter" + ("" if parity["ok"] else f"  FAILED: {parity['failed']}"))
+    print("END-OF-RUN REPORT")                       # 13_110 S1: three lists, one line each when non-empty
+    if rec["new_failures"]:
+        print(f"FAIL  new failures (not a declared known defect): {rec['new_failures']}")
+    for case_id, defects in rec["known_defects"].items():
+        for defect in defects:
+            print(f"KNOWN DEFECT still reproduces (reported, not gating): {case_id}: {defect}")
+    for case_id in rec["known_defects_no_longer_reproducing"]:
+        print(f"FAIL  {NO_LONGER}: {case_id} -- update the known-defect ledger")
+    if not source_ok:
+        print("FAIL  product source differs from the S0 freeze: this run is not comparable to the S0 baseline")
     gate = ("PASS" if rec["exit_code"] == 0 else "FAIL") + ("" if selection is None else f" (SUBSET {len(chosen)}/{len(declared)})")
-    print(f"cases: {len(results)}/{len(declared)}  gating_reds: {len(rec['gating'])}  STRICT GATE: {gate}")
+    print(f"cases: {len(results)}/{len(declared)}  gating_reds: {len(rec['gating'])}  "
+          f"known_defects: {len(rec['known_defects'])}  STRICT GATE: {gate}")
     return rec["exit_code"]
 
 
@@ -1023,6 +1112,41 @@ def loaded_equals_raw(adf, raw: dict) -> dict:
     """L0: every raw column the truth uses, as loaded by ADF, equals the ROOT values (cast to the loaded dtype)."""
     return {c: c in raw and bool(np.array_equal(adf.df[c].to_numpy(), raw[c].astype(adf.df[c].dtype), equal_nan=True))
             for c in RAW_COLUMNS}
+
+
+SOURCE_FREEZE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "phase_13_110_source_freeze.json")
+
+
+def product_fingerprints(adf) -> dict:
+    """SHA-256 of the PRODUCT files this run can import: every top-level ADF module (AliasDataFrame.py and the
+    modules it imports, e.g. LazyTreeReader.py, _numba_accelerators.py) and every dfdraw module (package and plots/).
+    Test and gallery files are not product; they change in every 13_110 stage and are recorded by code_fingerprints.
+    groupby_regression is not covered: the gallery and the 13_105 cases do not fit through it."""
+    adf_dir = os.path.dirname(inspect.getsourcefile(type(adf)))
+    dfdraw_dir = os.path.dirname(inspect.getsourcefile(G.DFDraw))
+    files = {"adf/" + os.path.basename(p): p for p in sorted(glob.glob(os.path.join(adf_dir, "*.py")))}
+    for p in sorted(glob.glob(os.path.join(dfdraw_dir, "*.py")) + glob.glob(os.path.join(dfdraw_dir, "plots", "*.py"))):
+        files["dfdraw/" + os.path.relpath(p, dfdraw_dir).replace(os.sep, "/")] = p
+    return {k: hashlib.sha256(open(v, "rb").read()).hexdigest() for k, v in files.items()}
+
+
+def source_versus_freeze(adf, freeze_path: str = SOURCE_FREEZE) -> dict:
+    """Compare the imported product bytes with the S0 freeze of PHASE_13_110. Never stops the run (decision D4):
+    a changed or missing frozen file is recorded, printed, and makes the run not comparable to S0 (exit code 1
+    after all cases). A .py file that is not in the freeze is only listed: it can change what runs only if a
+    frozen file starts importing it, and that frozen file then differs (the S0 tree had one such stray untracked
+    file at the dfdraw top level).
+    S1 v0.2: the freeze covers all 11 top-level ADF modules, not only AliasDataFrame.py (36 files in all)."""
+    measured = product_fingerprints(adf)
+    if not os.path.isfile(freeze_path):
+        return {"ok": False, "freeze": freeze_path, "problem": "freeze file missing", "n_files": len(measured),
+                "measured": measured}
+    frozen = json.load(open(freeze_path))["product_sha256"]
+    changed = sorted(k for k in frozen if k in measured and measured[k] != frozen[k])
+    missing = sorted(k for k in frozen if k not in measured)
+    new = sorted(k for k in measured if k not in frozen)
+    return {"ok": not (changed or missing), "freeze": freeze_path, "changed": changed, "missing": missing,
+            "not_in_freeze": new, "n_files": len(frozen), "measured": measured}
 
 
 def code_fingerprints(adf) -> dict:
@@ -1112,11 +1236,12 @@ def migration_crosswalk(old_case_ids, new_manifest: dict) -> dict:
     still_old = set(ledger)
     both = sorted(i for i in old_case_ids if i in still_old and i in new_status)
     neither = sorted(i for i in old_case_ids if i not in still_old and i not in new_status)
-    not_passed = sorted(i for i in old_case_ids if i in new_status and new_status[i] != PASS)
+    not_passed = sorted(i for i in old_case_ids if i in new_status and new_status[i] not in (PASS, KNOWN))
     return {"ok": not (both or neither or not_passed or ledger_problems),
             "migrated": sorted(i for i in old_case_ids if i in new_status),
             "still_old": sorted(i for i in old_case_ids if i in still_old), "in_both": both, "in_neither": neither,
-            "migrated_but_not_pass": not_passed, "ledger_problems": ledger_problems}
+            "migrated_but_not_pass": not_passed, "ledger_problems": ledger_problems,
+            "migrated_known_defect": sorted(i for i in old_case_ids if new_status.get(i) == KNOWN)}
 
 
 # Every gating assertion of the old harness for a migrated case: (old name, old atol, old rtol, the new observables
@@ -1242,7 +1367,7 @@ def historical_parity(results: list) -> dict:
         gating = [c for c in r.comparisons if c["ok"] is not None]
         for source, old, atol, rtol, pattern in HISTORICAL_GATES.get(r.case_id, ()):
             new = [c for c in gating if re.search(pattern, c["observable"])]
-            if r.status != PASS:
+            if r.status not in (PASS, KNOWN):
                 verdict = "case did not pass"
             elif not new:
                 verdict = "MISSING"
@@ -1288,7 +1413,9 @@ CASES = [
          expect=(Refuses(lambda adf: adf.draw_figures(
                      [{"plots": [{"expr": "dcar_tpc_vertex:sector", "type": "profile", "bins": 8,
                                   "selection": SELECTED, "facet_by": "side_type"}]}], lazy=True),
-                         "facet_by is not supported"),)),
+                         "facet_by is not supported",
+                         orphan_known_defect="KD-5b (owner ADF): draw_figures creates the Figure "
+                                             "(AliasDataFrame.py:24179) before it refuses facet_by (:24264)"),)),
     # ---- batch A: the rest of the injected-truth family, the histogram vector, the qualified-subframe chain
     Case("I4-REAL-INJECTED-TRUTH-VECTOR-OVERLAY-EAGER-20PCT-01", G.fig46_injected_truth_vector_overlay,
          "G12.46 four-branch bracket vector: original, clean-distorted, noisy, known_delta",
@@ -1488,6 +1615,11 @@ def main(argv: list | None = None) -> int:
     if len(adf.df) != args.bounded_entries:
         raise SystemExit(f"fixture contract: expected {args.bounded_entries} rows, loaded {len(adf.df)}")
     input_ok, input_record = check_input(adf, args)
+    source = source_versus_freeze(adf, SOURCE_FREEZE)
+    print("source vs S0 freeze: " + (f"OK, {source['n_files']} product files identical" if source["ok"] else
+          f"DIFFERS {({k: source.get(k) for k in ('problem', 'changed', 'missing') if source.get(k)})}"
+          f" -- this run is not comparable to the S0 baseline; every case still runs, exit code 1 at the end")
+          + (f"; not in the freeze (listed only): {source['not_in_freeze']}" if source.get("not_in_freeze") else ""))
     target_results = {}
     if "gallery" in args.targets:
         target_results["gallery"] = run_gallery_target(adf, args.gallery_pdf)
@@ -1496,7 +1628,7 @@ def main(argv: list | None = None) -> int:
     provenance = {"targets": target_results, **input_record,
                   "run_utc": _dt.datetime.utcnow().isoformat(timespec="seconds"), "host": platform.node(),
                   "python": sys.version.split()[0], "numpy": np.__version__, "pandas": pd.__version__,
-                  "source_sha256": code_fingerprints(adf),
+                  "source_sha256": code_fingerprints(adf), "source_versus_freeze": source,
                   "sample_mode": "FULL", "bounded_fixture_kind": "FIRST_N_NO_FRACTION", "entry_start": 0,
                   "entry_stop": args.bounded_entries, "sample_fraction": None,
                   "selected_rows": int(len(adf.df)), "input_path": os.path.realpath(args.root_path)}
@@ -1507,11 +1639,12 @@ def main(argv: list | None = None) -> int:
         selection = [c.case_id for c in CASES if not any(isinstance(s, GalleryPages) for s in c.expect)]
     if "13_105" in args.targets:
         code = run_cases(adf, CASES, pdf_path=args.pdf, manifest_path=args.manifest, provenance=provenance,
-                         selection=selection, input_ok=input_ok and gallery_ok, mandatory=MANDATORY_CASE_IDS)
+                         selection=selection, input_ok=input_ok and gallery_ok, mandatory=MANDATORY_CASE_IDS,
+                         source_ok=source["ok"])
     else:   # gallery only: a manifest with no cases, carrying the target result and the input identity
-        code = int(not (input_ok and gallery_ok))
+        code = int(not (input_ok and gallery_ok and source["ok"]))
         with open(args.manifest, "w") as fh:
-            json.dump({"schema_version": "13.105-invariancetest-4", "provenance": provenance, "cases": [],
+            json.dump({"schema_version": "13.110-invariancetest-6", "provenance": provenance, "cases": [],
                        "reconciliation": {"exit_code": code, "selection": "gallery only"},
                        "not_yet_migrated": list(NOT_YET_MIGRATED), "targets": target_results},
                       fh, indent=1, sort_keys=True, default=str)
