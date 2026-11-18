@@ -16,6 +16,11 @@ presentation switch of the profile layer.
 * 'discrete' with symmetric levels: one line per level in every cell and one
   Figure legend (PHASE_13_108 default) with exact labels;
 * 'band' with an asymmetric level: no quantile lines and no legend;
+  changed by PHASE_13_111_DF (decision D-4, Architect 2026-11-18): an explicit
+  'band' draws one band and needs exactly three symmetric levels [q, 0.5, 1-q].
+  A longer list used to be drawn silently between q[0] and q[2] (5 % to 50 %
+  here); it is now refused before any Figure, and the area display of several
+  symmetric pairs is 'nested_band';
 * every cell's numbers equal the unfaceted overlay with the same switch;
 * an unknown value is refused before any Figure is created.
 
@@ -60,20 +65,21 @@ def test_S1_01_discrete_draws_lines_for_symmetric_levels():
         plt.close(fig)
 
 
-def test_S1_02_band_draws_no_lines_for_asymmetric_levels():
-    fig, axes, _ = DFDraw(_frame()).draw(
-        'y:x', type='hist2d+profile', facet_by='f', quantiles=Q_ASYMMETRIC,
-        quantile_mode='band')
-    try:
-        for ax in np.asarray(axes).ravel():
-            assert _quantile_lines(ax) == []
-            assert ax.get_legend() is None
-        assert fig.legends == []
-    finally:
-        plt.close(fig)
+def test_S1_02_band_with_five_levels_refused_before_any_figure():
+    # PHASE_13_111_DF D-4 (change rule): before, this call drew a band from
+    # q[0] to q[2] (5 % to 50 %) and the test checked only that no lines were
+    # drawn.  An explicit band now needs exactly [q, 0.5, 1-q].
+    before = set(plt.get_fignums())
+    with pytest.raises(ValueError, match="nested_band"):
+        DFDraw(_frame()).draw(
+            'y:x', type='hist2d+profile', facet_by='f', quantiles=Q_ASYMMETRIC,
+            quantile_mode='band')
+    assert set(plt.get_fignums()) == before
 
 
-@pytest.mark.parametrize('mode', ['discrete', 'band'])
+# PHASE_13_111_DF D-4 (change rule): the area display of the five symmetric
+# levels is 'nested_band'; an explicit 'band' with five levels is refused.
+@pytest.mark.parametrize('mode', ['discrete', 'nested_band'])
 def test_S1_03_cells_equal_unfaceted_overlay_with_same_switch(mode):
     df = _frame()
     fig, axes, stats = DFDraw(df).draw(

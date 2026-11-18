@@ -609,6 +609,8 @@ def draw_hist(
     # Phase 13.16.DF FIX1: strip private _suppress_* kwargs before they
     # reach matplotlib (injected by _draw_vector for layout/legend/title control).
     _suppress_legend = kwargs.pop('_suppress_legend', False)
+    # PHASE_13_111_DF CR-1 (S-8): ordered group identities of a faceted call.
+    _group_order = kwargs.pop('_stat_group_order', None)
     _suppress_title = kwargs.pop('_suppress_title', False)
     _suppress_layout = kwargs.pop('_suppress_layout', False)
     # PHASE_13_84_DF: private flag set by the histogram normalization
@@ -716,6 +718,7 @@ def draw_hist(
             # (v1.0 P1-A pattern). marker= still flows through **kwargs to
             # _draw_hist_grouped where it's popped + warned.
             _user_color=color,
+            _group_order=_group_order,   # PHASE_13_111_DF CR-1 (S-8)
             # Phase 13.37.DF: forward user-explicit edgecolor sentinel (captured
             # BEFORE the style fill-in above per Phase 13.36 Edit 17 pattern),
             # hist_errors flag, linestyle_cycle flag + user linestyle sentinel,
@@ -1025,6 +1028,9 @@ def _draw_hist_grouped(
     # 'color' is consumed by draw_hist()'s explicit signature — must be passed
     # as a named param from there (not via **kwargs which doesn't contain it).
     _user_color: Optional[str] = None,
+    # PHASE_13_111_DF CR-1 (S-8): ordered group identities of the whole call;
+    # the colour of a group is its position in this list, not in the cell.
+    _group_order: Optional[list] = None,
     # Phase 13.37.DF (BUG-014): user edgecolor override sentinel. None = "user
     # did not pass edgecolor; use group_color as step-line color when
     # histtype='step'". Non-None = "user explicitly passed; uniform override".
@@ -1117,7 +1123,12 @@ def _draw_hist_grouped(
     # Color palette (existing behavior)
     palette_name = get_style_value("colors.palette", "tab10")
     palette = plt.colormaps.get_cmap(palette_name)
-    colors = [palette(i % 10) for i in range(len(groups))]
+    if _group_order is not None:
+        _order = list(map(str, _group_order))
+        colors = [palette((_order.index(str(g)) if str(g) in _order else i) % 10)
+                  for i, g in enumerate(groups)]
+    else:
+        colors = [palette(i % 10) for i in range(len(groups))]
 
     # Use shared edges if provided; fall back to matplotlib auto-bin (or kwarg)
     bins_arg = bin_edges if bin_edges is not None else hist_kwargs.pop('bins', 100)

@@ -1,7 +1,7 @@
 # ARCHITECT_DECISIONS.md
 # dfdraw — Architect Decision Registry
-# Version: 1.3.0 (PHASE_13_107_DF — AD-1/13.107.DF to AD-7/13.107.DF added: histogram quantile markers, weighted quantiles, one histogram normalization, datetime default, faceted histogram legend owner and quantile text, shared axis titles for every faceted kind, S2e review corrections)
-# Date: 2026-11-10 (v1.3.0, v1.2.1, v1.2.0); 2026-06-06 (v1.1.0); 2026-06-04 (v1.0 / v1.0.1)
+# Version: 1.4.0 (PHASE_13_111_DF — AD-1/13.111.DF to AD-8/13.111.DF added: one identity (colour and name) per curve fixed before drawing, stable colours across facet cells, explicit band and central='both' checks, grey quantile-level legend samples)
+# Date: 2026-11-18 (v1.4.0); 2026-11-10 (v1.3.0, v1.2.1, v1.2.0); 2026-06-06 (v1.1.0); 2026-06-04 (v1.0 / v1.0.1)
 # Maintainer: Marian Ivanov (architect)
 #
 # This document is the canonical AD registry for the dfdraw project.
@@ -2005,6 +2005,126 @@ adf.draw("dyp_I0:row", group_by="sec", color="red")
 **Ratification:** `PHASE_13_50_DF_v2_5_FitRenderingOverhaul_Proposal.md` §0 Note + §3.8.
 
 **Source:** `tests/` (future Phase 13.5X)
+
+---
+
+## Phase 13.111.DF — One identity per curve: colour and name before drawing; explicit band and `central='both'` checks; grey quantile-level legend samples (AD-1/13.111.DF to AD-8/13.111.DF)
+
+**Phase trigger:** Architect bug report 2026-11-17 (screenshot of a faceted 3-expression profile with `quantiles=[0.11, 0.5, 0.9]`: the first expression's quantile lines and labels in the colours of the other expressions). Reports `BUG_dfdraw_20261117_…_GPT27.md` and `BUG_dfdraw_20261117_profile_quantile_colour_first_branch_v0_2.md`; proposal `PHASE_13_111_DF_BugFixQuantile_Proposal_v0_2_Fable5_1_5_20261118.md` (MD5 `a354a799d2261f01619bd76558e10113`); reviews GPG37 (consolidated GPG36/GPG37/GPT38, v0.1, approved with comments) and Opus48_3 (v0.1 with conditions, v0.2 approved).
+
+**Mechanism (one category).** In a multi-curve plot the first curve was drawn without an identity: no colour (each child artist took the next Matplotlib cycle colour) and no name (the name was attached later to "the first unlabelled artist"). Groups in a facet cell took their colour from the drawing order inside the cell. An explicit band with the wrong number of levels was not checked.
+
+**Architect decisions, 2026-11-18 (GP-3, quoted from the session record):**
+
+> We can vote. I do not understand your proposal. I can accept consensus later
+
+(D-1, legend sample; reviewer consensus: grey for two or more curves), and, on proposal v0.2 with its decision table,
+
+> Approved. You can start
+
+recorded here as ratification of the "Proposed" column of v0.2: D-1 (b), D-2 (a), D-3 (rules CR-1 … CR-6), D-4 (a), D-5, D-6 (include S-8). D-7 (a) (`central='both'` with discrete quantile lines refused) was recommended by Opus48_3 and the coder after v0.2 and applied from S1 on. **The Architect confirms D-7 at commit.**
+
+---
+
+## AD-1/13.111.DF — The colour belongs to the colour-channel owner, in palette order, in every cell
+
+**Phase:** 13.111.DF | **Date:** 2026-11-18 | **Original notation:** CR-1, D-3, D-6; symptoms S-1, S-6, S-8
+
+**Decision:** The colour belongs to the owner chosen by the channel rules (AD-56): the group when `group_by` is active, otherwise the expression or selection/weights branch; with `quantile_style='color'` the quantile level, by explicit choice. The k-th identity gets `palette(k)` (style key `colors.palette`), in declared or existing group order. Identities that mean the same in every cell (expressions, branches, categorical groups, globally scoped group intervals) keep their colour in every facet cell and every facet mode (unfaceted, 1-, 2- and 3-level), also where they are absent from a cell. Group intervals computed per cell (AD-2/13.108.DF, 13.108 R2) keep per-cell colours and legends. `same=True` continues the index; reset per Figure (AD-16, AD-50); overflow per AD-58.
+
+**Ratification:** Architect 2026-11-18 (above).
+
+**Source:** `drawer.py` (`_resolve_identity_color`; `_dispatch_faceted_render`: cell colour counter starts at 0; ordered group identities passed to cells as `_stat_group_order`), `plots/profile.py` (group colour index), `plots/histogram.py` (`_draw_hist_grouped` group colour index)
+
+---
+
+## AD-2/13.111.DF — A curve's colour and name are fixed before its first artist is drawn
+
+**Phase:** 13.111.DF | **Date:** 2026-11-18 | **Original notation:** CR-2, D-5; symptom S-10
+
+**Decision:** Every curve, the first one included, gets its colour before anything of it is drawn. Fresh or empty axes: `palette(k)`; with the default style `palette(0)` equals Matplotlib's C0, so default figures keep their colours. A caller's `ax=` that already holds artists: each curve takes, once and in order, the axes' next line colour (read through public API: an empty line is added and removed), so dfdraw curves never reuse a colour already drawn there. On such axes the colours come from the axes' Matplotlib cycle, not from a custom `colors.palette`. No child artist takes a colour from Matplotlib's cycle by itself.
+
+**Ratification:** Architect 2026-11-18 (above). Implementation note on AD-16: the first curve is now given `palette(0)` explicitly instead of relying on Matplotlib's default cycle; AD-16 itself is unchanged.
+
+**Source:** `drawer.py` (`_resolve_identity_color`, `_axes_has_data`, `_next_axes_colour`; `DFDraw.profile`, `DFDraw.hist`)
+
+---
+
+## AD-3/13.111.DF — Child artists inherit the curve colour; the quantile level is a line style
+
+**Phase:** 13.111.DF | **Date:** 2026-11-18 | **Original notation:** CR-3, D-2; symptoms S-1, S-2, S-3, S-4, S-9
+
+**Decision:** Every child artist of a curve uses that curve's colour: central line, markers, error bars, histogram bars, quantile lines, band, nested band, in-panel quantile labels, the `central='both'` median line, fit lines (also the fit of a single curve, D-2 (a); no contrast style key) and histogram quantile markers. The quantile level is shown by line style only (AD-60); several fits on one curve by `fit.linestyle_cycle`. An explicit user `color=` wins.
+
+**Ratification:** Architect 2026-11-18 (above).
+
+**Source:** `drawer.py` (explicit colour passed to `draw_profile` / `draw_hist`)
+
+---
+
+## AD-4/13.111.DF — Explicit `quantile_mode='band'` needs exactly `[q, 0.5, 1-q]`
+
+**Phase:** 13.111.DF | **Date:** 2026-11-18 | **Original notation:** D-4 (a); symptoms S-7a, S-7b, S-7c
+
+**Decision:** An explicit band draws one filled band between a symmetric pair around the median and accepts exactly three levels `[q, 0.5, 1-q]`. Any other list is refused with a `ValueError` before any Figure, on every route (`DFDraw.profile`, `draw()`, facets, `plots.profile.draw_profile`, `overlay(layers=…)`, faceted overlay); the message names `error_bars` (symmetric pair), `nested_band` (two or more symmetric pairs) and `discrete`. Before, such lists crashed (`IndexError`, with an orphan Figure on faceted routes), were drawn between q[0] and q[2] (5 % to 50 % for five levels), or were silently replaced by error bars (2-level facets). `quantile_mode='auto'` is unchanged.
+
+**Dissent recorded:** GPG36, supported by the consolidator, proposed to accept two ordered levels as one band. Not taken in this bug-fix phase (Working Style §10.5): a symmetric pair already has a supported display (`error_bars`, also chosen automatically); a pair drawn as a band is a new display feature and can be proposed separately.
+
+**Change rule:** `test_phase_13_108_s1_overlay_quantile_mode.py` — `test_S1_02` (explicit band with five asymmetric levels; it checked only that no lines were drawn, while the band showed 5 % to 50 %) now checks the refusal; `test_S1_03[band]` (five symmetric levels) now uses `nested_band`, the area display of several symmetric pairs.
+
+**Ratification:** Architect 2026-11-18 (above).
+
+**Source:** `plots/profile.py` (`validate_quantile_display`, called in `draw_profile`), `drawer.py` (`DFDraw.profile`, `overlay`, `_faceted_overlay`)
+
+---
+
+## AD-5/13.111.DF — Channel rules unchanged
+
+**Phase:** 13.111.DF | **Date:** 2026-11-18 | **Original notation:** CR-4
+
+**Decision:** AD-55 (priority colour, line style, marker), AD-56 (assignments) and PHASE_13_32 option B (with `group_by`, discrete quantile lines are `--` in the group colour) stay as they are. PHASE_13_111 changes only where colours come from, not which channel owns them.
+
+**Ratification:** Architect 2026-11-18 (above).
+
+---
+
+## AD-6/13.111.DF — The first call's name is attached to its own artist
+
+**Phase:** 13.111.DF | **Date:** 2026-11-18 | **Original notation:** CR-6; symptom S-5
+
+**Decision:** In a `same=True` chain (public, or the internal vector loop), the first call records the artists it drew; the name given when the second call arrives (AD-17) is attached only to one of those artists, never to "the first unlabelled artist" on the axes, which could belong to another curve (a histogram vector with quantile markers named `y1` on the second curve's median line).
+
+**Ratification:** Architect 2026-11-18 (above).
+
+**Source:** `drawer.py` (`_snapshot_pre_call_artists`, `_handle_same_post`)
+
+---
+
+## AD-7/13.111.DF — `central='both'` with discrete quantile lines is refused
+
+**Phase:** 13.111.DF | **Date:** 2026-11-18 | **Original notation:** D-7 (a); symptom S-11
+
+**Decision:** `central='both'` draws the median central line dashed, the line style of the first quantile level; once both are in the curve colour (AD-3) they cannot be told apart, and a 0.5 level is drawn twice. The combination with discrete quantile lines (explicit `quantile_mode='discrete'`, or `auto` resolving to discrete) is refused with a `ValueError` before any Figure, on the same routes as AD-4. With error bars, a band or a nested band it stays allowed. A distinct median style is a new display rule, for a separate proposal.
+
+**Ratification:** recommended by Opus48_3 and the coder; applied under the Architect's "Approved. You can start"; **confirmed by the Architect at commit**.
+
+**Source:** `plots/profile.py` (`validate_quantile_display`)
+
+---
+
+## AD-8/13.111.DF — A quantile level shared by curves appears once, in grey (amends the PHASE_13_99 legend rule)
+
+**Phase:** 13.111.DF | **Date:** 2026-11-18 | **Original notation:** D-1 (b), CR-5
+
+**Old rule (PHASE_13_99):** a shared legend shows real drawn artists only, no invented samples.
+
+**Reason for the change:** a quantile-level sample in one curve's colour tells the reader that only that curve has the level; with AD-3 the level is a line style for every curve.
+
+**Decision:** When two or more curves draw the same quantile level (detected as one level drawn in two or more colours), the legend shows that level once, with the real line's style, width and marker, in neutral grey, as the factored legend already draws line-style entries (AD-59). This applies to axes legends of unfaceted vector, selection-branch and `same=True` plots, and to the faceted Figure legend composer. A single curve keeps its real sample in its colour; curve and group entries stay real artists; grouped quantile samples (13.32 option B) are unchanged.
+
+**Ratification:** Architect 2026-11-18 ("I can accept consensus later"; consensus GPG36, GPT38, Opus48_3, Fable5.1_5; GPG37 preferred the old rule).
+
+**Source:** `drawer.py` (`_neutral_quantile_handle`, `_quantile_level_shared_by_curves`, `_neutralise_quantile_legend`, `_compose_facet_semantic_legend`, `_handle_same_post`)
 
 ---
 

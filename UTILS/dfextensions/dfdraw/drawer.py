@@ -206,6 +206,65 @@ def _default_shared_legend_allowed(fig, axes, *, group_by, plot_kwargs,
     return True
 
 
+def _neutral_quantile_handle(source):
+    """PHASE_13_111_DF D-1: legend sample of a quantile level that two or
+    more curves share.
+
+    The level is identified by its line style (AD-56/AD-60), not by colour,
+    so the sample keeps the real line's style, width and marker and is drawn
+    in neutral grey, as the factored legend already draws line-style entries
+    (AD-59, ``channels.build_factored_legend``).  This amends the PHASE_13_99
+    "real artists only" rule for quantile-level entries only; curve and group
+    entries stay real artists.
+    """
+    from matplotlib.lines import Line2D
+    return Line2D([], [], color='gray',
+                  linestyle=source.get_linestyle(),
+                  linewidth=source.get_linewidth(),
+                  marker=source.get_marker(),
+                  markersize=source.get_markersize())
+
+
+def _quantile_level_shared_by_curves(lines):
+    """True when one quantile level is drawn in two or more colours, i.e. by
+    two or more curves (PHASE_13_111_DF D-1).  A single curve, or levels told
+    apart by colour (quantile_style='color'), keep their real samples."""
+    from matplotlib.colors import to_hex
+    by_level = {}
+    for line in lines:
+        q = getattr(line, '_dfdraw_quantile', None)
+        if q is None or not hasattr(line, 'get_color'):
+            continue
+        by_level.setdefault(float(q), set()).add(
+            to_hex(line.get_color(), keep_alpha=False))
+    return any(len(c) >= 2 for c in by_level.values())
+
+
+def _neutralise_quantile_legend(ax):
+    """PHASE_13_111_DF D-1 for an axes legend: one grey sample per quantile
+    level when two or more curves draw that level; other entries unchanged."""
+    legend = ax.get_legend()
+    if legend is None:
+        return
+    if not _quantile_level_shared_by_curves(ax.lines):
+        return
+    handles, labels = ax.get_legend_handles_labels()
+    curves, levels, done = [], [], set()
+    for handle, label in zip(handles, labels):
+        q = getattr(handle, '_dfdraw_quantile', None)
+        if q is None:
+            curves.append((handle, label))
+        elif float(q) not in done:
+            done.add(float(q))
+            levels.append((_neutral_quantile_handle(handle), label))
+    if not done:
+        return
+    # Curves first, then the quantile levels, as in the faceted composer.
+    entries = curves + levels
+    ax.legend([h for h, _ in entries], [l for _, l in entries],
+              loc=get_style_value("legend.loc", "best"))
+
+
 def _compose_facet_semantic_legend(fig, axes, *, expressions=(),
                                    paired_x_exprs=None,
                                    quantiles=None, legend_spec=None,
@@ -360,6 +419,11 @@ def _compose_facet_semantic_legend(fig, axes, *, expressions=(),
                 handle = (grouped_source[0] if grouped_source else
                           tuple(unique) if len(unique) > 1 else
                           unique[0] if unique else source[0])
+                # PHASE_13_111_DF D-1: a level drawn by two or more curves
+                # is shown once, in its line style, in neutral grey.
+                if (not grouped_source and unique
+                        and _quantile_level_shared_by_curves(source)):
+                    handle = _neutral_quantile_handle(unique[0])
                 chosen.append((handle, label))
                 used.add(label)
     if not chosen:
@@ -1360,6 +1424,13 @@ class DFDraw:
         self._last_ax = None
         self._color_cycle_index = 1  # Start at 1: first plot uses index 0 (AD-16, A2)
         self._last_plot_expr = None  # Phase 13.13.DF fix: track first plot expression for retroactive label
+        # PHASE_13_111_DF (CR-2, CR-6): where identity colours come from
+        # ('palette' on fresh axes, 'axes' on a caller's axes that already
+        # holds artists), the artists present before the current call, and
+        # the artists drawn by the last non-same call.
+        self._identity_colour_source = 'palette'
+        self._pre_call_artist_ids = set()
+        self._last_plot_artists = None
     
     def _normalize_data(self, data) -> pd.DataFrame:
         """
@@ -2134,6 +2205,72 @@ class DFDraw:
         Starts at 1: first plot implicitly uses palette index 0 (matplotlib default).
         """
         self._color_cycle_index = 1
+        self._identity_colour_source = 'palette'
+
+    # ------------------------------------------------------------------
+    # PHASE_13_111_DF: one identity colour per curve, fixed before drawing
+    # ------------------------------------------------------------------
+    @staticmethod
+    def _axes_has_data(ax):
+        """True when ``ax`` already holds drawn data (lines, patches,
+        collections or images)."""
+        return ax is not None and bool(
+            ax.lines or ax.patches or ax.collections or ax.images)
+
+    @staticmethod
+    def _next_axes_colour(ax):
+        """The colour Matplotlib would give the next line on ``ax``.
+
+        Uses only public API: an empty line is added, its colour is read and
+        the line is removed. The axes' line cycle advances, exactly as if the
+        identity had been drawn by Matplotlib itself."""
+        line, = ax.plot([], [])
+        colour = line.get_color()
+        line.remove()
+        return colour
+
+    def _resolve_identity_color(self, same, ax):
+        """PHASE_13_111_DF CR-1/CR-2: the colour of the next curve identity.
+
+        Called once per curve, before its first artist is drawn, only when the
+        curve owns the colour channel (no ``group_by``, no explicit colour,
+        no suppressed cycle).
+
+        * First curve of a call (``same=False``): ``palette(0)`` on fresh or
+          empty axes; on a caller's axes that already holds artists, the
+          axes' next colour (D-5), so dfdraw curves never reuse a colour the
+          caller already drew.
+        * Later curves (``same=True``): ``palette(k)`` (AD-16), or the axes'
+          next colour when the first curve took its colour from the axes.
+
+        With the default style ``palette(0)`` is Matplotlib's C0, so default
+        figures keep their first colour.
+        """
+        if same:
+            if (self._identity_colour_source == 'axes'
+                    and ax is not None):
+                return self._next_axes_colour(ax)
+            return self._get_next_color()
+        if self._axes_has_data(ax):
+            self._identity_colour_source = 'axes'
+            self._color_cycle_index = 1
+            return self._next_axes_colour(ax)
+        import matplotlib.pyplot as plt
+        self._identity_colour_source = 'palette'
+        self._color_cycle_index = 1
+        palette = plt.colormaps.get_cmap(get_style_value("colors.palette", "tab10"))
+        return palette(0)
+
+    @staticmethod
+    def _ordered_artists(ax):
+        """Artists of ``ax`` in the order the legacy retro-label search used."""
+        return (list(ax.lines) + list(ax.containers) + list(ax.patches)
+                + list(ax.collections))
+
+    def _snapshot_pre_call_artists(self, ax):
+        """PHASE_13_111_DF CR-6: remember what was on ``ax`` before a call."""
+        self._pre_call_artist_ids = (
+            {id(a) for a in self._ordered_artists(ax)} if ax is not None else set())
     
     def _auto_label(self, y_expr, x_expr=None):
         """
@@ -3728,6 +3865,11 @@ class DFDraw:
         if not same:
             # Store expression for retroactive labeling when same=True arrives
             self._last_plot_expr = (y_name, x_name)
+            # PHASE_13_111_DF CR-6: keep the artists this call drew, so the
+            # later name lands on this curve, never on another curve's artist.
+            _pre = getattr(self, '_pre_call_artist_ids', set()) or set()
+            self._last_plot_artists = [
+                a for a in self._ordered_artists(ax) if id(a) not in _pre]
             return
         
         # Phase 13.13.DF fix: retroactively label first plot when first same=True arrives
@@ -3736,7 +3878,13 @@ class DFDraw:
             first_label = self._auto_label(first_y, first_x)
             # Find unlabeled artists (matplotlib default labels start with '_' or are None)
             # Check lines (profiles), containers (bar charts), patches (histograms), collections (scatter)
-            for artist in ax.lines + list(ax.containers) + list(ax.patches) + ax.collections:
+            # PHASE_13_111_DF CR-6: search only the first call's own artists.
+            _own = getattr(self, '_last_plot_artists', None)
+            _candidates = (
+                [a for a in self._ordered_artists(ax) if any(a is o for o in _own)]
+                if _own else
+                ax.lines + list(ax.containers) + list(ax.patches) + ax.collections)
+            for artist in _candidates:
                 label = artist.get_label()
                 if label is None or (isinstance(label, str) and label.startswith('_')):
                     artist.set_label(first_label)
@@ -3759,6 +3907,8 @@ class DFDraw:
         
         # Show legend when overlaying
         ax.legend(loc=get_style_value("legend.loc", "best"))
+        # PHASE_13_111_DF D-1: one grey sample per shared quantile level.
+        _neutralise_quantile_legend(ax)
     
     # =========================================================================
     # Phase 13.33.DF: Normalized differential profile dispatch (AD-80/81/82)
@@ -5294,6 +5444,20 @@ class DFDraw:
         if global_scope and plot_kwargs.get('stat_list') is not None:
             # Stable physical color identity across sparse facet cells.
             plot_kwargs['_stat_group_order'] = global_groups or []
+        # PHASE_13_111_DF CR-1 (S-8): a categorical group means the same in
+        # every cell, so its colour must not depend on which groups a cell
+        # happens to hold. Give every cell the ordered group identities of the
+        # whole call. Group intervals computed per cell (group_by_bins /
+        # group_by_quantiles, 13.108 R2) keep their per-cell colours.
+        if (group_by is not None and not global_scope
+                and plot_kind in ('profile', 'hist')
+                and group_scope in ('auto',)
+                and plot_kwargs.get('group_by_bins') is None
+                and plot_kwargs.get('group_by_quantiles') is None
+                and '_stat_group_order' not in plot_kwargs
+                and isinstance(group_by, str) and group_by in df.columns):
+            plot_kwargs['_stat_group_order'] = sorted(
+                df[group_by].dropna().unique(), key=_interval_sort_key)
         if global_scope and isinstance(facet_by, list) and len(facet_by) == 2:
             plot_kwargs['_nd94_group_identity'] = global_groups or []
         if nd_vector and group_scope == 'facet':
@@ -6301,6 +6465,10 @@ class DFDraw:
                         # assignment is threaded in so no panel re-enters
                         # assign_channels().
                         _cell_draw = DFDraw(subplot_df)
+                        # PHASE_13_111_DF CR-1 (S-6): the cell draws with same=True on its
+                        # own empty axes, so its first curve must take palette index 0,
+                        # as in unfaceted and 2-level faceted plots (not index 1).
+                        _cell_draw._color_cycle_index = 0
                         if hasattr(self, '_data_source'):
                             _cell_draw._data_source = self._data_source
                         # Hand the once-resolved channel assignment to the
@@ -6367,6 +6535,10 @@ class DFDraw:
                     # validator and refuses scalar-hist × multi-selection.
                     if _cell_vector_active:
                         _cell_draw = DFDraw(subplot_df)
+                        # PHASE_13_111_DF CR-1 (S-6): the cell draws with same=True on its
+                        # own empty axes, so its first curve must take palette index 0,
+                        # as in unfaceted and 2-level faceted plots (not index 1).
+                        _cell_draw._color_cycle_index = 0
                         if hasattr(self, '_data_source'):
                             _cell_draw._data_source = self._data_source
                         _cell_draw._pending_channel_assignment = (
@@ -8474,8 +8646,13 @@ class DFDraw:
         # silently. Close-match -> error naming the proper parameter
         # (architect K-2 Option A); inapplicable dfdraw-semantic kwarg ->
         # clean error; genuinely unknown -> warning.
+        # PHASE_13_111_DF CR-1 (S-8): private coordinator kwarg carrying the
+        # ordered group identities of a faceted call; not a public parameter.
+        _hist_group_order = kwargs.pop('_stat_group_order', None)
         if kwargs:
             self._kwarg_typo_guard(kwargs, method='hist')
+        if _hist_group_order is not None:
+            kwargs['_stat_group_order'] = _hist_group_order
 
         # PHASE_13_107_DF: validate the quantile request before any Figure
         # exists, then carry it inward under private names that every
@@ -8884,6 +9061,8 @@ class DFDraw:
             ax = None
         else:
             ax = resolved_ax
+        # PHASE_13_111_DF CR-6: artists present before this call.
+        self._snapshot_pre_call_artists(ax)
         
         # Phase 13.13.DF: Inject color and label for same=True
         # Phase 13.16.DF: _suppress_color_cycle flag (P1-2)
@@ -8898,7 +9077,7 @@ class DFDraw:
         if same:
             if (color is None and not _suppress_color_cycle
                     and group_by is None):
-                color = self._get_next_color()
+                color = self._resolve_identity_color(True, ax)  # PHASE_13_111_DF CR-2
             if 'label' not in kwargs and group_by is None:
                 kwargs['label'] = self._auto_label(col_expr)
             # Suppress title handling — we do it in _handle_same_post
@@ -9006,6 +9185,11 @@ class DFDraw:
                 stats=stats, xlabel=xlabel, ylabel=ylabel, **kwargs
             )
         else:
+            # PHASE_13_111_DF CR-1/CR-2: the first histogram of a call gets its
+            # colour before drawing, so its fit line and quantile markers share it.
+            if (not same and color is None and not _suppress_color_cycle
+                    and group_by is None):
+                color = self._resolve_identity_color(False, ax)
             # Standard mode (single plot or overlay)
             fig, ax, stats_dict = draw_hist(
                 df, col_expr,
@@ -9362,6 +9546,8 @@ class DFDraw:
             ax = None
         else:
             ax = resolved_ax
+        # PHASE_13_111_DF CR-6: artists present before this call.
+        self._snapshot_pre_call_artists(ax)
         
         # Phase 13.13.DF: Inject color and label for same=True
         # Phase 13.16.DF: _suppress_color_cycle flag (P1-2)
@@ -9968,7 +10154,15 @@ class DFDraw:
             with columns: x_center, x_low, x_high, y_mean, y_std, y_sem, count,
             and 'group' if group_by is used.
         """
-        from .plots.profile import draw_profile
+        from .plots.profile import draw_profile, validate_quantile_display
+
+        # PHASE_13_111_DF D-4/D-7: refuse an explicit band that is not one
+        # symmetric triple, and central='both' with discrete quantile lines,
+        # before any facet, vector or normalize route creates a Figure.
+        validate_quantile_display(
+            quantiles, quantile_mode,
+            central if central is not None
+            else get_style_value("quantile.central_default", "mean"))
 
         # Phase 13.57.DF AF-2' (K-1/K-3): C-7 typo guard extended to the
         # typed-method surface. Pre-13.57, a misspelled or inapplicable
@@ -10643,6 +10837,8 @@ class DFDraw:
             ax = None
         else:
             ax = resolved_ax
+        # PHASE_13_111_DF CR-6: artists present before this call.
+        self._snapshot_pre_call_artists(ax)
         
         # Phase 13.13.DF: Inject color and label for same=True
         # Phase 13.16.DF: _suppress_color_cycle flag (P1-2)
@@ -10661,7 +10857,7 @@ class DFDraw:
         if same:
             if (color is None and not _suppress_color_cycle
                     and group_by is None):
-                color = self._get_next_color()
+                color = self._resolve_identity_color(True, ax)  # PHASE_13_111_DF CR-2
             if 'label' not in kwargs and group_by is None:
                 kwargs['label'] = self._auto_label(y_expr, x_expr)
             # Suppress title — handled in _handle_same_post
@@ -10807,6 +11003,12 @@ class DFDraw:
                 **kwargs
             )
         else:
+            # PHASE_13_111_DF CR-1/CR-2: the first curve of a call gets its
+            # colour before drawing, like every later curve, so its quantile
+            # lines, labels, fit and median line never take the axes' cycle.
+            if (not same and color is None and not _suppress_color_cycle
+                    and group_by is None):
+                color = self._resolve_identity_color(False, ax)
             # Standard mode (single plot or overlay)
             fig, ax, stats_dict = draw_profile(
                 df, x_expr, y_expr,
@@ -11025,6 +11227,14 @@ class DFDraw:
             # P1-B: faceting/share params reject at engine level, both surfaces.
             # Faceted primitives return ndarray-of-axes; single-ax threading
             # in this engine cannot consume that (Appendix C reproduction).
+            if t == "profile":
+                # PHASE_13_111_DF D-4/D-7: the profile layer's quantile
+                # display is checked before the density layer is drawn.
+                from .plots.profile import validate_quantile_display
+                validate_quantile_display(
+                    l.get("quantiles"), l.get("quantile_mode"),
+                    l.get("central") if l.get("central") is not None
+                    else get_style_value("quantile.central_default", "mean"))
             bad = _OVERLAY_NO_FACET & set(l)
             if bad:
                 raise ValueError(
@@ -11223,6 +11433,12 @@ class DFDraw:
             raise ValueError(
                 f"quantile_mode must be 'auto', 'error_bars', 'band', "
                 f"'discrete', or 'nested_band', got {_quantile_mode!r}")
+        # PHASE_13_111_DF D-4/D-7: also before any Figure exists.
+        from .plots.profile import validate_quantile_display
+        validate_quantile_display(
+            kw.get('quantiles'), _quantile_mode,
+            kw.get('central') if kw.get('central') is not None
+            else get_style_value("quantile.central_default", "mean"))
         y_expr, x_expr = self._parse_expr(expr)
         if isinstance(y_expr, list) or isinstance(x_expr, list):
             raise NotImplementedError(

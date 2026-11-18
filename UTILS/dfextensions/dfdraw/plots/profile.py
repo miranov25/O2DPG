@@ -347,6 +347,11 @@ def draw_profile(
     # Figure-global grouped facets pre-resolve one physical color ordering.
     _stat_group_order = kwargs.pop('_stat_group_order', None)
     _stagef_singleton_std_nd = kwargs.pop('_stagef_singleton_std_nd', False)
+    # PHASE_13_111_DF D-4/D-7: before any Figure is created.
+    validate_quantile_display(
+        quantiles, quantile_mode,
+        central if central is not None
+        else get_style_value("quantile.central_default", "mean"))
     # Validate before figure allocation, never silently drop stat_list.
     if stat_list is not None:
         if not isinstance(stat_list, (list, tuple)) or not stat_list:
@@ -1524,8 +1529,10 @@ def _draw_profile_grouped(
 
         # Phase 13.36.DF: user color override > palette cycle.
         # None = "user did not pass" (matches matplotlib default-color semantics).
+        # PHASE_13_111_DF CR-1 (S-8): the ordered group identities of the
+        # whole call fix the colour, with or without stat_list.
         group_idx = (list(map(str, _stat_group_order)).index(str(group))
-                     if stat_list is not None and _stat_group_order is not None
+                     if _stat_group_order is not None
                      and str(group) in map(str, _stat_group_order) else i)
         group_color = (palette(group_idx % 10)
                        if _user_color is None
@@ -1783,6 +1790,62 @@ def _detect_quantile_mode(quantiles: list) -> str:
     
     # Everything else → discrete (one line per quantile)
     return 'discrete'
+
+
+def validate_quantile_display(quantiles, quantile_mode=None, central=None):
+    """PHASE_13_111_DF D-4 / D-7: refuse quantile displays that cannot be
+    drawn faithfully, before any Figure exists.
+
+    * ``quantile_mode='band'`` draws one filled band between a symmetric pair
+      of levels around the median. It needs exactly three levels
+      ``[q, 0.5, 1-q]``. Any other list used to be drawn between ``q[0]`` and
+      ``q[2]`` (silently wrong for five levels), crashed for two levels, or
+      was replaced by error bars on 2-level facets (D-4, option a).
+    * ``central='both'`` draws the median central line dashed, which is the
+      line style of the first quantile level. With discrete quantile lines
+      the two cannot be told apart, and a 0.5 level is drawn twice (D-7,
+      option a).
+
+    Malformed lists are left to the existing validators.
+    """
+    if quantiles is None:
+        return
+    try:
+        qs = sorted(float(q) for q in quantiles)
+    except (TypeError, ValueError):
+        return
+    if not qs:
+        return
+    if quantile_mode == 'band':
+        symmetric_triple = (len(qs) == 3 and is_median_level(qs[1])
+                            and abs(qs[0] + qs[2] - 1.0) < 1e-9)
+        if not symmetric_triple:
+            raise ValueError(
+                "quantile_mode='band' draws one band between a symmetric "
+                "pair of levels around the median and needs exactly three "
+                f"levels [q, 0.5, 1-q]; got {list(quantiles)}. Use "
+                "quantile_mode='error_bars' for a symmetric pair, "
+                "'nested_band' for two or more symmetric pairs, or "
+                "'discrete' for one line per level (PHASE_13_111_DF D-4)."
+            )
+    if central == 'both':
+        if quantile_mode in (None, 'auto'):
+            try:
+                resolved = _detect_quantile_mode(qs)
+            except ValueError:
+                return
+        else:
+            resolved = quantile_mode
+        if resolved == 'discrete':
+            raise ValueError(
+                "central='both' cannot be combined with discrete quantile "
+                "lines: its dashed median line has the line style of a "
+                "quantile level, so the two cannot be told apart, and a 0.5 "
+                f"level would be drawn twice (quantiles={list(quantiles)}). "
+                "Use central='mean' or central='median' with these levels, "
+                "or symmetric levels drawn as error bars or a band "
+                "(PHASE_13_111_DF D-7)."
+            )
 
 
 def _compute_per_bin_quantiles(
