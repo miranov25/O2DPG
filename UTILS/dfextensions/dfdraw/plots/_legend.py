@@ -188,7 +188,15 @@ def _apply_legend_mode(fig, canonical: Optional[Dict[str, Any]]) -> None:
     mode = canonical['mode']
 
     if mode == 'all':
-        return  # no-op
+        # PHASE_13_112_DF F-8: the per-axes legends stay, but a title the
+        # user gave (legend={'mode': 'all', 'title': ...}) is applied to
+        # each of them instead of being dropped.
+        if canonical.get('title') is not None:
+            for ax in fig.axes:
+                leg = ax.get_legend()
+                if leg is not None:
+                    leg.set_title(canonical['title'])
+        return
 
     if mode == 'none':
         for ax in fig.axes:
@@ -224,20 +232,91 @@ def _apply_legend_mode(fig, canonical: Optional[Dict[str, Any]]) -> None:
                 handles, labels = ax.get_legend_handles_labels()
             leg.remove()
         if handles:
+            # PHASE_13_112_DF (13.107 item 5, F-5 placement): without a
+            # caller loc/bbox_to_anchor the Figure legend goes on top, in
+            # rows, under the Figure title, as the facet composer places it;
+            # before, it went to the bottom in one column, over the X title.
+            # A caller loc or bbox_to_anchor keeps the old defaults.
+            automatic = (canonical['loc'] is None
+                         and canonical['bbox_to_anchor'] is None)
             # Compose kwargs from canonical, dropping None values so matplotlib
             # uses its own defaults where the user didn't specify.
             fig_legend_kwargs = {
                 k: v for k, v in {
-                    'loc':            canonical['loc'] or 'lower center',
-                    'ncol':           canonical['ncol'] or 1,
+                    'loc':            canonical['loc'] or (
+                        'upper center' if automatic else 'lower center'),
+                    'ncol':           canonical['ncol'] or (
+                        min(len(handles), 8) if automatic else 1),
                     'bbox_to_anchor': canonical['bbox_to_anchor'],
                     'frameon':        canonical['frameon'],
                     'fontsize':       canonical['fontsize'],
                     'title':          canonical['title'],
                 }.items() if v is not None
             }
-            fig.legend(handles, labels, **fig_legend_kwargs)
+            engine = (fig.get_layout_engine()
+                      if hasattr(fig, 'get_layout_engine') else None)
+            if (automatic and engine is not None
+                    and type(engine).__name__ == 'ConstrainedLayoutEngine'):
+                # PHASE_13_112_DF S2b (S2-C05): under constrained layout the
+                # engine owns the panels; 'outside upper center' makes it
+                # reserve the legend's room above them (Matplotlib >= 3.7).
+                try:
+                    fig.legend(handles, labels, **dict(
+                        fig_legend_kwargs, loc='outside upper center'))
+                    return
+                except (ValueError, TypeError):
+                    pass
+            legend = fig.legend(handles, labels, **fig_legend_kwargs)
+            if automatic:
+                _place_figure_legend_on_top(fig, legend)
         return
 
     # Defensive: _normalize_legend_spec should have rejected anything else.
     raise ValueError(f"_apply_legend_mode: unknown mode {mode!r}")
+
+
+def _place_figure_legend_on_top(fig, legend, padding_pt=5.0):
+    """PHASE_13_112_DF: put an automatic Figure legend under the Figure
+    title (or the Figure top) and, if the panels reach it, lower the panel
+    tops by the measured overlap.
+
+    One-shot placement measured with the renderer; a Figure under a
+    constrained layout keeps its panels (the engine owns them).  Data, axis
+    limits and every other artist are unchanged.
+    """
+    legend._dfdraw_auto_top = True
+    fig.canvas.draw()
+    renderer = (fig.canvas.get_renderer()
+                if hasattr(fig.canvas, 'get_renderer')
+                else fig._get_renderer())
+    height = fig.bbox.height
+    gap = padding_pt * fig.dpi / 72.0
+    title = getattr(fig, '_suptitle', None)
+    if title is not None and title.get_visible() and title.get_text():
+        limit = title.get_window_extent(renderer).y0 - gap
+    else:
+        limit = fig.bbox.y1 - gap
+    legend.set_bbox_to_anchor((0.5, limit / height),
+                              transform=fig.transFigure)
+    fig.canvas.draw()   # measure the legend at its new anchor
+    axes = [ax for ax in fig.axes if ax.get_visible()]
+    bounds = [ax.get_tightbbox(renderer) for ax in axes]
+    bounds = [b for b in bounds if b is not None]
+    if not bounds:
+        return
+    overlap = max(b.y1 for b in bounds) + gap - legend.get_window_extent(renderer).y0
+    if overlap <= 0:
+        return
+    engine = fig.get_layout_engine() if hasattr(fig, 'get_layout_engine') else None
+    if engine is not None and type(engine).__name__ == 'ConstrainedLayoutEngine':
+        return
+    bottom = min(ax.get_position().y0 for ax in axes)
+    top = max(ax.get_position().y1 for ax in axes)
+    new_top = top - overlap / height
+    if new_top - bottom < 0.1 * (top - bottom) or new_top <= bottom:
+        return  # too little room; leave the panels as they are
+    scale = (new_top - bottom) / (top - bottom)
+    for ax in axes:
+        pos = ax.get_position()
+        ax.set_position([pos.x0, bottom + (pos.y0 - bottom) * scale,
+                         pos.width, pos.height * scale])

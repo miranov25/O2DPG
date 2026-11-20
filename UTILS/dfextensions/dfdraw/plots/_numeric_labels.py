@@ -17,11 +17,13 @@ identical.  The last resort is the shortest exact decimal text of the float
 
 This module imports nothing from dfdraw (no import cycles).
 """
+import re
 from decimal import Decimal, ROUND_HALF_EVEN
 
 __all__ = [
     'is_median_level', 'quantile_percent_text', 'quantile_percent_labels',
-    'quantile_fraction_labels', 'interval_labels',
+    'quantile_fraction_labels', 'interval_labels', 'interval_display_text',
+    'interval_key_text',
 ]
 
 # Today's short forms: six significant digits for quantile levels.
@@ -166,6 +168,37 @@ def interval_labels(intervals):
             return dict(zip(intervals, texts))
     return {iv: f"{_significant_text(iv.left, None)}-"
                 f"{_significant_text(iv.right, None)}" for iv in intervals}
+
+
+_LEGACY_INTERVAL = re.compile(r'^-?\d+(\.\d+)?--?\d+(\.\d+)?$')
+
+
+def interval_display_text(name):
+    """PHASE_13_112_DF F-7 (D-3, Architect option b): the legend text of a
+    binned-group name.
+
+    dfdraw bins with ``pd.cut`` / ``pd.qcut`` and their default closure, so
+    every interval is closed on the right: the stored name ``'a-b'`` (the
+    group key, also in the statistics) is shown as ``'(a, b]'``, with the
+    same numbers.  Display only: the key itself is never changed.  A name
+    that is not a legacy interval name is returned unchanged.
+    """
+    text = str(name)
+    if not _LEGACY_INTERVAL.match(text):
+        return text
+    left, right = _edge_texts(text)
+    return f"({left}, {right}]"
+
+
+_DISPLAY_INTERVAL = re.compile(r'^\((-?\d+(\.\d+)?), (-?\d+(\.\d+)?)\]$')
+
+
+def interval_key_text(text):
+    """Inverse of :func:`interval_display_text`: ``'(a, b]'`` -> the stored
+    group key ``'a-b'`` (other text unchanged).  For callers that look a
+    legend entry up in the statistics, which keep the key."""
+    match = _DISPLAY_INTERVAL.match(str(text))
+    return f"{match.group(1)}-{match.group(3)}" if match else str(text)
 
 
 def map_interval_labels(classified):

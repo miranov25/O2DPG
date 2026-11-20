@@ -40,7 +40,8 @@ from ._validation import validate_column_references
 # PHASE_13_108 v0.2: one owner for numbers written as names (quantile
 # levels, the exact median, numeric bin intervals).
 from ._numeric_labels import (is_median_level, map_interval_labels,
-                              quantile_percent_labels, quantile_percent_text)
+                              quantile_percent_labels, quantile_percent_text,
+                              interval_display_text, interval_labels)
 
 
 def _quantile_percent_text(q):
@@ -347,6 +348,11 @@ def draw_profile(
     # Figure-global grouped facets pre-resolve one physical color ordering.
     _stat_group_order = kwargs.pop('_stat_group_order', None)
     _stagef_singleton_std_nd = kwargs.pop('_stagef_singleton_std_nd', False)
+    # PHASE_13_112_DF F-7: the groups are bins (named 'a-b'); the legend
+    # shows them as '(a, b]'.  Set by the faceted dispatcher for its bins.
+    _group_is_interval = (kwargs.pop('_group_is_interval', False)
+                          or group_by_bins is not None
+                          or group_by_quantiles is not None)
     # PHASE_13_111_DF D-4/D-7: before any Figure is created.
     validate_quantile_display(
         quantiles, quantile_mode,
@@ -615,6 +621,7 @@ def draw_profile(
     
     # Phase 13.12.DF F3: Auto-bin float group_by column
     group_col = group_by
+    _group_bin_edges = None
     if group_by is not None and group_by in df_filtered.columns:
         _col = df_filtered[group_by]
         # Phase 13.37.DF (BUG-015): float column + no bins + high cardinality
@@ -652,18 +659,40 @@ def draw_profile(
                     f"values instead (dfdraw Phase 13.57.DF AF-3 guard)."
                 )
         if group_by_bins is not None:
-            intervals = pd.cut(df_filtered[group_by], bins=group_by_bins)
+            # PHASE_13_112_DF F-5: the same bins; the real edges are kept
+            # so the faceted coordinator can compare cells exactly.
+            intervals, _group_bin_edges = pd.cut(df_filtered[group_by],
+                                                 bins=group_by_bins, retbins=True)
             # PHASE_13_108 v0.2: the name is the grouping key; bins that
             # would share a name get more decimals instead of being merged.
             df_filtered['_group'] = map_interval_labels(intervals)
             group_col = '_group'
         elif group_by_quantiles is not None:
-            intervals = pd.qcut(df_filtered[group_by], q=group_by_quantiles, duplicates='drop')
+            intervals, _group_bin_edges = pd.qcut(
+                df_filtered[group_by], q=group_by_quantiles, duplicates='drop',
+                retbins=True)
             df_filtered['_group'] = map_interval_labels(intervals)
             group_col = '_group'
+        # PHASE_13_112_DF S2b (review S2-C01): a binned group's colour,
+        # marker and line style follow the rank of its interval among ALL
+        # intervals of the binning, empty ones included, not its position
+        # among the groups present in this cell.  With the same edges in
+        # every facet cell an interval then has the same style everywhere,
+        # also where another interval is empty.  An ordered identity list
+        # given by the caller (13.111 CR-1, global scope) is kept.
+        if (group_col == '_group' and _stat_group_order is None
+                and hasattr(intervals, 'cat')):
+            _names = interval_labels(intervals.cat.categories)
+            _stat_group_order = [_names[c] for c in intervals.cat.categories]
     
     # Group-by handling
     if group_col is not None and group_col in df_filtered.columns:
+        if _group_bin_edges is not None:
+            # PHASE_13_112_DF S2b (S2-C03): one record per grouping drawn
+            # on these axes (several layers can share a cell).
+            ax._dfdraw_group_bin_edges = (
+                list(getattr(ax, '_dfdraw_group_bin_edges', None) or [])
+                + [np.asarray(_group_bin_edges, dtype=float)])
         # Phase 13.32.DF Sub-fix 2: forward Phase 13.25 resolved quantile state
         # (resolved earlier in this function: _resolved_quantile_mode,
         # _quantile_pair, _quantile_list). The grouped path renders bands or
@@ -703,6 +732,7 @@ def draw_profile(
             _stat_group_order=_stat_group_order,
             _stagef_singleton_std_nd=_stagef_singleton_std_nd,
             _facet_presentation=bool(_facet_mode),
+            _interval_groups=_group_is_interval,
             **kwargs
         )
         stats_dict["grouped"] = True
@@ -1053,7 +1083,7 @@ def draw_profile(
                     n_valid = np.sum(valid)
                     if n_valid > 2:
                         idx = np.where(valid)[0][int(0.4 * n_valid)]
-                        ax.annotate(
+                        _level_label = ax.annotate(
                             _q_names[float(q_val)],
                             xy=(bin_centers[idx], q_per_bin[idx]),
                             fontsize=7, fontweight='bold',
@@ -1061,6 +1091,14 @@ def draw_profile(
                             backgroundcolor='white',
                             ha='center', va='bottom',
                         )
+                        # PHASE_13_112_DF D-6: what the drawer's label
+                        # post-step needs: the level, its legend name, and
+                        # the points of its own line (to move it along it).
+                        _level_label._dfdraw_level_label = float(q_val)
+                        _level_label._dfdraw_level_legend_name = q_label
+                        _level_label._dfdraw_level_points = (
+                            np.asarray(bin_centers[valid], dtype=float),
+                            np.asarray(q_per_bin[valid], dtype=float))
         elif stat_list is None:
             # No quantiles — standard profile rendering (existing behavior)
             # Phase 13.51 §1.2.5 V-3 (audit S-2): use _central_values not bin_means.
@@ -1162,7 +1200,8 @@ def draw_profile(
                                 'std': '^', 'sem': 'v'}[name], linestyle={'mean': '-',
                                 'std': ':', 'sem': ':'}[name]) for name in stat_list]
             ax.legend(group_handles + style_handles,
-                      [str(g) for g in identities] + list(stat_list),
+                      [interval_display_text(g) if _group_is_interval else str(g)
+                       for g in identities] + list(stat_list),
                       loc=get_style_value('legend.loc', 'best'))
         elif group_col is not None:
             ax.legend(loc=get_style_value("legend.loc", "best"))
@@ -1369,6 +1408,7 @@ def _draw_profile_grouped(
     _stat_group_order=None,
     _stagef_singleton_std_nd: bool = False,
     _facet_presentation: bool = False,  # PHASE_13_99: internal only
+    _interval_groups: bool = False,  # PHASE_13_112_DF F-7: internal only
     # Phase 13.36.DF: user style overrides (BUG-013 fix).
     # None = "user did not pass" (matches matplotlib default-color semantics).
     # Non-None = apply uniformly to all groups, override the auto-cycle.
@@ -1410,6 +1450,10 @@ def _draw_profile_grouped(
             Per-group quantile diagnostics, populated only when quantiles is
             not None. Schema per PHASE_13_32_DF_v1_2_Proposal §3.2.
     """
+    # PHASE_13_112_DF F-7: legend text of a group; keys stay unchanged.
+    def _group_name(group):
+        return interval_display_text(group) if _interval_groups else str(group)
+
     # Phase 13.32.DF Sub-fix 2: nested_band + group_by raises early.
     # Silent fallthrough would mean the quantile_list is computed but never
     # rendered, reproducing the v1.0-incident A bug class.
@@ -1623,7 +1667,7 @@ def _draw_profile_grouped(
                 _quantile_linestyles = [ls for ls in _quantile_linestyles
                                          if ls not in ('-', 'solid')]
                 for j, (q_val, q_per_bin) in enumerate(_q_all.items()):
-                    legend_label = str(group) if j == 0 else None
+                    legend_label = _group_name(group) if j == 0 else None
                     _q_linestyle = '--'
                     if (_facet_presentation and quantile_style in (None, 'linestyle')
                             and _quantile_linestyles):
@@ -1644,7 +1688,7 @@ def _draw_profile_grouped(
         # Central line (mean or median) — always rendered last so it sits on top
         # Phase 13.36.DF: user marker/markersize override > cycle.
         # None on either passes through to matplotlib defaults (correct).
-        group_marker = (markers[i % len(markers)]
+        group_marker = (markers[group_idx % len(markers)]
                         if _user_marker is None
                         else _user_marker)
         # Phase 13.37.DF: per-group linestyle from cycle when active.
@@ -1652,7 +1696,7 @@ def _draw_profile_grouped(
         # pass linestyle). When None, profile_kwargs still has linestyle from
         # the existing flow (user explicit OR style default "-").
         if _ls_cycle is not None:
-            _per_group_ls = _ls_cycle[i % len(_ls_cycle)]
+            _per_group_ls = _ls_cycle[group_idx % len(_ls_cycle)]
             _centre_artist = ax.errorbar(
                 bin_centers[plot_mask], bin_means[plot_mask], yerr=bin_errors[plot_mask],
                 fmt=group_marker,
@@ -1661,7 +1705,7 @@ def _draw_profile_grouped(
                 linestyle=_per_group_ls,   # Phase 13.37.DF cycle
                 label=(None if quantiles is not None and quantile_list is not None
                        and quantile_mode == 'discrete'
-                       else str(group)),
+                       else _group_name(group)),
                 **profile_kwargs
             )
         else:
@@ -1674,7 +1718,7 @@ def _draw_profile_grouped(
                 # the duplicate central-line legend entry by setting label=None.
                 label=(None if quantiles is not None and quantile_list is not None
                        and quantile_mode == 'discrete'
-                       else str(group)),
+                       else _group_name(group)),
                 **profile_kwargs
             )
         # Explicit vector-expression identity is carried by the actual

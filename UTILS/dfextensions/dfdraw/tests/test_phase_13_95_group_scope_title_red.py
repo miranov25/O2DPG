@@ -70,7 +70,11 @@ def profile_tables(stats):
 
 
 def all_legend_labels(fig):
-    return [[text.get_text() for text in leg.get_texts()] for leg in fig.legends]
+    # PHASE_13_112_DF F-7 (change rule): group legends show '(a, b]'; the
+    # statistics keep the key 'a-b', so legend text is compared as the key.
+    from dfextensions.dfdraw.plots._numeric_labels import interval_key_text
+    return [[interval_key_text(text.get_text()) for text in leg.get_texts()]
+            for leg in fig.legends]
 
 
 def test_R1_public_signature_and_invalid_values():

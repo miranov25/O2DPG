@@ -89,13 +89,16 @@ def _close(fig):
 
 
 def _legend_texts(fig, axes):
+    # PHASE_13_112_DF F-7 (change rule): group legends show '(a, b]'; the
+    # statistics keep the key 'a-b', so legend text is compared as the key.
+    from dfextensions.dfdraw.plots._numeric_labels import interval_key_text
     texts = []
     for legend in fig.legends:
         texts.extend(t.get_text() for t in legend.get_texts())
     for ax in np.asarray(axes).ravel():
         if ax.get_legend() is not None:
             texts.extend(t.get_text() for t in ax.get_legend().get_texts())
-    return texts
+    return [interval_key_text(t) for t in texts]
 
 
 def _quantile_texts(texts):

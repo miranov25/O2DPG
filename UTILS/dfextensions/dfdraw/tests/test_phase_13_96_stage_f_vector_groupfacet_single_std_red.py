@@ -142,7 +142,10 @@ def test_F04_global_group_colors_stay_physical_through_sparse_middle_group():
     try:
         assert len(fig.legends) == 1
         legend = fig.legends[0]
-        labels = [t.get_text() for t in legend.get_texts()]
+        # PHASE_13_112_DF F-7 (change rule): group legends show '(a, b]'; the
+        # statistics keep the key 'a-b', so legend text is compared as the key.
+        from dfextensions.dfdraw.plots._numeric_labels import interval_key_text
+        labels = [interval_key_text(t.get_text()) for t in legend.get_texts()]
         handles = getattr(legend, 'legend_handles', getattr(legend, 'legendHandles', []))
         # first five entries are the global physical group colors
         group_labels = labels[:5]

@@ -6,6 +6,7 @@ Phase 13.16.DF FIX1 (2026-04-14): Vector path kwarg propagation fix.
 """
 
 import inspect
+import re
 import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
@@ -22,7 +23,8 @@ from .plots.profile import _quantile_percent_text
 # PHASE_13_108 v0.2: numbers written as names keep their identity.
 from .plots._numeric_labels import (is_median_level, interval_labels,
                                     map_interval_labels,
-                                    quantile_percent_labels)
+                                    quantile_percent_labels,
+                                    interval_display_text)
 from .plots._facet_label_format import (
     normalize_facet_label_format, validate_facet_label_dimensions,
     facet_label_format_is_legacy, format_facet_dimension,
@@ -88,7 +90,11 @@ def _stabilize_group_errorbars(ax, identities, explicit_color=None, explicit_mar
     palette = plt.colormaps.get_cmap(get_style_value('colors.palette', 'tab10'))
     markers = get_style_value('markers.cycle',
                               ['o', 's', '^', 'D', 'P', 'X', 'v', '<', '>', 'h'])
-    by_name = {name: i for i, name in enumerate(identities)}
+    by_name = {}
+    for i, name in enumerate(identities):
+        # PHASE_13_112_DF F-7: the artist label may be the '(a, b]' display.
+        by_name.setdefault(str(name), i)
+        by_name.setdefault(interval_display_text(name), i)
     for container in ax.containers:
         if not isinstance(container, ErrorbarContainer):
             continue
@@ -117,7 +123,8 @@ def _statistic_legend_proxies(stat_list):
 
 
 def _scope_figure_legend(fig, axes, identities, *, explicit_color=None,
-                         with_title=False, stat_list=None):
+                         with_title=False, stat_list=None, title=None,
+                         interval_names=False):
     """One truthful Figure-level group legend, no duplicated panel legends."""
     from matplotlib.legend import Legend
     from matplotlib.lines import Line2D
@@ -131,12 +138,16 @@ def _scope_figure_legend(fig, axes, identities, *, explicit_color=None,
                for i, _ in enumerate(identities)]
     if stat_list:
         handles += _statistic_legend_proxies(stat_list)
-    labels = list(identities) + (list(stat_list) if stat_list else [])
+    # PHASE_13_112_DF F-7: bins are shown as '(a, b]' (keys unchanged).
+    labels = ([interval_display_text(g) if interval_names else g
+               for g in identities]
+              + (list(stat_list) if stat_list else []))
     if handles:
         fig.legend(handles, labels, loc='upper center',
                    bbox_to_anchor=(.5, .86 if with_title else .96),
                    ncol=min(len(handles), 8),
-                   fontsize=9, frameon=False)
+                   fontsize=9, frameon=False,
+                   title=title if identities else None)
 
 
 
@@ -206,6 +217,395 @@ def _default_shared_legend_allowed(fig, axes, *, group_by, plot_kwargs,
     return True
 
 
+def _refuse_shared_over_cell_intervals(fig, axes):
+    """PHASE_13_112_DF F-5 (D-4 a, strict): one Figure legend over group
+    intervals computed separately in each facet cell is allowed only when
+    every cell computed exactly the same real bin edges.
+
+    The edges are the values ``pd.cut`` / ``pd.qcut`` returned (the cell
+    renderers keep them on the axes as ``_dfdraw_group_bin_edges``), not the
+    printed names, which are rounded: two cells whose names agree after
+    rounding but whose edges differ are refused too.  On refusal the Figure
+    is closed, so no Figure is left open, and the error names the remedy.
+    Scope and bins are never changed silently.
+    """
+    # PHASE_13_112_DF S2b (S2-C03): every grouping drawn in a cell keeps
+    # its own record (a list); a cell with data but no record, while other
+    # cells have one, cannot be verified and is refused, never skipped.
+    # Empty cells (no data drawn) have nothing to compare.
+    records, unverified = [], False
+    for ax in np.asarray(axes).flat:
+        rec = getattr(ax, '_dfdraw_group_bin_edges', None)
+        if rec is None:
+            unverified = unverified or (ax.get_visible() and ax.has_data())
+            continue
+        if isinstance(rec, np.ndarray):
+            rec = [rec]
+        records.extend(np.asarray(e, dtype=float) for e in rec)
+    if not records:
+        return
+    first = records[0]
+    if not unverified and all(e.shape == first.shape and np.array_equal(e, first)
+                              for e in records[1:]):
+        return
+    plt.close(fig)
+    raise ValueError(
+        "legend='shared' needs the same group intervals in every facet cell, "
+        "but group_by_bins/group_by_quantiles were computed separately in "
+        "each cell and the cells have different bin edges (or a cell's "
+        "intervals could not be verified), so one colour would name "
+        "different intervals.  Use group_by_scope='global' (one set of "
+        "intervals for the whole Figure), or a legend mode other than "
+        "'shared' (dfdraw PHASE_13_112 F-5).")
+
+
+_GROUP_CHANNEL_WORD = {'color': 'Colors', 'linestyle': 'Line styles',
+                       'marker': 'Markers'}
+_INTERVAL_NAME = re.compile(
+    r'^[\(\[]?-?\d+(\.\d+)?(e[+-]?\d+)?(,\s*|-)-?\d+(\.\d+)?(e[+-]?\d+)?[\)\]]?$')
+_NON_GROUP_ENTRY = re.compile(r'^(q=.*|median|mean|std|sem|rms|.* vs .*)$')
+
+
+def _group_legend_title(name, *, binned, n_defined, scope_global,
+                        channel='color'):
+    """PHASE_13_112_DF F-6 (D-2): ``<channel>: <variable> (<n> bins)``.
+
+    The text is fixed before drawing, so the Figure layout owner places the
+    legend with its title included; it names the defined bins (the count
+    the caller asked for), not how many of them a cell happens to show."""
+    word = _GROUP_CHANNEL_WORD.get(channel or 'color', 'Colors')
+    if not binned:
+        return f"{word}: {name}"
+    scope = 'global ' if scope_global else ''
+    count = f"{n_defined} " if n_defined is not None else ''
+    return f"{word}: {name} ({count}{scope}bins)"
+
+
+def _title_group_legends(figures, title, *, binned, group_names):
+    """PHASE_13_112_DF F-6: give ``title`` to every group legend of the
+    returned Figure(s) that has no title yet (axes legends of unfaceted and
+    per-cell routes; Figure legends receive it before layout).
+
+    A legend counts as a group legend when at least one entry is a group
+    name: one of ``group_names`` for a categorical group, an interval name
+    for a binned group.  Titles already set (by the user, by the 2-D global
+    owner of PHASE_13_98, or by the expression legend) are kept.
+    """
+    from matplotlib.figure import Figure
+    if isinstance(figures, Figure):
+        figures = [figures]
+    known = {str(g) for g in group_names} if group_names is not None else set()
+    for fig in figures:
+        if not isinstance(fig, Figure):
+            continue
+        legends = list(fig.legends) + [ax.get_legend() for ax in fig.axes
+                                       if ax.get_legend() is not None]
+        for legend in legends:
+            if legend.get_title().get_text():
+                continue
+            texts = [t.get_text() for t in legend.get_texts()]
+            if any(not _NON_GROUP_ENTRY.match(t)
+                   and (t in known if not binned else bool(_INTERVAL_NAME.match(t)))
+                   for t in texts):
+                legend.set_title(title)
+                # PHASE_13_112_DF: a generic top Figure legend grew by its
+                # title; place it again so the panels make room for it.
+                if getattr(legend, '_dfdraw_auto_top', False):
+                    from .plots._legend import _place_figure_legend_on_top
+                    _place_figure_legend_on_top(fig, legend)
+
+
+def _with_group_legend_title(method):
+    """PHASE_13_112_DF F-6: one owner for the group legend title.
+
+    The outermost public ``profile`` / ``hist`` / ``scatter`` call computes
+    the title from its arguments before drawing and leaves it in
+    ``self._group_legend_title_default``; the Figure legend builders of the
+    faceted routes read it, so the layout owner sees the titled legend.
+    Axes legends still without a title get it at the exit of the call.
+    """
+    import functools
+    signature = inspect.signature(method)
+
+    @functools.wraps(method)
+    def wrapper(self, *args, **kwargs):
+        depth = getattr(self, '_group_title_depth', 0)
+        title = binned = names = None
+        if depth == 0:
+            try:
+                bound = signature.bind_partial(self, *args, **kwargs)
+            except TypeError:
+                bound = None
+            values = dict(bound.arguments) if bound is not None else {}
+            values.update(values.pop('kwargs', {}) or {})
+            group_by = values.get('group_by')
+            if isinstance(group_by, str):
+                n_bins = values.get('group_by_bins')
+                n_quant = values.get('group_by_quantiles')
+                binned = n_bins is not None or n_quant is not None
+                n_defined = None
+                if binned:
+                    spec = n_bins if n_bins is not None else n_quant
+                    n_defined = (spec if isinstance(spec, (int, np.integer))
+                                 else max(len(spec) - 1, 0))
+                elif group_by in self.df.columns:
+                    names = self.df[group_by].dropna().unique()
+                title = _group_legend_title(
+                    self._get_label(group_by) or group_by, binned=binned,
+                    n_defined=n_defined,
+                    scope_global=values.get('group_by_scope') == 'global',
+                    channel=values.get('group_style') or 'color')
+            self._group_legend_title_default = title
+        self._group_title_depth = depth + 1
+        try:
+            result = method(self, *args, **kwargs)
+        finally:
+            self._group_title_depth = depth
+            if depth == 0:
+                self._group_legend_title_default = None
+        if depth == 0 and title and isinstance(result, tuple) and result:
+            _title_group_legends(result[0], title, binned=binned, group_names=names)
+        return result
+    return wrapper
+
+
+def _with_label_post_steps(method):
+    """PHASE_13_112_DF: run the in-panel label and legend post-steps once,
+    at the exit of the outermost public call (``draw``, ``profile``,
+    ``hist``, ``scatter``), when the legend mode of the call is applied:
+
+    * D-6 (``_resolve_level_labels``): level labels of several curves;
+    * F-3 (``_move_best_legends_off_text_boxes``): a 'best' legend off the
+      fit box and the remaining labels (after D-6, which may remove some).
+
+    ``draw()`` runs the vector loop and applies ``legend=`` after the inner
+    ``profile`` calls, so the post-steps must run at its exit, not at theirs.
+    """
+    import functools
+
+    @functools.wraps(method)
+    def wrapper(self, *args, **kwargs):
+        depth = getattr(self, '_label_post_depth', 0)
+        self._label_post_depth = depth + 1
+        try:
+            result = method(self, *args, **kwargs)
+        finally:
+            self._label_post_depth = depth
+        if depth == 0 and isinstance(result, tuple) and result:
+            _resolve_level_labels(result[0])
+            _move_best_legends_off_text_boxes(result[0])
+        return result
+    return wrapper
+
+
+def _resolve_level_labels(fig):
+    """PHASE_13_112_DF D-6 (AD-2/13.112.DF): in-panel quantile level labels
+    ('11%', '90%') of a profile when two or more curves draw the same level.
+
+    * (d) If a visible legend of the panel (its Axes legend or a Figure
+      legend) names every level drawn there ('q=11%', 'median', ...: the
+      grey entries of AD-8/13.111.DF), the level labels of that panel are
+      removed: the legend already says which line style is which level.
+    * (b) Otherwise (no legend, legend=False, or a level missing from it)
+      every label stays with its own curve, and the curves' labels are
+      moved apart along their own lines (curve k of n at the fraction
+      0.2 + 0.6 k / (n - 1) of its points instead of all at 0.4), so they
+      do not cover each other.
+    * A single curve keeps its labels unchanged.
+
+    Only labels tagged by ``plots/profile.py`` are touched; quantile lines,
+    their colours and every number are unchanged.  Histogram quantile texts
+    exist only when the caller asks for them (``quantile_text=``) and are
+    left as they are.
+
+    The rule is evaluated again at the end of every call on the Axes, on all
+    labels drawn there so far: AliasDataFrame and the vector loop draw a
+    figure through several calls (``same=True``), and only the last one
+    sees every curve.  Labels removed by an earlier evaluation are kept on
+    the Axes (``_dfdraw_removed_level_labels``) and put back if a later
+    evaluation keeps them; each label remembers its first position.
+    """
+    from matplotlib.colors import to_hex
+    if isinstance(fig, (list, tuple)):
+        for one in fig:
+            _resolve_level_labels(one)
+        return
+    if not hasattr(fig, 'axes'):
+        return
+    figure_names = set()
+    for legend in getattr(fig, 'legends', ()):
+        if legend.get_visible():
+            figure_names.update(t.get_text() for t in legend.get_texts())
+
+    def put_back(ax, label):
+        if hasattr(ax, '_add_text'):
+            ax._add_text(label)
+        else:  # pragma: no cover - Matplotlib without Axes._add_text
+            ax.add_artist(label)
+
+    for ax in fig.axes:
+        shown = [t for t in ax.texts
+                 if getattr(t, '_dfdraw_level_label', None) is not None]
+        removed = list(getattr(ax, '_dfdraw_removed_level_labels', ()))
+        labels = shown + removed
+        if not labels:
+            continue
+        for t in labels:
+            if not hasattr(t, '_dfdraw_level_xy0'):
+                t._dfdraw_level_xy0 = tuple(t.xy)
+        curves = []
+        by_level = {}
+        for t in labels:
+            colour = to_hex(t.get_color())
+            if colour not in curves:
+                curves.append(colour)
+            by_level.setdefault(t._dfdraw_level_label, set()).add(colour)
+        shared = len(curves) > 1 and any(len(c) > 1 for c in by_level.values())
+        names = set(figure_names)
+        legend = ax.get_legend()
+        if legend is not None and legend.get_visible():
+            names.update(t.get_text() for t in legend.get_texts())
+        if shared and all(t._dfdraw_level_legend_name in names for t in labels):
+            # (d): the legend names every level; no level label in this panel.
+            for t in shown:
+                t.remove()
+            ax._dfdraw_removed_level_labels = labels
+            continue
+        for t in removed:
+            put_back(ax, t)
+        ax._dfdraw_removed_level_labels = []
+        n = len(curves)
+        for t in labels:
+            xy = t._dfdraw_level_xy0
+            xs, ys = t._dfdraw_level_points
+            if shared and len(xs):
+                # (b): each curve's labels at their own place on their line.
+                k = curves.index(to_hex(t.get_color()))
+                frac = 0.2 + 0.6 * k / (n - 1)
+                i = min(int(frac * len(xs)), len(xs) - 1)
+                xy = (xs[i], ys[i])
+            t.xy = xy
+            t.set_position(xy)
+
+
+def _drawn_data_points(ax):
+    """PHASE_13_112_DF S2b (S2-C04): display coordinates of the data drawn
+    on ``ax``, for counting what a legend would cover: line vertices,
+    collection offsets (scatter points) and segment ends (error bars), and
+    patch outline vertices (histogram bars).  Legends and text are not data.
+    """
+    pts = []
+    for line in ax.lines:
+        if line.get_visible() and len(line.get_xdata()) > 0:
+            pts.append(line.get_transform().transform(line.get_xydata()))
+    for coll in ax.collections:
+        if not coll.get_visible():
+            continue
+        offsets = np.asarray(coll.get_offsets(), dtype=float)
+        if offsets.size and offsets.ndim == 2:
+            pts.append(coll.get_offset_transform().transform(offsets))
+        if hasattr(coll, 'get_segments'):
+            for seg in coll.get_segments():
+                seg = np.asarray(seg, dtype=float)
+                if seg.size:
+                    pts.append(coll.get_transform().transform(seg))
+    for patch in ax.patches:
+        if patch.get_visible():
+            verts = patch.get_path().vertices
+            if len(verts):
+                pts.append(patch.get_transform().transform(verts))
+    pts = [p for p in pts if p.ndim == 2 and p.shape[1] == 2]
+    if not pts:
+        return np.empty((0, 2))
+    pts = np.vstack(pts)
+    return pts[np.all(np.isfinite(pts), axis=1)]
+
+
+# Matplotlib location codes tried, in order, when 'best' covers a box:
+# upper right, upper left, lower left, lower right, center right,
+# center left, upper center, lower center.
+_LEGEND_FALLBACK_LOCS = (1, 2, 3, 4, 7, 6, 9, 8)
+
+
+def _move_best_legends_off_text_boxes(fig):
+    """PHASE_13_112_DF F-3: Matplotlib's ``loc='best'`` avoids the data but
+    not text, so an Axes legend could be placed over the fit-result box.
+
+    Only legends at 'best' (location code 0) on Axes that hold a framed text
+    are looked at, and only one that covers such a text is moved: to the
+    first fallback location that covers no framed text, preferring the one
+    over the fewest data points.  A legend the caller placed is never moved.
+    """
+    if isinstance(fig, (list, tuple)):
+        for one in fig:
+            _move_best_legends_off_text_boxes(one)
+        return
+    if not hasattr(fig, 'axes'):
+        return
+    work = []
+    for ax in fig.axes:
+        legend = ax.get_legend()
+        if legend is None or getattr(legend, '_loc', None) != 0:
+            continue
+        boxes = [t for t in ax.texts if t.get_visible() and t.get_text()
+                 and t.get_bbox_patch() is not None]
+        if boxes:
+            work.append((ax, legend, boxes))
+    if not work:
+        return
+    fig.canvas.draw()
+    renderer = (fig.canvas.get_renderer()
+                if hasattr(fig.canvas, 'get_renderer')
+                else fig._get_renderer())
+    pad = 2.0 * fig.dpi / 72.0
+
+    def covered(extent, boxes):
+        grown = extent.expanded(1.0, 1.0).padded(pad)
+        return sum(1 for t in boxes
+                   if t.get_window_extent(renderer).overlaps(grown))
+
+    def set_loc(legend, code):
+        if hasattr(legend, 'set_loc'):
+            legend.set_loc(code)
+        else:  # Matplotlib < 3.8
+            legend._loc = code
+
+    for ax, legend, boxes in work:
+        if not covered(legend.get_window_extent(renderer), boxes):
+            continue
+        points = _drawn_data_points(ax)
+        frame = ax.get_window_extent(renderer)
+        choice = None
+        for code in _LEGEND_FALLBACK_LOCS:
+            set_loc(legend, code)
+            extent = legend.get_window_extent(renderer)
+            if covered(extent, boxes):
+                continue
+            if (extent.x0 < frame.x0 - 1 or extent.x1 > frame.x1 + 1
+                    or extent.y0 < frame.y0 - 1 or extent.y1 > frame.y1 + 1):
+                continue
+            inside = int(np.count_nonzero(
+                (points[:, 0] >= extent.x0) & (points[:, 0] <= extent.x1)
+                & (points[:, 1] >= extent.y0) & (points[:, 1] <= extent.y1)))
+            if choice is None or inside < choice[1]:
+                choice = (code, inside)
+                if inside == 0:
+                    break
+        if choice is None:
+            # PHASE_13_112_DF S2b (S2-C07): no standard location is free of
+            # framed text; keep Matplotlib's choice and say so.
+            import warnings
+            set_loc(legend, 0)
+            warnings.warn(
+                'PHASE_13_112 F-3: no legend location inside the axes is free '
+                'of framed text (fit box, level labels); the legend stays at '
+                "loc='best' and may cover a text box. Give legend={'mode': "
+                "'all', 'loc': ...} or move the fit box with "
+                'fit_textbox_kwargs.', UserWarning, stacklevel=4)
+        else:
+            set_loc(legend, choice[0])
+
+
 def _neutral_quantile_handle(source):
     """PHASE_13_111_DF D-1: legend sample of a quantile level that two or
     more curves share.
@@ -268,7 +668,8 @@ def _neutralise_quantile_legend(ax):
 def _compose_facet_semantic_legend(fig, axes, *, expressions=(),
                                    paired_x_exprs=None,
                                    quantiles=None, legend_spec=None,
-                                   existing=None):
+                                   existing=None, group_order=None,
+                                   default_title=None):
     """PHASE_13_99: one Figure legend composer for 1-D and 2-D facets.
 
     Preserve the source artists' actual line/marker/color styles.  Aggregate
@@ -433,12 +834,44 @@ def _compose_facet_semantic_legend(fig, axes, *, expressions=(),
                 used.add(label)
     if not chosen:
         return prior
+    # PHASE_13_112_DF F-4: group entries collected cell by cell follow the
+    # first cell that shows them; list them in the global group order (the
+    # order their colours follow, 13.111 CR-1), in the same legend slots.
+    if group_order:
+        rank = {}
+        for i, g in enumerate(group_order):
+            rank.setdefault(str(g), i)
+            rank.setdefault(interval_display_text(g), i)
+        slots = [i for i, (_, label) in enumerate(chosen) if label in rank]
+        ordered = sorted((chosen[i] for i in slots), key=lambda e: rank[e[1]])
+        for i, entry in zip(slots, ordered):
+            chosen[i] = entry
+    else:
+        # PHASE_13_112_DF S2b (S2-C01): intervals computed per cell have no
+        # call-wide order list; collected cell by cell they follow the first
+        # cell that shows them.  List them by their lower edge instead.
+        slots = [i for i, (_, label) in enumerate(chosen)
+                 if _INTERVAL_NAME.match(label)]
+        if len(slots) > 1:
+            def _lower(label):
+                try:
+                    return float(re.findall(r'-?\d+(?:\.\d+)?(?:e[+-]?\d+)?',
+                                            label)[0])
+                except (IndexError, ValueError):
+                    return float('inf')
+            ordered = sorted((chosen[i] for i in slots), key=lambda e: _lower(e[1]))
+            for i, entry in zip(slots, ordered):
+                chosen[i] = entry
 
     # Preserve a semantically meaningful existing Figure legend title, e.g.
     # the original group_by variable from PHASE_13_98.
     title = legend_spec.get('title')
     if title is None and prior is not None:
         title = prior.get_title().get_text() or None
+    # PHASE_13_112_DF F-6: otherwise the group legend title of the call.
+    if title is None and any(not _NON_GROUP_ENTRY.match(label)
+                             for _, label in chosen):
+        title = default_title
     for ax in axes:
         for artist in tuple(ax.get_children()):
             if isinstance(artist, Legend):
@@ -954,10 +1387,27 @@ def _reserve_automatic_legend_top_room(fig, axes_grid, legend, *,
     if suptitle is not None:
         height += suptitle.get_window_extent(renderer).height + gap
     deficit = top_edge + height - (fig.bbox.y1 - gap)
-    if deficit <= 0:
-        return
     current_top = max(ax.get_position().y1 for ax in visible_top)
-    new_top = current_top - (deficit + gap) / fig.bbox.height
+    if deficit <= 0:
+        # PHASE_13_112_DF (13.107 item 6): surplus space above the stack
+        # (panel headings, legend, title) was left as an empty band between
+        # the legend and the title.  Give it to the panels instead, so the
+        # stack sits snugly under the Figure top.  Automatic geometry only
+        # (explicit figure_margins returned above).
+        # The limit is the title as placed (the stacker only ever moves it
+        # up), else the Figure top; the stack needs one gap per step.
+        limit = (suptitle.get_window_extent(renderer).y0
+                 if suptitle is not None else fig.bbox.y1 - gap)
+        needed = top_edge + legend.get_window_extent(renderer).height + 2 * gap
+        if headings:
+            needed += max(h.get_window_extent(renderer).height
+                          for h in headings) + gap
+        surplus = limit - needed
+        if surplus <= gap:
+            return
+        new_top = current_top + surplus / fig.bbox.height
+    else:
+        new_top = current_top - (deficit + gap) / fig.bbox.height
     if new_top <= min(ax.get_position().y0 for ax in axes.flat if ax.get_visible()) + .04:
         return  # Already too little Figure space; the stacker will warn.
     fig.subplots_adjust(top=new_top)
@@ -2247,10 +2697,21 @@ class DFDraw:
         figures keep their first colour.
         """
         if same:
+            # PHASE_13_112_DF F-1: a chain may continue with a new drawer
+            # (AliasDataFrame.draw creates one per call); the axes carry the
+            # colour state of the chain, so it does not restart at C1.
+            record = self._axes_identity(ax)
+            if record is not None:
+                self._identity_colour_source = record['source']
+                self._color_cycle_index = record['next_index']
             if (self._identity_colour_source == 'axes'
                     and ax is not None):
-                return self._next_axes_colour(ax)
-            return self._get_next_color()
+                colour = self._next_axes_colour(ax)
+            else:
+                colour = self._get_next_color()
+            if record is not None:
+                record['next_index'] = self._color_cycle_index
+            return colour
         if self._axes_has_data(ax):
             self._identity_colour_source = 'axes'
             self._color_cycle_index = 1
@@ -2266,6 +2727,30 @@ class DFDraw:
         """Artists of ``ax`` in the order the legacy retro-label search used."""
         return (list(ax.lines) + list(ax.containers) + list(ax.patches)
                 + list(ax.collections))
+
+    _AXES_IDENTITY_ATTR = '_dfdraw_curve_identity'
+
+    def _axes_identity(self, ax):
+        """PHASE_13_112_DF F-1: the curve-identity record of a ``same=True``
+        chain, kept on the axes so that every drawer continuing the chain
+        sees it.
+
+        The record holds the first call's expression and own artists, whether
+        its name is still to be attached, and the colour state (source and
+        next palette index).  It is valid only while the first call's
+        artists are still on ``ax``; after ``ax.cla()`` or their removal the
+        chain is over and the drawer's own state applies.
+        """
+        if ax is None:
+            return None
+        record = getattr(ax, self._AXES_IDENTITY_ATTR, None)
+        if not record:
+            return None
+        first = record.get('first_artists') or []
+        current = self._ordered_artists(ax)
+        if not first or not all(any(a is c for c in current) for a in first):
+            return None
+        return record
 
     def _snapshot_pre_call_artists(self, ax):
         """PHASE_13_111_DF CR-6: remember what was on ``ax`` before a call."""
@@ -3654,8 +4139,9 @@ class DFDraw:
             else:
                 ax.set_title(y_label)
         
-        # P1-8: deterministic y-axis label for vector (existing behavior)
-        if ax is not None:
+        # P1-8: deterministic y-axis label for vector (existing behavior).
+        # PHASE_13_112_DF O-5/13.108: a ylabel= the user gave wins.
+        if ax is not None and kwargs.get('ylabel') is None:
             self._set_vector_ylabel(ax, y_list, x_list)
         
         # Phase 13.16.DF FIX1 (B5): single tight_layout call at end.
@@ -3827,7 +4313,14 @@ class DFDraw:
         else:
             joined = ", ".join(unique_ys)
             if len(joined) > 40:
-                joined = ", ".join(unique_ys[:3]) + f", ... (+{len(unique_ys)-3} more)"
+                # PHASE_13_112_DF F-2: "(+n more)" only when names are
+                # really left out; up to three names are all shown, one
+                # per line.
+                if len(unique_ys) > 3:
+                    joined = (", ".join(unique_ys[:3])
+                              + f", ... (+{len(unique_ys) - 3} more)")
+                else:
+                    joined = ",\n".join(unique_ys)
             ax.set_ylabel(f"[{joined}]")
     
     def _handle_same_post(self, ax, same, auto_title, selection, y_name,
@@ -3870,8 +4363,25 @@ class DFDraw:
             _pre = getattr(self, '_pre_call_artist_ids', set()) or set()
             self._last_plot_artists = [
                 a for a in self._ordered_artists(ax) if id(a) not in _pre]
+            # PHASE_13_112_DF F-1: publish the chain's identity on the axes.
+            if ax is not None and self._last_plot_artists:
+                setattr(ax, self._AXES_IDENTITY_ATTR, {
+                    'first_expr': (y_name, x_name),
+                    'first_artists': list(self._last_plot_artists),
+                    'label_pending': True,
+                    'source': self._identity_colour_source,
+                    'next_index': self._color_cycle_index,
+                })
             return
-        
+
+        # PHASE_13_112_DF F-1: a new drawer continuing the chain takes the
+        # first call's name and artists from the axes record.
+        _record = self._axes_identity(ax)
+        if (self._last_plot_expr is None and _record is not None
+                and _record.get('label_pending')):
+            self._last_plot_expr = _record['first_expr']
+            self._last_plot_artists = _record['first_artists']
+
         # Phase 13.13.DF fix: retroactively label first plot when first same=True arrives
         if self._last_plot_expr is not None:
             first_y, first_x = self._last_plot_expr
@@ -3890,6 +4400,8 @@ class DFDraw:
                     artist.set_label(first_label)
                     break  # Only label the first unlabeled artist
             self._last_plot_expr = None  # Only do this once
+            if _record is not None:
+                _record['label_pending'] = False
         
         # AD-18: Append to title when same=True + auto_title=True
         auto_title = resolve_auto_title(auto_title)
@@ -5439,6 +5951,9 @@ class DFDraw:
             group_quantiles = plot_kwargs.pop('group_by_quantiles', None)
             _nd98_group_is_binned = (group_bins is not None or
                                      group_quantiles is not None)
+            # PHASE_13_112_DF F-7: the cells' group legends show '(a, b]'.
+            if _nd98_group_is_binned:
+                plot_kwargs['_group_is_interval'] = True
             df, group_by, global_groups = _scope_group_domain(
                 df, group_by, bins=group_bins, quantiles=group_quantiles)
         if global_scope and plot_kwargs.get('stat_list') is not None:
@@ -5752,8 +6267,12 @@ class DFDraw:
                     quantiles=quantiles, quantile_mode=quantile_mode,
                     # Keep the physical grouping coordinate distinct from the
                     # private column used to store globally classified bins.
+                    # PHASE_13_112_DF F-12: the legend title uses the alias
+                    # title of the grouping variable, as every other group
+                    # legend title does (D-2); the auto title is unchanged.
                     _nd98_group_display_name=(
-                        group_display_name if global_scope else None),
+                        (self._get_label(group_display_name) or group_display_name)
+                        if global_scope else None),
                     _nd98_group_is_binned=_nd98_group_is_binned,
                     _lock_x_range=None, _lock_y_range=None,
                     _user_auto_title=_user_auto_title,
@@ -6631,7 +7150,9 @@ class DFDraw:
                 fig, axes_flat[:n_groups], global_1d_groups,
                 explicit_color=plot_kwargs.get('color'),
                 with_title=bool(title or plot_kwargs.get('auto_title')),
-                stat_list=plot_kwargs.get('stat_list'))
+                stat_list=plot_kwargs.get('stat_list'),
+                title=getattr(self, '_group_legend_title_default', None),
+                interval_names=_nd98_group_is_binned)
         elif (plot_kind == 'profile' and group_by is None
               and plot_kwargs.get('stat_list') is not None
               and not (isinstance(y_expr, list)
@@ -6726,6 +7247,10 @@ class DFDraw:
         _one_dim_active = bool(_one_dim_options) or (
             _facet_legend_spec is not None
             and _facet_legend_spec.get('mode') == 'shared')
+        if (_facet_legend_spec is not None
+                and _facet_legend_spec.get('mode') == 'shared'):
+            # PHASE_13_112_DF F-5: refuse one legend over different cells.
+            _refuse_shared_over_cell_intervals(fig, axes_flat[:n_groups])
         if _one_dim_active:
             fig.tight_layout(rect=(.10, .08, .98, .83))
             adjustment = {}
@@ -6749,7 +7274,9 @@ class DFDraw:
                 quantiles=(quantiles if plot_kind
                            in _FACET_DEFAULT_PRESENTATION_KINDS
                            else _hist_marker_levels(plot_kind, plot_kwargs)),
-                legend_spec=_facet_legend_spec)
+                legend_spec=_facet_legend_spec,
+                group_order=plot_kwargs.get('_stat_group_order'),
+                default_title=getattr(self, '_group_legend_title_default', None))
             shared_x = _one_dim_options.get('shared_xlabel')
             shared_y = _one_dim_options.get('shared_ylabel')
             shared_x_artist = None
@@ -7183,8 +7710,13 @@ class DFDraw:
                     # instead, including panels missing a middle group.
                     _palette = plt.colormaps.get_cmap(
                         get_style_value('colors.palette', 'tab10'))
+                    # PHASE_13_112_DF F-7: labels may be the '(a, b]' display.
+                    _group_index = {}
+                    for k, name in enumerate(nd94_groups):
+                        _group_index.setdefault(str(name), k)
+                        _group_index.setdefault(interval_display_text(name), k)
                     _group_colors = {name: _palette(k % 10)
-                                     for k, name in enumerate(nd94_groups)}
+                                     for name, k in _group_index.items()}
                     _markers = get_style_value('markers.cycle',
                         ['o', 's', '^', 'D', 'P', 'X', 'v', '<', '>', 'h'])
                     for container in ax_ij.containers:
@@ -7206,7 +7738,7 @@ class DFDraw:
                             if (plot_kwargs.get('marker') is None
                                     and plot_kwargs.get('vector_style') != 'marker'):
                                 _central.set_marker(_markers[
-                                    nd94_groups.index(str(container.get_label()))
+                                    _group_index[str(container.get_label())]
                                     % len(_markers)])
                         for _cap in _caps:
                             _cap.set_color(_color)
@@ -7433,17 +7965,20 @@ class DFDraw:
                  and _stat_names == ['std'])
             ) else (_statistic_legend_proxies(_stat_names)
                     if _stat_names else []))
+            # PHASE_13_112_DF F-7: global bins are shown as '(a, b]'.
+            _nd94_group_names = [interval_display_text(g) if _nd98_group_is_binned
+                                 else g for g in nd94_groups]
             if _stagef_singleton_std_nd:
                 # Stage F factored legend contract: physical group colors first,
                 # then expression markers; singleton std consumes no channel.
                 _legend_handles = _group_proxies + _vector_proxies
-                _legend_names = (list(nd94_groups)
+                _legend_names = (_nd94_group_names
                                  + (list(y_expr) if isinstance(y_expr, list) else []))
             else:
                 # Preserve the pre-Stage-F grouped N-D vector presentation.
                 _legend_handles = _vector_proxies + _group_proxies + _stat_handles
                 _legend_names = ((list(y_expr) if isinstance(y_expr, list) else [])
-                                 + list(nd94_groups)
+                                 + _nd94_group_names
                                  + (list(_stat_names) if _stat_handles else []))
             legend_artist = fig.legend(
                 _legend_handles, _legend_names,
@@ -7493,19 +8028,29 @@ class DFDraw:
                 frameon=False,
             )
 
+        if (_facet_legend_spec is not None
+                and _facet_legend_spec.get('mode') == 'shared'):
+            # PHASE_13_112_DF F-5: refuse one legend over different cells.
+            _refuse_shared_over_cell_intervals(fig, axes)
         # PHASE_13_99: use the SAME semantic Figure composer as scalar 1-D.
         # This deliberately corrects missing 2-D quantile entries; preserve
         # 13.94/13.98 globally resolved group/branch legend proxies.
+        # PHASE_13_112_DF F-5: a grouped profile whose cells agree (checked
+        # above) and that has no Figure group legend yet is composed here
+        # too: one top legend instead of the generic bottom legend.
         if (plot_kind == 'profile'
                 and (quantiles or (isinstance(y_expr, list)
                                    and plot_kwargs.get('stat_list') == ['std']
-                                   and group_by is None))
+                                   and group_by is None)
+                     or (group_by is not None and legend_artist is None
+                         and not fig.legends))
                 and _facet_legend_spec is not None
                 and _facet_legend_spec.get('mode') == 'shared'):
             legend_artist = _compose_facet_semantic_legend(
                 fig, axes, expressions=y_expr if isinstance(y_expr, list) else (),
                 quantiles=quantiles, legend_spec=_facet_legend_spec,
-                existing=legend_artist)
+                existing=legend_artist,
+                default_title=getattr(self, '_group_legend_title_default', None))
         # PHASE_13_107_DF: a shared histogram legend uses the same composer
         # and the same placement below (before, hist legend='shared' was
         # added afterwards over the bottom row of cells).
@@ -7513,7 +8058,8 @@ class DFDraw:
                 and _facet_legend_spec.get('mode') == 'shared'):
             legend_artist = _compose_facet_semantic_legend(
                 fig, axes, quantiles=_hist_marker_levels(plot_kind, plot_kwargs),
-                legend_spec=_facet_legend_spec, existing=legend_artist)
+                legend_spec=_facet_legend_spec, existing=legend_artist,
+                default_title=getattr(self, '_group_legend_title_default', None))
 
         # PHASE_13_93 closure repair: use rendered glyph/axes extents, not
         # fixed Figure fractions, for the annotations owned by this N-D grid.
@@ -7598,15 +8144,22 @@ class DFDraw:
             # auto_title suptitle would be overwritten by the figID label below.
             # Don't forward _user_auto_title to 2D — handle the combined suptitle
             # here so auto_title=True isn't a silent no-op in 3D.
-            fig, axes, stats = self._dispatch_2d_facet(
-                sub_df, x_expr, y_expr, facet_list[:2], bins_list[:2],
-                quantiles_list[:2], plot_kind,
-                share_x=share_x, share_y=share_y,
-                _lock_x_range=global_x_range, _lock_y_range=global_y_range,
-                _user_auto_title=False,    # 3D handles auto_title at fig-level (see below)
-                title=None, group_by=group_by, top_k=top_k,
-                quantiles=quantiles, quantile_mode=quantile_mode,
-                **plot_kwargs)
+            # PHASE_13_112_DF F-5: a page refused by its 2-D coordinator
+            # closes itself; the pages already drawn are closed too.
+            try:
+                fig, axes, stats = self._dispatch_2d_facet(
+                    sub_df, x_expr, y_expr, facet_list[:2], bins_list[:2],
+                    quantiles_list[:2], plot_kind,
+                    share_x=share_x, share_y=share_y,
+                    _lock_x_range=global_x_range, _lock_y_range=global_y_range,
+                    _user_auto_title=False,    # 3D handles auto_title at fig-level (see below)
+                    title=None, group_by=group_by, top_k=top_k,
+                    quantiles=quantiles, quantile_mode=quantile_mode,
+                    **plot_kwargs)
+            except ValueError:
+                for _page in figures:
+                    plt.close(_page)
+                raise
             
             # Set per-figure title — 3 cases per Phase 13.41 FIX2 item 2 design:
             #   1. user title=    → "{user_title} ({figid_col} = {figid_v})"
@@ -7638,6 +8191,7 @@ class DFDraw:
     # Main Draw Method
     # =========================================================================
     
+    @_with_label_post_steps
     def draw(
         self,
         expr: str,
@@ -8455,6 +9009,8 @@ class DFDraw:
     # Plot Type Methods (Stubs - to be implemented in Phase 6.2-6.5)
     # =========================================================================
     
+    @_with_label_post_steps
+    @_with_group_legend_title
     def hist(
         self, 
         expr: str, 
@@ -9258,6 +9814,8 @@ class DFDraw:
             _apply_legend_mode(fig, _hist_legend_spec)
         return fig, axes, stats_dict
     
+    @_with_label_post_steps
+    @_with_group_legend_title
     def scatter(
         self,
         expr: str,
@@ -9554,7 +10112,9 @@ class DFDraw:
         _suppress_color_cycle = kwargs.pop('_suppress_color_cycle', False)
         if same:
             if color is None and not _suppress_color_cycle:
-                color = self._get_next_color()
+                # PHASE_13_112_DF F-1: through the resolver, so a chain
+                # continued by a new drawer keeps its colour state.
+                color = self._resolve_identity_color(True, ax)
             if 'label' not in kwargs and group_by is None:
                 kwargs['label'] = self._auto_label(y_expr, x_expr)
             # Suppress title — handled in _handle_same_post
@@ -9965,6 +10525,8 @@ class DFDraw:
 
         return d
 
+    @_with_label_post_steps
+    @_with_group_legend_title
     def profile(
         self,
         expr: str,
@@ -10172,6 +10734,10 @@ class DFDraw:
         # (architect K-2 Option A); inapplicable dfdraw-semantic kwarg ->
         # clean error; genuinely unknown -> warning.
         _stat_group_order = kwargs.pop('_stat_group_order', None)
+        # PHASE_13_112_DF F-7: private flag set by the global-scope facet
+        # route (binned group); consumed by plots/profile.py.  It is not a
+        # public parameter, so it must not reach the typo guard.
+        _group_is_interval_flag = kwargs.pop('_group_is_interval', None)
         # PHASE_13_96 Stage F: private coordinator sentinel. It is created only
         # by the validated two-expression × global-group × 2-D-facet route and
         # is consumed by the per-cell vector/statistic owners. It is never a
@@ -10184,6 +10750,8 @@ class DFDraw:
             self._kwarg_typo_guard(kwargs, method='profile')
         if _stat_group_order is not None:
             kwargs['_stat_group_order'] = _stat_group_order
+        if _group_is_interval_flag:
+            kwargs['_group_is_interval'] = True
 
         # PHASE_13_96 Stage B: deliberately bounded scalar profile surface.
         # Vector/group/facet composition is scheduled for later phase units.

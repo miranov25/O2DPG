@@ -207,6 +207,51 @@ def _patch_color(patches):
     return first.get_facecolor()
 
 
+# PHASE_13_112_DF D-5 (AD-1/13.112.DF): a fit line drawn over FILLED bars
+# of its own curve gets a fixed darker shade of the curve colour, so that it
+# is visible on the bars.  HLS lightness times FIT_SHADE_FACTOR; a colour
+# already darker than FIT_SHADE_DARK_LIMIT (black, dark grey) cannot be
+# darkened visibly and gets the lighter tint halfway to white instead.
+FIT_SHADE_FACTOR = 0.6
+FIT_SHADE_DARK_LIMIT = 0.25
+
+
+def fit_shade_over_filled_bars(colour):
+    """The fit-line colour over filled bars of ``colour`` (hex, no alpha)."""
+    import colorsys
+    from matplotlib.colors import to_hex, to_rgb
+    h, l, s = colorsys.rgb_to_hls(*to_rgb(colour))
+    if l >= FIT_SHADE_DARK_LIMIT:
+        l = l * FIT_SHADE_FACTOR
+    else:
+        l = l + (1.0 - l) * 0.5
+    return to_hex(colorsys.hls_to_rgb(h, l, s))
+
+
+def _fit_colour_for_bars(patches, fallback=None):
+    """PHASE_13_112_DF: the colour of the fit line of one histogram curve.
+
+    The curve colour is read from its drawn bars (so a fit always has the
+    colour of its own curve, AD-3/13.111.DF, also in facet cells and for
+    groups); over filled bars it is the D-5 shade of that colour.  Over
+    unfilled bars (``histtype='step'``) the fit keeps the curve colour: the
+    ``fallback`` (the caller's curve colour) when given, else the colour
+    Matplotlib assigned to the bars (their face colour, drawn with zero
+    alpha).  Without drawn bars the ``fallback`` is returned unchanged.
+    """
+    from matplotlib.colors import to_hex
+    items = list(getattr(patches, 'patches', patches) or [])
+    if not items:
+        return fallback
+    face = items[0].get_facecolor()
+    if face is None:
+        return fallback
+    filled = bool(items[0].get_fill()) and face[3] > 0
+    if filled:
+        return fit_shade_over_filled_bars(face)
+    return fallback if fallback is not None else to_hex(face, keep_alpha=False)
+
+
 def _hist_bin_values_and_errors(x_data, bins, used_range, hist_weights,
                                 norm, density):
     """
@@ -690,12 +735,23 @@ def draw_hist(
                 # Match profile path pattern (drawer.py:2585): pd.cut/qcut
                 # don't accept float16 directly; upcast.
                 df[group_by] = df[group_by].astype(np.float32)
+            # PHASE_13_112_DF F-5: keep the real bin edges (the category
+            # names are rounded) so a shared Figure legend can be checked
+            # for exact identity across facet cells.
             if group_by_bins is not None:
-                df[group_by] = pd.cut(df[group_by], bins=group_by_bins)
+                df[group_by], _group_bin_edges = pd.cut(
+                    df[group_by], bins=group_by_bins, retbins=True)
             else:
-                df[group_by] = pd.qcut(
-                    df[group_by], q=group_by_quantiles, duplicates='drop'
-                )
+                df[group_by], _group_bin_edges = pd.qcut(
+                    df[group_by], q=group_by_quantiles, duplicates='drop',
+                    retbins=True)
+            ax._dfdraw_group_bin_edges = (
+                list(getattr(ax, '_dfdraw_group_bin_edges', None) or [])
+                + [np.asarray(_group_bin_edges, dtype=float)])
+            # PHASE_13_112_DF S2b (S2-C01): colour by the rank of the
+            # interval among all intervals of the binning (empty included).
+            if _group_order is None:
+                _group_order = list(df[group_by].cat.categories)
 
         # Shared bin edges computed from sanitized x_data.
         # x_data is fully sanitized (nan_policy applied) at lines 259-307.
@@ -877,11 +933,16 @@ def draw_hist(
                 centers_g = 0.5 * (edges_g[:-1] + edges_g[1:])
                 # B5/R1: Poisson always (max(counts, 1) per ROOT)
                 yerr_g = np.sqrt(np.maximum(counts_g, 1))
+                # PHASE_13_112_DF D-5: the fit takes its group's bar colour
+                # (shaded over filled bars).  Before, it took the next colour
+                # of the axes cycle in data order, so a group's fit could be
+                # drawn in another group's colour.
+                _g_bars = [p for p in ax.patches if p.get_label() == str(g)]
                 curve_g = {
                     'x_data': centers_g,
                     'y_data': counts_g.astype(float),
                     'yerr_data': yerr_g,
-                    'color': None,
+                    'color': _fit_colour_for_bars(_g_bars[-1:], None),
                     'label': str(g),
                 }
                 normalized_g = normalize_fit_spec(fit, 1)
@@ -940,7 +1001,10 @@ def draw_hist(
                 'x_data': bin_centers_fit,
                 'y_data': counts_fit.astype(float),
                 'yerr_data': yerr_hist,
-                'color': color,
+                # PHASE_13_112_DF D-5: the colour of this curve's drawn bars
+                # (shaded over filled bars); before, color=None in facet
+                # cells gave the fit the next colour of the axes cycle.
+                'color': _fit_colour_for_bars(_hist_artists[2], color),
                 'label': label,
             }
             curves_list_fit = [curve]

@@ -1,7 +1,8 @@
 # ARCHITECT_DECISIONS.md
 # dfdraw — Architect Decision Registry
-# Version: 1.4.0 (PHASE_13_111_DF — AD-1/13.111.DF to AD-8/13.111.DF added: one identity (colour and name) per curve fixed before drawing, stable colours across facet cells, explicit band and central='both' checks, grey quantile-level legend samples)
-# Date: 2026-11-18 (v1.4.0); 2026-11-10 (v1.3.0, v1.2.1, v1.2.0); 2026-06-06 (v1.1.0); 2026-06-04 (v1.0 / v1.0.1)
+# Version: 1.5.0 (PHASE_13_112_DF — AD-1/13.112.DF and AD-2/13.112.DF added in S3: fit shade over filled histogram bars (exception to AD-3/13.111.DF), in-panel quantile level labels of several curves; the other 13.112 decisions follow at the pre-commit stage)
+# Previous: 1.4.0 (PHASE_13_111_DF — AD-1/13.111.DF to AD-8/13.111.DF added: one identity (colour and name) per curve fixed before drawing, stable colours across facet cells, explicit band and central='both' checks, grey quantile-level legend samples)
+# Date: 2026-11-20 (v1.5.0); 2026-11-18 (v1.4.0); 2026-11-10 (v1.3.0, v1.2.1, v1.2.0); 2026-06-06 (v1.1.0); 2026-06-04 (v1.0 / v1.0.1)
 # Maintainer: Marian Ivanov (architect)
 #
 # This document is the canonical AD registry for the dfdraw project.
@@ -2005,6 +2006,53 @@ adf.draw("dyp_I0:row", group_by="sec", color="red")
 **Ratification:** `PHASE_13_50_DF_v2_5_FitRenderingOverhaul_Proposal.md` §0 Note + §3.8.
 
 **Source:** `tests/` (future Phase 13.5X)
+
+---
+
+## Phase 13.112.DF — Legend, label and placement cleanup (AD-1/13.112.DF, AD-2/13.112.DF; further entries at the pre-commit stage)
+
+**Phase trigger:** presentation defects found after PHASE_13_111 (group legend without the variable name, interval names without closure, shared legend over per-cell intervals, legend placement, fit line invisible on filled bars, repeated level labels). Proposal `PHASE_13_112_DF_LegendLabelCleanup_Proposal_v0_2_Fable5_1_5_20261119.md` (MD5 `91d1e481b85e306bc676782895662c08`); consolidated review GPG35, 2026-11-19, approved with comments (6 of 6); decision addendum `PHASE_13_112_DF_S0_Decision_and_Acceptance_Addendum_Fable5_1_5coder_20261119.md` (decisions D-1 to D-6).
+
+**Architect decision, 2026-11-19 (GP-3, quoted from the session record):**
+
+> Looks like it is approved. You can use the consensus decision as architect decision.
+
+---
+
+## AD-1/13.112.DF — A fit line over filled histogram bars is a darker shade of the curve colour (narrow exception to AD-3/13.111.DF)
+
+**Phase:** 13.112.DF | **Date:** 2026-11-20 | **Original notation:** D-5; finding O-1/13.111
+
+**Old rule (AD-3/13.111.DF):** every child artist of a curve, fit lines included, uses the curve colour.
+
+**Reason for the exception:** a fit drawn in the bar colour over filled bars of the same colour cannot be seen (blue on blue).
+
+**Decision:** A fit line drawn over the **filled** bars of its own histogram curve (`histtype` `bar`, `barstacked`, `stepfilled`; the default is `stepfilled`) uses a fixed darker shade of the curve colour: HLS lightness multiplied by 0.6, hue and saturation unchanged. A colour darker than lightness 0.25 (black, dark grey), which cannot be darkened visibly, gets a lighter tint instead: lightness moved halfway to white. The curve colour is read from the curve's drawn bars, so the fit of a group or of a facet cell has the colour of its own bars. Step histograms (`histtype='step'`) and profiles keep the curve colour (AD-3/13.111.DF unchanged). A user `color=` is the curve colour and is shaded in the same way. dfdraw has no separate fit-colour parameter. Fit numbers, fit line geometry and the legend are unchanged; the fit line has no legend entry.
+
+**Also corrected by this rule (AD-1/13.111.DF):** before, the fit lines of a grouped histogram took the axes colour cycle in data order, so a group's fit could be drawn in another group's colour; and the fit of a faceted histogram cell took the next cycle colour (orange over blue bars).
+
+**Change rule:** `tests/test_phase_13_111_s0_identity_colour_red.py`, helper `_hist_pairs`: a fit over filled bars is reported with the colour of the bars whose shade it is, so the one-colour-per-curve check still proves that the fit belongs to its own curve.
+
+**Ratification:** Architect 2026-11-19 (above), D-5 of the decision addendum.
+
+**Source:** `plots/histogram.py` (`fit_shade_over_filled_bars`, `_fit_colour_for_bars`, `FIT_SHADE_FACTOR`, `FIT_SHADE_DARK_LIMIT`; ungrouped and grouped fit paths of `draw_hist`)
+
+---
+
+## AD-2/13.112.DF — In-panel quantile level labels when several curves draw the same level
+
+**Phase:** 13.112.DF | **Date:** 2026-11-20 | **Original notation:** D-6 (d) with (b); findings O-4/13.108, 13.107 item 3
+
+**Decision:** A profile draws a level label (`11%`, `50%`, `90%`) on each of its quantile lines (`quantile_style='linestyle'`, the default). In a panel where two or more curves draw the same level:
+
+- (d) if a visible legend of the panel (its Axes legend, or a Figure legend) names every level drawn there (`q=11%`, `median`, …: the grey entries of AD-8/13.111.DF), the level labels of that panel are omitted;
+- (b) otherwise every label stays with its own curve, and the curves' labels are moved apart along their own lines (curve k of n at the fraction 0.2 + 0.6 k/(n − 1) of its points), so they do not cover each other.
+
+A single curve keeps its labels unchanged. The rule is evaluated on the whole panel at the end of every public call, so a figure drawn through several calls (`same=True`, AliasDataFrame, the vector loop) is judged with all its curves. Labels omitted by an earlier evaluation are put back if a later one keeps them. Histogram quantile texts are drawn only when the caller asks for them (`quantile_text=`) and are not changed. Profiles draw no level labels with `quantile_style='color'` or `'marker'` (unchanged).
+
+**Ratification:** Architect 2026-11-19 (above), D-6 of the decision addendum.
+
+**Source:** `plots/profile.py` (labels tagged with their level, legend name and line points), `drawer.py` (`_resolve_level_labels`, run by `_with_label_post_steps` at the exit of `draw`, `profile`, `hist`, `scatter`)
 
 ---
 

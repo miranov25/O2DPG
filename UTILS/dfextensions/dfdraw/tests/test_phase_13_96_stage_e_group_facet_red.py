@@ -112,7 +112,10 @@ def test_E6_global_group_bins_1d_facets_semantic_legend():
     try:
         assert len(fig.legends)==1
         assert all(ax.get_legend() is None for ax in axs[:3])
-        names=[t.get_text() for t in fig.legends[0].get_texts()]
+        # PHASE_13_112_DF F-7 (change rule): group legends show '(a, b]'; the
+        # statistics keep the key 'a-b', so legend text is compared as the key.
+        from dfextensions.dfdraw.plots._numeric_labels import interval_key_text
+        names=[interval_key_text(t.get_text()) for t in fig.legends[0].get_texts()]
         assert names[-3:]==['mean','std','sem']
         assert len(names)==7
         allkeys=[]
@@ -184,7 +187,10 @@ def test_E11_global_group_sparse_cell_colors_stable():
          stat_list=['mean','std'])
     try:
         assert len(fig.legends)==1
-        all_labels=[x.get_text() for x in fig.legends[0].get_texts()]
+        # PHASE_13_112_DF F-7 (change rule): group legends show '(a, b]'; the
+        # statistics keep the key 'a-b', so legend text is compared as the key.
+        from dfextensions.dfdraw.plots._numeric_labels import interval_key_text
+        all_labels=[interval_key_text(x.get_text()) for x in fig.legends[0].get_texts()]
         assert all_labels[-2:]==['mean','std']
         # Verify actual mean curves use their Figure-global legend colors
         proxies=fig.legends[0].legend_handles if hasattr(fig.legends[0],'legend_handles') else fig.legends[0].legendHandles
