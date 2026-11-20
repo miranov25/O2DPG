@@ -156,10 +156,19 @@ def test_AT_style_auto_title_does_not_reenable_inner_cell_titles(frame, monkeypa
 
 
 def test_GM03_local_group_mode_does_not_claim_global_bins(frame):
+    # Change rule, PHASE_13_112_DF S4-A (Architect decision 1, 2026-11-20,
+    # AD-3/13.112.DF): group_by_scope='facet' with bins given as a count and
+    # legend='shared' is now refused before drawing (one shared legend cannot
+    # name per-cell intervals).  The local mode is checked with the per-cell
+    # legends (legend='all'), on every legend of the Figure.
     fig, axes, stats = draw_faceted(frame, group_by_scope='facet',
-                                   group_by_bins=3, auto_title=False)
+                                   group_by_bins=3, auto_title=False,
+                                   legend='all')
+    legends = list(fig.legends) + [ax.get_legend() for ax in fig.axes
+                                   if ax.get_legend() is not None]
+    assert legends
     assert all('global bins' not in legend.get_title().get_text()
-               for legend in fig.legends)
+               for legend in legends)
     assert fig._suptitle is None
 
 

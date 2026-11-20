@@ -341,17 +341,49 @@ def test_CTL_F7_histogram_group_legend_already_closed_form():
 # --------------------------------------------------------------------------
 # F-5 / P-5 / P-6: shared legend placement and identity
 # --------------------------------------------------------------------------
-def _per_cell_shared(df, facets):
+def _per_cell_shared(df, facets, **extra):
     kw = (dict(facet_by='a', facet_by_bins=2) if facets == 1
           else dict(facet_by=['a', 'b'], facet_by_bins=[2, 2]))
-    DFDraw(df).draw('y1:x', type='profile', bins=8, group_by='p', group_by_bins=3,
-                    legend='shared', **kw)
+    return DFDraw(df).draw('y1:x', type='profile', bins=8, group_by='p', group_by_bins=3,
+                           legend='shared', **kw, **extra)
 
 
 @pytest.mark.parametrize('facets', [1, 2], ids=['form-ii-merged-1d', 'form-i-bottom-2d'])
-def test_RED_F5_cells_with_different_intervals_refused(facets):
-    _refused_and_closed(lambda: _per_cell_shared(_cells_differ(_frame()), facets),
-                           'group_by_scope')
+def test_RED_F5_cells_with_different_intervals_one_global_legend(facets):
+    """Change rule, S4-A (Architect decision 1, 2026-11-20): with
+    legend='shared' and bins given as a count, a profile's bins are computed
+    once for the whole Figure (global scope) instead of being refused.  Was
+    test_RED_F5_cells_with_different_intervals_refused (S2)."""
+    fig, _, _ = _per_cell_shared(_cells_differ(_frame()), facets)
+    assert len(fig.legends) == 1 and not any(ax.get_legend() for ax in fig.axes)
+    assert fig.legends[0].get_title().get_text() == 'Colors: p (3 global bins)'
+    assert [t for t in _texts(fig.legends[0]) if CLOSED.match(t)] == \
+        ['(-2.0, -0.7]', '(-0.7, 0.7]', '(0.7, 2.0]']
+
+
+def _no_figure_created(call, match):
+    """The call is refused before any Figure is constructed (decision 1)."""
+    import matplotlib.figure as mfig
+    created = []
+    original = mfig.Figure.__init__
+
+    def counting(self, *a, **k):
+        created.append(1)
+        original(self, *a, **k)
+    mfig.Figure.__init__ = counting
+    try:
+        with pytest.raises(ValueError, match=match):
+            call()
+    finally:
+        mfig.Figure.__init__ = original
+    assert not created, f'{len(created)} Figure(s) were created before the refusal'
+
+
+@pytest.mark.parametrize('facets', [1, 2], ids=['1d', '2d'])
+def test_S4A_D1_explicit_facet_scope_with_shared_refused_before_drawing(facets):
+    _no_figure_created(
+        lambda: _per_cell_shared(_cells_differ(_frame()), facets, group_by_scope='facet'),
+        'group_by_scope')
 
 
 def test_RED_F5_identical_cells_give_one_top_legend():
@@ -406,11 +438,25 @@ def _lightness(colour):
     return colorsys.rgb_to_hls(*to_rgb(colour))[1]
 
 
-def test_RED_D5_fit_over_filled_bars_is_a_darker_shade():
+def _outline(line):
+    """(colour, extra width) of the outline drawn around ``line``, or None."""
+    effects = line.get_path_effects() or []
+    strokes = [e for e in effects if type(e).__name__ == 'Stroke']
+    if not strokes:
+        return None
+    gc = strokes[0]._gc
+    return to_hex(gc.get('foreground')), gc.get('linewidth') - line.get_linewidth()
+
+
+def test_RED_D5_fit_over_filled_bars_is_visible():
+    """Change rule, S4-A (Architect decision 3b, 2026-11-20): the fit keeps
+    the bar colour and gets a white outline (was: a darker shade, S3).  Was
+    test_RED_D5_fit_over_filled_bars_is_a_darker_shade."""
     DFDraw(_frame()).draw('y1', type='hist', bins=60, fit='gauss')
     ax = plt.gcf().axes[0]
-    bar, fit = ax.patches[0].get_facecolor(), ax.lines[0].get_color()
-    assert to_hex(fit) != to_hex(bar) and _lightness(fit) < _lightness(bar)
+    bar, fit = ax.patches[0].get_facecolor(), ax.lines[0]
+    assert to_hex(fit.get_color()) == to_hex(bar, keep_alpha=False)
+    assert _outline(fit) == ('#ffffff', 2.0)
 
 
 def test_RED_D6_level_labels_omitted_when_the_legend_shows_the_levels():
@@ -445,12 +491,19 @@ def test_S2_F5_mutant_equal_names_different_edges_refused():
     names = {tuple(_texts(ax.get_legend())) for ax in np.ravel(axes)}
     assert len(names) == 1, 'the mutant must print the same names in every cell'
     plt.close('all')
-    _refused_and_closed(lambda: _per_cell_shared(df, 2), 'group_by_scope')
+    # S4-A (decision 1): with the default scope the bins are now global, so
+    # the rounded-name mutant cannot produce a false legend any more; with an
+    # explicit per-cell scope the call is refused before drawing.
+    fig, _, _ = _per_cell_shared(df, 2)
+    assert fig.legends[0].get_title().get_text() == 'Colors: p (3 global bins)'
+    plt.close('all')
+    _no_figure_created(lambda: _per_cell_shared(df, 2, group_by_scope='facet'),
+                       'group_by_scope')
 
 
 def test_S2_F5_hist_cells_with_different_intervals_refused():
     df = _cells_differ(_frame())
-    _refused_and_closed(
+    _no_figure_created(
         lambda: DFDraw(df).draw('y1', type='hist', bins=30, group_by='p',
                                 group_by_bins=3, facet_by='a', facet_by_bins=2,
                                 legend='shared'),
@@ -460,7 +513,7 @@ def test_S2_F5_hist_cells_with_different_intervals_refused():
 def test_S2_F5_3d_refusal_leaves_no_page_open():
     df = _cells_differ(_frame())
     df['c'] = np.where(df['b'] < 0.5, 0, 1)
-    _refused_and_closed(
+    _no_figure_created(
         lambda: DFDraw(df).draw('y1:x', type='profile', bins=8, group_by='p',
                                 group_by_bins=3, facet_by=['a', 'b', 'c'],
                                 facet_by_bins=[2, 2, None], legend='shared'),
@@ -550,7 +603,6 @@ def test_S2_F12_global_group_legend_title_uses_the_alias_title(facets):
 # --------------------------------------------------------------------------
 # S3 (2026-11-20): D-5 fit shade over filled bars, D-6 level labels
 # --------------------------------------------------------------------------
-from dfextensions.dfdraw.plots.histogram import fit_shade_over_filled_bars  # noqa: E402
 
 
 def _fits(ax):
@@ -563,35 +615,50 @@ def _bars(ax):
     return {p.get_label(): to_hex(p.get_facecolor(), keep_alpha=False) for p in ax.patches}
 
 
+def _fit_lines(ax):
+    return [ln for ln in ax.lines if len(ln.get_xdata()) == 200]
+
+
 @pytest.mark.parametrize('rank', range(10))
-def test_S3_D5_shade_is_darker_for_every_palette_colour(rank):
-    """The contrast rule: lightness x 0.6 (AD-1/13.112.DF), same hue."""
-    colour = _palette(rank)
-    shade = fit_shade_over_filled_bars(colour)
-    h0, l0, _ = colorsys.rgb_to_hls(*to_rgb(colour))
-    h1, l1, _ = colorsys.rgb_to_hls(*to_rgb(shade))
-    assert abs(l1 - 0.6 * l0) < 0.01 and (abs(h1 - h0) < 0.01 or l0 < 0.05)
+def test_S4A_D5_outline_for_every_palette_colour(rank):
+    """Decision 3b: over filled bars the fit has the bar colour and a white
+    outline (style fit.outline_color / fit.outline_width, 1 pt each side)."""
+    fig, ax, _ = DFDraw(_frame()).hist('y1', bins=60, fit='gauss', color=_palette(rank))
+    (fit,) = _fit_lines(ax)
+    assert to_hex(fit.get_color()) == _palette(rank)
+    assert _outline(fit) == ('#ffffff', 2.0)
 
 
-def test_S3_D5_dark_bars_get_a_lighter_tint():
-    for dark in ('#000000', '#222222', '#101060'):
-        assert _lightness(fit_shade_over_filled_bars(dark)) > _lightness(dark) + 0.3
+def test_S4A_D5_black_bars_fit_visible():
+    fig, ax, _ = DFDraw(_frame()).hist('y1', bins=60, fit='gauss', color='black')
+    (fit,) = _fit_lines(ax)
+    assert to_hex(fit.get_color()) == '#000000' and _outline(fit)[0] == '#ffffff'
 
 
-def test_S3_D5_user_colour_is_shaded_not_replaced():
-    fig, ax, _ = DFDraw(_frame()).hist('y1', bins=60, fit='gauss', color='red')
-    assert [c for _, c in _fits(ax)] == [fit_shade_over_filled_bars('red')]
+def test_S4A_D5_outline_from_style_and_switch_off():
+    from dfextensions.dfdraw.style import set_style
+    try:
+        set_style({'fit.outline_color': 'black', 'fit.outline_width': 0.5})
+        fig, ax, _ = DFDraw(_frame()).hist('y1', bins=60, fit='gauss')
+        assert _outline(_fit_lines(ax)[0]) == ('#000000', 1.0)
+        plt.close('all')
+        set_style({'fit.outline_width': 0})
+        fig, ax, _ = DFDraw(_frame()).hist('y1', bins=60, fit='gauss')
+        assert _outline(_fit_lines(ax)[0]) is None
+    finally:
+        set_style(None)
 
 
 def test_CTL_S3_D5_step_histogram_fit_keeps_the_curve_colour():
     DFDraw(_frame()).draw('y1', type='hist', bins=60, fit='gauss', histtype='step')
-    assert [c for _, c in _fits(plt.gcf().axes[0])] == [_palette(0)]
+    (fit,) = _fit_lines(plt.gcf().axes[0])
+    assert to_hex(fit.get_color()) == _palette(0) and _outline(fit) is None
 
 
 def test_S3_D5_group_fit_in_its_own_group_colour():
     """Groups with different centres: the fit of group g peaks at 10 + 3 g
-    and must be the shade of group g's bars.  Before S3 the fits took the
-    axes cycle in data order, so group 1's fit was drawn in group 0's colour."""
+    and must have group g's bar colour.  Before S3 the fits took the axes
+    cycle in data order, so group 1's fit was drawn in group 0's colour."""
     df = _frame()
     df['z'] = df['y1'] + 3.0 * df['g']
     DFDraw(df).draw('z', type='hist', bins=80, fit='gauss', group_by='g')
@@ -599,7 +666,8 @@ def test_S3_D5_group_fit_in_its_own_group_colour():
     bars = _bars(ax)
     for peak, colour in _fits(ax):
         g = str(int(round((peak - 10.0) / 3.0)))
-        assert colour == fit_shade_over_filled_bars(bars[g]), (peak, colour, bars)
+        assert colour == bars[g], (peak, colour, bars)
+    assert all(_outline(ln) == ('#ffffff', 2.0) for ln in _fit_lines(ax))
 
 
 def test_S3_D5_facet_cell_fit_in_the_cell_bar_colour():
@@ -608,13 +676,14 @@ def test_S3_D5_facet_cell_fit_in_the_cell_bar_colour():
     DFDraw(_frame()).draw('y1', type='hist', bins=60, fit='gauss', facet_by='a', facet_by_bins=2)
     for ax in plt.gcf().axes:
         bar = to_hex(ax.patches[0].get_facecolor(), keep_alpha=False)
-        assert [c for _, c in _fits(ax)] == [fit_shade_over_filled_bars(bar)]
+        assert [c for _, c in _fits(ax)] == [bar]
 
 
 def test_CTL_S3_D5_profile_fit_keeps_the_curve_colour():
     DFDraw(_frame()).draw('y1:x', type='profile', bins=8, fit='pol1')
     ax = plt.gcf().axes[0]
     assert len({to_hex(ln.get_color()) for ln in ax.lines}) == 1
+    assert all(_outline(ln) is None for ln in ax.lines)
 
 
 def _level_labels(fig):
@@ -843,20 +912,16 @@ def test_S2b_C02_refusal_keeps_the_callers_figure_current_and_unchanged():
     own_ax.plot([0, 1], [0, 1])
     before = (plt.get_fignums(), len(own_ax.lines), plt.gcf())
     with pytest.raises(ValueError, match='group_by_scope'):
-        _per_cell_shared(_cells_differ(_frame()), 2)
+        _per_cell_shared(_cells_differ(_frame()), 2, group_by_scope='facet')
     assert (plt.get_fignums(), len(own_ax.lines), plt.gcf()) == before
 
 
 # S2-C04 / S2-C07: F-3 counts every drawn artist and reports when no free place exists.
-def test_S2b_C04_best_legend_off_box_counts_scatter_points():
-    from dfextensions.dfdraw.drawer import _move_best_legends_off_text_boxes
+def _box_and_points_axes():
+    """Axes with a framed text in the upper left, scatter points everywhere
+    except the upper left and the lower right, and a one-entry legend."""
     fig, ax = plt.subplots()
     rng = np.random.default_rng(3)
-    # Scatter points fill the axes except the upper left (with the fit box)
-    # and the lower right.
-    # Matplotlib's 'best' picks the upper left, over the box.  Counting only
-    # line points (S2), the upper right looked free; with the points counted
-    # the lower right is chosen.
     xy = rng.uniform(0, 1, (6000, 2))
     free = (((xy[:, 0] < 0.35) & (xy[:, 1] > 0.65))
             | ((xy[:, 0] > 0.65) & (xy[:, 1] < 0.35)))
@@ -866,11 +931,43 @@ def test_S2b_C04_best_legend_off_box_counts_scatter_points():
     ax.plot([], [], label='curve')
     ax.text(0.02, 0.98, 'fit\nbox\ntext', transform=ax.transAxes, va='top',
             bbox=dict(boxstyle='round'))
-    ax.legend(loc='best')
+    legend = ax.legend(loc='best')
     fig.canvas.draw()
-    assert ax.get_legend().get_window_extent().overlaps(ax.texts[0].get_window_extent())
-    _move_best_legends_off_text_boxes(fig)
-    assert ax.get_legend()._loc == 4    # lower right: no box, no points
+    return fig, ax, legend, [ax.texts[0]]
+
+
+def test_S2b_C04_best_legend_off_box_counts_scatter_points():
+    """S4-A (review C-S2b-04): the location choice is tested directly, so the
+    test does not depend on where a given Matplotlib version puts 'best'.
+    Counting only line points (S2), the upper right looked free; with the
+    scatter points counted, the lower right (no box, no points) is chosen."""
+    from dfextensions.dfdraw.drawer import _choose_legend_location
+    fig, ax, legend, boxes = _box_and_points_axes()
+    assert _choose_legend_location(ax, legend, boxes, fig.canvas.get_renderer()) == 4
+
+
+def test_S4A_C03_long_line_segment_counted():
+    """Review C-S2b-03: a straight segment whose two vertices lie outside the
+    legend area still crosses it; the occupancy count samples along it."""
+    from dfextensions.dfdraw.drawer import _drawn_data_points, _set_legend_loc
+    fig, ax = plt.subplots()
+    ax.set_xlim(0, 1)
+    ax.set_ylim(0, 1)
+    ax.plot([], [], label='segment')
+    legend = ax.legend()
+    _set_legend_loc(legend, 4)
+    fig.canvas.draw()
+    box = legend.get_window_extent(fig.canvas.get_renderer())
+    # a horizontal segment through the middle of the legend, with both
+    # vertices outside the axes
+    yc = ax.transData.inverted().transform((box.x0, 0.5 * (box.y0 + box.y1)))[1]
+    ax.lines[0].set_data([0.2, 1.2], [yc, yc])
+    pts = _drawn_data_points(ax)
+    inside = ((pts[:, 0] >= box.x0) & (pts[:, 0] <= box.x1)
+              & (pts[:, 1] >= box.y0) & (pts[:, 1] <= box.y1))
+    vertices = ax.lines[0].get_transform().transform(ax.lines[0].get_xydata())
+    assert not any(box.contains(*v) for v in vertices)     # vertex-only count: 0
+    assert inside.sum() > 0
 
 
 def test_S2b_C07_no_free_place_warns_and_keeps_best():
@@ -914,3 +1011,180 @@ def test_S2b_C06_band_bound_at_three_sizes(figsize):
     title, legend = _fig_box(fig, fig._suptitle), _fig_box(fig, fig.legends[0])
     assert 0.0 <= title.y0 - legend.y1 <= 0.04, (title.y0, legend.y1)
     assert legend.y0 >= _grid_top(fig) - 1e-3
+
+
+# --------------------------------------------------------------------------
+# S4-A (2026-11-20): corrections after the S3 + S2b review (GPG35 summary)
+# and the Architect decisions 1, 2b, 3b of 2026-11-20
+# --------------------------------------------------------------------------
+@pytest.mark.parametrize('kind', ['profile', 'hist'])
+def test_S4A_D1_explicit_edges_shared_allowed(kind):
+    """Bins given as explicit edges are the same in every cell by definition:
+    one shared legend, no refusal, also for histograms."""
+    df = _cells_differ(_frame())
+    expr = 'y1:x' if kind == 'profile' else 'y1'
+    fig, _, _ = DFDraw(df).draw(expr, type=kind, bins=8, group_by='p',
+                                group_by_bins=[-2.0, -1.0, 0.0, 1.0, 2.0],
+                                facet_by='a', facet_by_bins=2, legend='shared')
+    assert len(fig.legends) == 1 and not any(ax.get_legend() for ax in fig.axes)
+
+
+def test_S4A_D1_cells_without_shared_keep_per_cell_bins():
+    """Without legend='shared' nothing changes: bins per cell, one legend per cell."""
+    fig, axes, _ = DFDraw(_cells_differ(_frame())).draw(
+        'y1:x', type='profile', bins=8, group_by='p', group_by_bins=3,
+        facet_by='a', facet_by_bins=2)
+    names = [tuple(_texts(ax.get_legend())) for ax in np.ravel(axes)]
+    assert len(set(names)) == 2, names
+
+
+def test_S4A_C02_two_records_against_one_refused():
+    """Review C-S2b-02: a cell with two groupings and a cell with one."""
+    from dfextensions.dfdraw.drawer import _refuse_shared_over_cell_intervals
+    fig, axes = plt.subplots(1, 2)
+    e = np.array([-2.004, -0.6667, 0.6667, 2.0])
+    axes[0]._dfdraw_group_bin_edges = [e, e.copy()]
+    axes[1]._dfdraw_group_bin_edges = [e.copy()]
+    with pytest.raises(ValueError, match='group_by_scope'):
+        _refuse_shared_over_cell_intervals(fig, axes)
+
+
+def test_CTL_S4A_C02_no_binned_grouping_nothing_to_verify():
+    """Categorical groups leave no interval record: nothing to verify."""
+    from dfextensions.dfdraw.drawer import _refuse_shared_over_cell_intervals
+    fig, axes = plt.subplots(1, 2)
+    for ax in axes:
+        ax.plot([0, 1], [0, 1])
+    _refuse_shared_over_cell_intervals(fig, axes)
+    assert plt.fignum_exists(fig.number)
+
+
+def test_S4A_C_S3_01_cleared_axes_do_not_get_old_labels_back():
+    """Review C-S3-01: labels left out on an axes must not come back after the
+    axes is cleared and reused for another plot."""
+    fig, ax, _ = DFDraw(_frame()).draw('[y1,y2]:x', type='profile', bins=8,
+                                       quantiles=[0.11, 0.5, 0.9])
+    ax = fig.axes[0]
+    assert not _level_labels(fig)[0]
+    ax.clear()
+    DFDraw(_frame()).draw('y3:x', type='profile', bins=8, ax=ax)
+    assert not [t for t in ax.texts if PCT.match(t.get_text())]
+
+
+def test_S4A_C_S3_02_same_colour_curves_are_two_curves():
+    """Review C-S3-02: two curves in the same user colour draw the same
+    levels; the legend names the levels, so the labels are left out."""
+    d = DFDraw(_frame())
+    d.profile('y1:x', bins=8, quantiles=[0.11, 0.5, 0.9], color='red')
+    d.profile('y2:x', bins=8, quantiles=[0.11, 0.5, 0.9], color='red', same=True)
+    assert _level_labels(plt.gcf()) == [[]]
+
+
+def test_CTL_S4A_C_S3_02_same_colour_without_legend_labels_kept_apart():
+    from dfextensions.dfdraw.drawer import _resolve_level_labels
+    d = DFDraw(_frame())
+    d.profile('y1:x', bins=8, quantiles=[0.11, 0.5, 0.9], color='red')
+    d.profile('y2:x', bins=8, quantiles=[0.11, 0.5, 0.9], color='red', same=True)
+    fig = plt.gcf()
+    fig.axes[0].get_legend().remove()
+    _resolve_level_labels(fig)
+    labels = _level_labels(fig)[0]
+    assert len(labels) == 6
+    assert len({round(float(t.xy[0]), 6) for t in labels}) == 2
+
+
+@pytest.mark.parametrize('figsize', [(12, 4), (16, 6), (10, 8)], ids=['12x4', '16x6', '10x8'])
+def test_S4A_D2_gap_is_the_style_value_in_points(figsize):
+    """Decision 2b: the gap between the legend and the title is the style key
+    legend.figure_title_gap_pt (default 6 points), at every Figure size; at
+    most one text line."""
+    DFDraw(_frame()).draw('y1:x', type='profile', bins=8, group_by='g', facet_by='a',
+                          facet_by_bins=3, legend='shared', auto_title=True, figsize=figsize)
+    fig = plt.gcf()
+    fig.canvas.draw()
+    r = fig.canvas.get_renderer()
+    gap_pt = (fig._suptitle.get_window_extent(r).y0
+              - fig.legends[0].get_window_extent(r).y1) * 72.0 / fig.dpi
+    assert 5.0 <= gap_pt <= 7.0, gap_pt
+    assert gap_pt <= fig.legends[0].prop.get_size_in_points() * 1.5
+
+
+@pytest.mark.parametrize('route', ['composer', 'generic'])
+def test_S4A_D2_gap_follows_the_style_key(route):
+    from dfextensions.dfdraw.style import set_style
+    try:
+        set_style({'legend.figure_title_gap_pt': 20.0})
+        if route == 'composer':
+            DFDraw(_frame()).draw('y1:x', type='profile', bins=8, group_by='g', facet_by='a',
+                                  facet_by_bins=3, legend='shared', auto_title=True)
+        else:
+            DFDraw(_frame()).draw('y1:x', type='scatter', sample=2000, group_by='g',
+                                  facet_by='a', facet_by_bins=3, legend='shared', title='T')
+        fig = plt.gcf()
+        fig.canvas.draw()
+        r = fig.canvas.get_renderer()
+        gap_pt = (fig._suptitle.get_window_extent(r).y0
+                  - fig.legends[0].get_window_extent(r).y1) * 72.0 / fig.dpi
+        assert 19.0 <= gap_pt <= 21.0, gap_pt
+    finally:
+        set_style(None)
+
+
+def _overlaps(fig):
+    fig.canvas.draw()
+    r = fig.canvas.get_renderer()
+    legend = fig.legends[0].get_window_extent(r)
+    bad = []
+    title = fig._suptitle
+    if title is not None and title.get_text() and legend.overlaps(title.get_window_extent(r)):
+        bad.append('title')
+    for ax in fig.axes:
+        box = ax.get_tightbbox(r) if ax.get_visible() else None
+        if box is not None and legend.overlaps(box):
+            bad.append('axes')
+    if legend.y1 > fig.bbox.y1 + 0.5:
+        bad.append('above the Figure')
+    return bad
+
+
+@pytest.mark.parametrize('layout', [None, 'tight', 'constrained'])
+@pytest.mark.parametrize('figsize', [(2.5, 2), (4, 3)], ids=['2.5x2', '4x3'])
+@pytest.mark.parametrize('kind', ['scatter', 'profile'])
+def test_S4A_C01_caller_axes_shared_legend_no_overlap(layout, figsize, kind):
+    """Review C-S2b-01: the shared Figure legend on a caller's Figure never
+    overlaps the title or the panels, for every layout engine and small sizes."""
+    fig = plt.figure(figsize=figsize, layout=layout)
+    fig.suptitle('Title')
+    kw = dict(sample=2000) if kind == 'scatter' else dict(bins=8)
+    DFDraw(_frame()).draw('y1:x', type=kind, group_by='g', ax=fig.add_subplot(),
+                          legend='shared', **kw)
+    assert _overlaps(fig) == []
+
+
+@pytest.mark.parametrize('figsize', [(3, 2), (4, 3), (6, 3)], ids=['3x2', '4x3', '6x3'])
+@pytest.mark.parametrize('kind', ['scatter', 'profile'])
+def test_S4A_C01_faceted_shared_legend_no_overlap(figsize, kind):
+    kw = dict(sample=2000) if kind == 'scatter' else dict(bins=8)
+    DFDraw(_frame()).draw('y1:x', type=kind, group_by='g', facet_by='a', facet_by_bins=3,
+                          legend='shared', figsize=figsize, title='Title', **kw)
+    assert _overlaps(plt.gcf()) == []
+
+
+def test_S4A_C_R1_warning_names_remedies_that_work():
+    import warnings
+    from dfextensions.dfdraw.drawer import _move_best_legends_off_text_boxes
+    fig, ax = plt.subplots(figsize=(2.5, 2))
+    for i in range(6):
+        ax.plot([0, 1], [i, i], label=f'curve {i}')
+    for x, y, ha, va in ((0.02, 0.98, 'left', 'top'), (0.98, 0.98, 'right', 'top'),
+                         (0.02, 0.02, 'left', 'bottom'), (0.98, 0.02, 'right', 'bottom'),
+                         (0.5, 0.5, 'center', 'center')):
+        ax.text(x, y, 'box\nbox\nbox', transform=ax.transAxes, ha=ha, va=va,
+                bbox=dict(boxstyle='round'), fontsize=14)
+    ax.legend(loc='best')
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter('always')
+        _move_best_legends_off_text_boxes(fig)
+    text = ' '.join(str(w.message) for w in caught)
+    assert 'figsize' in text and "legend='shared'" in text and 'fit.position' in text
+    assert "'mode': 'all'" not in text

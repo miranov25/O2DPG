@@ -126,6 +126,21 @@ def _format_value_error_pair(val, error, value_format, error_format, precision_m
 # Overlay rendering
 # ---------------------------------------------------------------------------
 
+def _outline_line(line, linewidth):
+    """Draw ``line`` with an outline from the style keys fit.outline_color
+    and fit.outline_width (points on each side; 0 or None: no outline)."""
+    import matplotlib.patheffects as patheffects
+    width = _style_get('fit.outline_width', 1.0)
+    colour = _style_get('fit.outline_color', 'white')
+    if not width or colour is None:
+        return
+    line.set_path_effects([
+        patheffects.Stroke(linewidth=linewidth + 2.0 * float(width),
+                           foreground=colour),
+        patheffects.Normal()])
+    line._dfdraw_fit_outline = (colour, float(width))
+
+
 def render_fit_overlays(ax,
                         curves_list: List[Dict[str, Any]],
                         fits_per_curve: List[List[Dict[str, Any]]]) -> None:
@@ -169,10 +184,15 @@ def render_fit_overlays(ax,
             except Exception:
                 continue
             linestyle = linestyle_cyc[fit_idx % len(linestyle_cyc)]
-            ax.plot(x_eval, y_eval,
-                    linewidth=linewidth,
-                    linestyle=linestyle,
-                    color=color)
+            line, = ax.plot(x_eval, y_eval,
+                            linewidth=linewidth,
+                            linestyle=linestyle,
+                            color=color)
+            # PHASE_13_112_DF (AD-1/13.112.DF, decision 3b): a fit over
+            # filled bars of its own curve keeps the curve colour and gets an
+            # outline, so it is visible on the bars.
+            if curve.get('outline'):
+                _outline_line(line, linewidth)
 
 
 # ---------------------------------------------------------------------------

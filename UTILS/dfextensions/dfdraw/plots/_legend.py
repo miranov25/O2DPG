@@ -293,7 +293,16 @@ def _place_figure_legend_on_top(fig, legend, padding_pt=5.0):
     gap = padding_pt * fig.dpi / 72.0
     title = getattr(fig, '_suptitle', None)
     if title is not None and title.get_visible() and title.get_text():
-        limit = title.get_window_extent(renderer).y0 - gap
+        # PHASE_13_112_DF S4-A (decision 2b): style legend.figure_title_gap_pt
+        try:
+            from ..style import get_style_value
+            title_gap = float(get_style_value('legend.figure_title_gap_pt', 6.0))
+        except Exception:
+            title_gap = 6.0
+        # the legend frame sits borderaxespad (in font sizes) inside its anchor
+        inset = legend.borderaxespad * legend.prop.get_size_in_points()
+        limit = (title.get_window_extent(renderer).y0
+                 - (title_gap - inset) * fig.dpi / 72.0)
     else:
         limit = fig.bbox.y1 - gap
     legend.set_bbox_to_anchor((0.5, limit / height),

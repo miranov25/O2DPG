@@ -123,21 +123,7 @@ def _profile_pairs(ax):
 
 
 def _hist_pairs(ax):
-    """(identity, colour, what) for every data artist of a histogram axes.
-
-    Change rule, PHASE_13_112_DF S3 (D-5, AD-1/13.112.DF, a recorded exception
-    to AD-3/13.111.DF): a fit line over FILLED bars of its curve is drawn in a
-    fixed darker shade of the curve colour.  Such a fit is reported here with
-    the colour of the filled bars whose shade it is, so this check still
-    proves that the fit belongs to its own curve (a fit in another curve's
-    colour, or in the next cycle colour, still fails).
-    """
-    from dfextensions.dfdraw.plots.histogram import fit_shade_over_filled_bars
-    shade_of = {}
-    for p in ax.patches:
-        face = p.get_facecolor()
-        if p.get_fill() and face[3] > 0:
-            shade_of[fit_shade_over_filled_bars(face)] = _hex(face)
+    """(identity, colour, what) for every data artist of a histogram axes."""
     out = []
     for ln in ax.lines:
         x = np.asarray(ln.get_xdata(), float)
@@ -147,8 +133,7 @@ def _hist_pairs(ax):
         if np.allclose(x, x[0]):
             out.append((_ident(x[0]), _hex(ln.get_color()), 'marker'))
         elif np.isfinite(y).any():
-            colour = _hex(ln.get_color())
-            out.append((_ident(x[int(np.nanargmax(y))]), shade_of.get(colour, colour), 'fit'))
+            out.append((_ident(x[int(np.nanargmax(y))]), _hex(ln.get_color()), 'fit'))
     for p in ax.patches:
         v = p.get_path().vertices
         v = p.get_patch_transform().transform(v)

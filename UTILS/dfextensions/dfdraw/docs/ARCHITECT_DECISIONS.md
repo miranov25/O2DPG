@@ -1,8 +1,8 @@
 # ARCHITECT_DECISIONS.md
 # dfdraw — Architect Decision Registry
-# Version: 1.5.0 (PHASE_13_112_DF — AD-1/13.112.DF and AD-2/13.112.DF added in S3: fit shade over filled histogram bars (exception to AD-3/13.111.DF), in-panel quantile level labels of several curves; the other 13.112 decisions follow at the pre-commit stage)
+# Version: 1.6.0 (PHASE_13_112_DF — AD-1/13.112.DF to AD-9/13.112.DF: fit line outline over filled bars, in-panel level labels, shared legend with global bins decided before drawing, shared legend placement, group legend title, interval closure in legends, group style by rank, legend off text boxes, smaller corrections)
 # Previous: 1.4.0 (PHASE_13_111_DF — AD-1/13.111.DF to AD-8/13.111.DF added: one identity (colour and name) per curve fixed before drawing, stable colours across facet cells, explicit band and central='both' checks, grey quantile-level legend samples)
-# Date: 2026-11-20 (v1.5.0); 2026-11-18 (v1.4.0); 2026-11-10 (v1.3.0, v1.2.1, v1.2.0); 2026-06-06 (v1.1.0); 2026-06-04 (v1.0 / v1.0.1)
+# Date: 2026-11-20 (v1.6.0); 2026-11-18 (v1.4.0); 2026-11-10 (v1.3.0, v1.2.1, v1.2.0); 2026-06-06 (v1.1.0); 2026-06-04 (v1.0 / v1.0.1)
 # Maintainer: Marian Ivanov (architect)
 #
 # This document is the canonical AD registry for the dfdraw project.
@@ -2009,50 +2009,154 @@ adf.draw("dyp_I0:row", group_by="sec", color="red")
 
 ---
 
-## Phase 13.112.DF — Legend, label and placement cleanup (AD-1/13.112.DF, AD-2/13.112.DF; further entries at the pre-commit stage)
+## Phase 13.112.DF — Legend, label and placement clean-up (AD-1/13.112.DF to AD-9/13.112.DF)
 
-**Phase trigger:** presentation defects found after PHASE_13_111 (group legend without the variable name, interval names without closure, shared legend over per-cell intervals, legend placement, fit line invisible on filled bars, repeated level labels). Proposal `PHASE_13_112_DF_LegendLabelCleanup_Proposal_v0_2_Fable5_1_5_20261119.md` (MD5 `91d1e481b85e306bc676782895662c08`); consolidated review GPG35, 2026-11-19, approved with comments (6 of 6); decision addendum `PHASE_13_112_DF_S0_Decision_and_Acceptance_Addendum_Fable5_1_5coder_20261119.md` (decisions D-1 to D-6).
+**Phase trigger:** presentation defects found after PHASE_13_111: a group legend without the variable name, interval names without their closure, a shared legend over intervals computed per facet cell, legends placed over the X title or over the fit box, an empty band above the shared legend, a fit line invisible on filled bars, and repeated in-panel level labels. Proposal `PHASE_13_112_DF_LegendLabelCleanup_Proposal_v0_2_Fable5_1_5_20261119.md` (MD5 `91d1e481b85e306bc676782895662c08`); consolidated review GPG35, 2026-11-19, approved with comments (6 of 6); decision addendum `PHASE_13_112_DF_S0_Decision_and_Acceptance_Addendum_Fable5_1_5coder_20261119.md` (decisions D-1 to D-6). Stage reviews: S2 (GPG35, REVISE), S3 + S2b (GPG35, REVISE); corrections in S4-A. Decision material for the three 2026-11-20 decisions: `PHASE_13_112_DF_Architect_Decisions_Material_S4A_20261120.md`.
 
-**Architect decision, 2026-11-19 (GP-3, quoted from the session record):**
+**Architect decisions (GP-3, quoted from the session record):**
 
-> Looks like it is approved. You can use the consensus decision as architect decision.
+> 2026-11-19: Looks like it is approved. You can use the consensus decision as architect decision.
+
+> 2026-11-20, decision 1 (on the shared legend): Yes. we should have - automatic global bins for facet_by - `legend="shared"`
+
+> 2026-11-20, decisions 2 and 3: 2.b) Use your proposal as a starting point. 3.) b
+
+No computed number changes in this phase, except where AD-3/13.112.DF replaces a refusal by global bins.
 
 ---
 
-## AD-1/13.112.DF — A fit line over filled histogram bars is a darker shade of the curve colour (narrow exception to AD-3/13.111.DF)
+## AD-1/13.112.DF — A fit line over filled histogram bars keeps the curve colour and gets an outline
 
-**Phase:** 13.112.DF | **Date:** 2026-11-20 | **Original notation:** D-5; finding O-1/13.111
+**Phase:** 13.112.DF | **Date:** 2026-11-20 | **Original notation:** D-5, decision 3b; finding O-1/13.111
 
-**Old rule (AD-3/13.111.DF):** every child artist of a curve, fit lines included, uses the curve colour.
+**Decision:** A fit line drawn over the **filled** bars of its own histogram curve (`histtype` `bar`, `barstacked` or `stepfilled`; the default is `stepfilled`) keeps the curve colour (AD-3/13.111.DF unchanged) and is drawn with an outline: style key `fit.outline_color` (default white), `fit.outline_width` points on each side of the line (default 1.0; 0 or None: no outline). The curve colour is read from the curve's own drawn bars, so the fit of a group or of a facet cell has the colour of its own bars. Step histograms and profiles keep the plain curve colour, without outline. Fit numbers and line geometry are unchanged; the fit line has no legend entry.
 
-**Reason for the exception:** a fit drawn in the bar colour over filled bars of the same colour cannot be seen (blue on blue).
+**Superseded intermediate rule (S3, not committed as final):** a darker shade of the curve colour (lightness × 0.6, lighter tint below lightness 0.25). Replaced because it needed an exception to AD-3/13.111.DF and jumped at lightness 0.25.
 
-**Decision:** A fit line drawn over the **filled** bars of its own histogram curve (`histtype` `bar`, `barstacked`, `stepfilled`; the default is `stepfilled`) uses a fixed darker shade of the curve colour: HLS lightness multiplied by 0.6, hue and saturation unchanged. A colour darker than lightness 0.25 (black, dark grey), which cannot be darkened visibly, gets a lighter tint instead: lightness moved halfway to white. The curve colour is read from the curve's drawn bars, so the fit of a group or of a facet cell has the colour of its own bars. Step histograms (`histtype='step'`) and profiles keep the curve colour (AD-3/13.111.DF unchanged). A user `color=` is the curve colour and is shaded in the same way. dfdraw has no separate fit-colour parameter. Fit numbers, fit line geometry and the legend are unchanged; the fit line has no legend entry.
+**Also corrected (AD-1/13.111.DF):** the fit lines of a grouped histogram took the axes colour cycle in data order (a group's fit in another group's colour); the fit of a faceted histogram cell took the next cycle colour.
 
-**Also corrected by this rule (AD-1/13.111.DF):** before, the fit lines of a grouped histogram took the axes colour cycle in data order, so a group's fit could be drawn in another group's colour; and the fit of a faceted histogram cell took the next cycle colour (orange over blue bars).
+**Ratification:** Architect 2026-11-20 (decision 3b).
 
-**Change rule:** `tests/test_phase_13_111_s0_identity_colour_red.py`, helper `_hist_pairs`: a fit over filled bars is reported with the colour of the bars whose shade it is, so the one-colour-per-curve check still proves that the fit belongs to its own curve.
-
-**Ratification:** Architect 2026-11-19 (above), D-5 of the decision addendum.
-
-**Source:** `plots/histogram.py` (`fit_shade_over_filled_bars`, `_fit_colour_for_bars`, `FIT_SHADE_FACTOR`, `FIT_SHADE_DARK_LIMIT`; ungrouped and grouped fit paths of `draw_hist`)
+**Source:** `plots/histogram.py` (`_fit_colour_for_bars`), `plots/_fit_render.py` (`_outline_line`), `style.py` (`fit.outline_color`, `fit.outline_width`)
 
 ---
 
 ## AD-2/13.112.DF — In-panel quantile level labels when several curves draw the same level
 
-**Phase:** 13.112.DF | **Date:** 2026-11-20 | **Original notation:** D-6 (d) with (b); findings O-4/13.108, 13.107 item 3
+**Phase:** 13.112.DF | **Date:** 2026-11-20 | **Original notation:** D-6 (d) with (b); findings O-4/13.108, 13.107 item 3; review C-S3-01, C-S3-02
 
 **Decision:** A profile draws a level label (`11%`, `50%`, `90%`) on each of its quantile lines (`quantile_style='linestyle'`, the default). In a panel where two or more curves draw the same level:
 
 - (d) if a visible legend of the panel (its Axes legend, or a Figure legend) names every level drawn there (`q=11%`, `median`, …: the grey entries of AD-8/13.111.DF), the level labels of that panel are omitted;
-- (b) otherwise every label stays with its own curve, and the curves' labels are moved apart along their own lines (curve k of n at the fraction 0.2 + 0.6 k/(n − 1) of its points), so they do not cover each other.
+- (b) otherwise every label stays with its own curve, and the curves' labels are moved apart along their own lines (curve k of n at the fraction 0.2 + 0.6 k/(n − 1) of its points).
 
-A single curve keeps its labels unchanged. The rule is evaluated on the whole panel at the end of every public call, so a figure drawn through several calls (`same=True`, AliasDataFrame, the vector loop) is judged with all its curves. Labels omitted by an earlier evaluation are put back if a later one keeps them. Histogram quantile texts are drawn only when the caller asks for them (`quantile_text=`) and are not changed. Profiles draw no level labels with `quantile_style='color'` or `'marker'` (unchanged).
+A curve is identified by the call that drew it, not by its colour (two curves in one user colour are two curves). A single curve keeps its labels. The rule is evaluated on the whole panel at the end of every public call (`draw`, `profile`, `hist`, `scatter`), so a figure drawn through several calls is judged with all its curves; an omitted label comes back if a later evaluation keeps it, but only while its own quantile line is still drawn (not after `ax.clear()`). Histogram quantile texts (drawn only on request, `quantile_text=`) are not changed.
 
-**Ratification:** Architect 2026-11-19 (above), D-6 of the decision addendum.
+**Ratification:** Architect 2026-11-19 (D-6 of the addendum).
 
-**Source:** `plots/profile.py` (labels tagged with their level, legend name and line points), `drawer.py` (`_resolve_level_labels`, run by `_with_label_post_steps` at the exit of `draw`, `profile`, `hist`, `scatter`)
+**Source:** `plots/profile.py` (labels tagged with level, legend name, points, curve and line), `drawer.py` (`_resolve_level_labels`, `_with_label_post_steps`)
+
+---
+
+## AD-3/13.112.DF — `legend='shared'` with binned groups: one set of intervals for the Figure, decided before drawing
+
+**Phase:** 13.112.DF | **Date:** 2026-11-20 | **Original notation:** D-4, decision 1; findings F-5, S2-C01, S2-C02, S2-C03, C-S2b-02
+
+**Old behaviour:** with `group_by_bins` / `group_by_quantiles` and facets, the bins were computed separately in each cell; `legend='shared'` then merged per-cell legends whose colours meant different intervals in different cells, or showed the first cell's names for every cell.
+
+**Decision (decided from the call's arguments, before any Figure is created):**
+
+| The call asks for | Then |
+|---|---|
+| `legend='shared'`, bins given as a count (`group_by_bins=N` or `group_by_quantiles=N`), `group_by_scope` not given, a profile with 1 or 2 facet levels, no `top_k` | the bins are computed once for the whole Figure (`group_by_scope='global'`); the legend title says `(N global bins)` |
+| `legend='shared'`, bins given as explicit edges (`group_by_bins=[e0, e1, …]`) | the intervals are the same in every cell by definition; allowed as it is (also for histograms) |
+| `legend='shared'`, bins as a count, with explicit `group_by_scope='facet'`, or a histogram, or 3 facet levels, or `top_k` | refused with `ValueError` before any Figure, naming `group_by_scope='global'` and explicit edges |
+| no `legend='shared'` | unchanged: bins per cell, one legend per cell |
+
+A binned group's colour, marker and line style follow the rank of its interval among all intervals of the binning, empty intervals included (AD-7/13.112.DF). After drawing, a safety check compares the real bin edges recorded in every cell, cell by cell and layer by layer; a cell with data but no record refuses. With the rules above it cannot trigger on a public call; if it does, the Figure the call built is closed before the error is raised.
+
+**Supersedes:** the S2 rule "refuse after drawing" (S2-C02 option a), which is no longer used for public calls.
+
+**Ratification:** Architect 2026-11-20 (decision 1).
+
+**Source:** `drawer.py` (`_dispatch_faceted_render` argument rule, `_group_scope_is_global`, `_refuse_shared_over_cell_intervals`), `plots/profile.py` and `plots/histogram.py` (interval order list, edge records)
+
+---
+
+## AD-4/13.112.DF — Placement of an automatic shared Figure legend
+
+**Phase:** 13.112.DF | **Date:** 2026-11-20 | **Original notation:** decision 2b; findings 13.107 items 5 and 6, S2-C05, S2-C06, C-S2b-01
+
+**Decision:** An automatic shared Figure legend (no caller `loc` or `bbox_to_anchor`) sits on top, in rows, under the Figure title, with the gap of the style key `legend.figure_title_gap_pt` between legend and title (default 6 points = 2.1 mm, the same at every Figure size; at most one text line). Surplus height above the panels is given to the panels (no empty band); missing height is taken from them. This holds for the facet composer and for the generic route (`_apply_legend_mode`, e.g. faceted scatter). Under constrained layout the legend uses Matplotlib's `loc='outside upper center'`, so the layout engine reserves its room. Explicit `figure_margins`, a caller `loc` or `bbox_to_anchor` are not changed. Legend, title and panels never overlap (tested on caller Figures with no, tight and constrained layout at 2.5 × 2 and 4 × 3 inch, and on faceted Figures down to 3 × 2 inch, Matplotlib 3.8.2 and 3.10.8).
+
+**Ratification:** Architect 2026-11-20 (decision 2b).
+
+**Source:** `drawer.py` (`_reserve_automatic_legend_top_room`), `plots/_legend.py` (`_apply_legend_mode`, `_place_figure_legend_on_top`), `style.py` (`legend.figure_title_gap_pt`)
+
+---
+
+## AD-5/13.112.DF — Group legend title names the channel, the variable and the bins
+
+**Phase:** 13.112.DF | **Date:** 2026-11-19 | **Original notation:** D-2; findings F-6, F-8, F-12
+
+**Decision:** Every `group_by` legend is titled `<channel>: <variable> (<bins>)`, e.g. `Colors: p (3 global bins)`, `Colors: g`. `<variable>` is the AliasDataFrame title when one exists (also on the 2-D global-scope route, F-12). A title the user gives wins, also with `legend={'mode': 'all', 'title': …}` (F-8).
+
+**Ratification:** Architect 2026-11-19.
+
+**Source:** `drawer.py` (`_group_legend_title`, `_with_group_legend_title`, `_title_group_legends`), `plots/_legend.py`
+
+---
+
+## AD-6/13.112.DF — Interval names in group legends show the closure `(a, b]`
+
+**Phase:** 13.112.DF | **Date:** 2026-11-20 | **Original notation:** D-3, option b; finding F-7
+
+**Decision:** Profile group legends show binned groups as `(a, b]` (right-closed, as `pd.cut` / `pd.qcut` bin). The stored group keys (`'a-b'` in `profile_data` and the statistics) and the facet titles (PHASE_13_97 default; `facet_label_format='auto'` gives `(a, b]` there) are unchanged.
+
+**Ratification:** Architect 2026-11-20 (option b, "it is safer").
+
+**Source:** `plots/_numeric_labels.py` (`interval_display_text`, `interval_key_text`), `plots/profile.py`, `drawer.py`
+
+---
+
+## AD-7/13.112.DF — A group keeps its style in every facet cell, also when another group is missing there
+
+**Phase:** 13.112.DF | **Date:** 2026-11-20 | **Original notation:** S2-C01 (review)
+
+**Decision:** A binned group's colour, marker and line style follow the rank of its interval among all intervals of the binning, empty intervals included; a categorical group's marker and line style follow its rank in the ordered group list of the call, like its colour (AD-1/13.111.DF). A group missing from one cell no longer shifts the style of the others. A shared legend over per-cell intervals lists each interval once, by lower edge.
+
+**Ratification:** consolidated S2 review (GPG35, 2026-11-20), applied under the Architect's 2026-11-19 decision.
+
+**Source:** `plots/profile.py` (`_stat_group_order` from the interval categories; markers and line styles by rank), `plots/histogram.py`, `drawer.py` (`_compose_facet_semantic_legend` interval order)
+
+---
+
+## AD-8/13.112.DF — An automatic Axes legend does not cover a framed text
+
+**Phase:** 13.112.DF | **Date:** 2026-11-20 | **Original notation:** F-3; review S2-C04, S2-C07, C-S2b-03, R-1
+
+**Decision:** An Axes legend at `loc='best'` that covers a framed text (fit-result box, level label) is moved to the first standard location inside the axes that covers no framed text, preferring the fewest drawn data points (line vertices and points sampled along line segments, scatter points, error-bar segments, bar outlines). If no such location exists, the legend stays at `'best'` and a `UserWarning` names remedies that work (a larger `figsize`, `legend='shared'`, another `fit.position`). A legend placed by the caller is never moved.
+
+**Ratification:** Architect 2026-11-19 (proposal F-3), review corrections 2026-11-20.
+
+**Source:** `drawer.py` (`_move_best_legends_off_text_boxes`, `_choose_legend_location`, `_drawn_data_points`)
+
+---
+
+## AD-9/13.112.DF — Smaller corrections
+
+**Phase:** 13.112.DF | **Date:** 2026-11-19 | **Original notation:** F-1, F-4, O-5, F-2
+
+**Decision:**
+
+- **F-1:** a `same=True` chain keeps one colour and one legend name per curve when every call uses a new drawer, as AliasDataFrame.draw does; the chain state lives on the axes.
+- **F-4:** a Figure group legend lists groups in the global group order, not in the order of the first cell.
+- **O-5:** a user `ylabel=` wins for a vector profile.
+- **F-2:** the Y title of a vector profile says `(+n more)` only when more than three names are left out; never `(+0 more)` or `(+-1 more)`.
+
+**Ratification:** Architect 2026-11-19.
+
+**Deferred (tracked, not in this phase):** KD-12 (selection/weights labels in the legend), KD-3, KD-5b (ADF); single-level facet titles such as `-0.0-…`; scatter group order (first cell); `legend={'mode': 'all', 'loc': …}` ignores `loc`; `draw(type='hist', color=…)` ignores `color`; F-13 (`legend=False` ignored on an unfaceted vector profile); F-14 (vector profile title without its first branch); histogram and profile legends write the same interval with different precision.
 
 ---
 

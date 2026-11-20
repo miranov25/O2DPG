@@ -1046,6 +1046,9 @@ def draw_profile(
             # PHASE_13_108 v0.2: names of all levels together, so different
             # levels never share a name; 'median' is exactly 0.5.
             _q_names = quantile_percent_labels(list(_q_all))
+            # PHASE_13_112_DF S4-A (review C-S3-02): one identity per curve
+            # for its level labels; colours can coincide (user colour).
+            _curve_token = object()
             for j, (q_val, q_per_bin) in enumerate(_q_all.items()):
                 if (_stat_quantile_combo and 'median' in stat_list
                         and is_median_level(q_val)):
@@ -1099,6 +1102,8 @@ def draw_profile(
                         _level_label._dfdraw_level_points = (
                             np.asarray(bin_centers[valid], dtype=float),
                             np.asarray(q_per_bin[valid], dtype=float))
+                        _level_label._dfdraw_level_curve = _curve_token
+                        _level_label._dfdraw_level_line = line
         elif stat_list is None:
             # No quantiles — standard profile rendering (existing behavior)
             # Phase 13.51 §1.2.5 V-3 (audit S-2): use _central_values not bin_means.

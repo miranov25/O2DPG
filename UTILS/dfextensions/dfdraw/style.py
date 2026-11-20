@@ -145,12 +145,22 @@ DEFAULT_STYLE: Dict[str, Any] = {
     "fit.precision_mode":        None,           # None | 'physics' (auto-align value decimals to error) | 'uniform'
     "fit.text_padding":          0.4,
     "fit.position":              "upper left",
+    # PHASE_13_112_DF (AD-1/13.112.DF, Architect decision 3b, 2026-11-20): a
+    # fit line over FILLED histogram bars keeps the curve colour and gets an
+    # outline of this colour, this many points wide on each side of the
+    # line, so it is visible on bars of any colour.  0 or None: no outline.
+    "fit.outline_color":         "white",
+    "fit.outline_width":         1.0,
     
     # Legend
     "legend.outside": False,
     "legend.loc": "best",
     "legend.ncol": 1,
     "legend.frameon": True,
+    # PHASE_13_112_DF (Architect decision 2b, 2026-11-20): space between an
+    # automatic Figure legend and the Figure title above it, in points
+    # (6 points = 2.1 mm); the layout keeps at most this gap.
+    "legend.figure_title_gap_pt": 6.0,
     
     # Group-by
     "groupby.mode": "overlay",

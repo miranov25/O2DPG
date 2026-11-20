@@ -233,7 +233,12 @@ def _refuse_shared_over_cell_intervals(fig, axes):
     # its own record (a list); a cell with data but no record, while other
     # cells have one, cannot be verified and is refused, never skipped.
     # Empty cells (no data drawn) have nothing to compare.
-    records, unverified = [], False
+    # PHASE_13_112_DF S4-A (review C-S2b-02): the records are compared cell
+    # by cell, as ordered lists: every cell with a record must hold the same
+    # number of groupings with the same edges (two layers in one cell and
+    # one in another refuse).  No record anywhere means no binned grouping
+    # was drawn (categorical groups, or none), which has nothing to verify.
+    per_cell, unverified = [], False
     for ax in np.asarray(axes).flat:
         rec = getattr(ax, '_dfdraw_group_bin_edges', None)
         if rec is None:
@@ -241,12 +246,15 @@ def _refuse_shared_over_cell_intervals(fig, axes):
             continue
         if isinstance(rec, np.ndarray):
             rec = [rec]
-        records.extend(np.asarray(e, dtype=float) for e in rec)
-    if not records:
+        per_cell.append([np.asarray(e, dtype=float) for e in rec])
+    if not per_cell:
         return
-    first = records[0]
-    if not unverified and all(e.shape == first.shape and np.array_equal(e, first)
-                              for e in records[1:]):
+
+    def same(a, b):
+        return (len(a) == len(b)
+                and all(x.shape == y.shape and np.array_equal(x, y)
+                        for x, y in zip(a, b)))
+    if not unverified and all(same(c, per_cell[0]) for c in per_cell[1:]):
         return
     plt.close(fig)
     raise ValueError(
@@ -315,6 +323,31 @@ def _title_group_legends(figures, title, *, binned, group_names):
                     _place_figure_legend_on_top(fig, legend)
 
 
+def _group_scope_is_global(values):
+    """PHASE_13_112_DF S4-A: is the group domain of this call global?
+
+    Explicit group_by_scope='global', or (decision 1, 2026-11-20) a profile
+    with facets, legend='shared', default scope and bins given as a count:
+    the faceted dispatcher then computes the bins once for the Figure."""
+    scope = values.get('group_by_scope') or 'auto'
+    if scope == 'global':
+        return True
+    if scope != 'auto' or values.get('facet_by') is None:
+        return False
+    legend = values.get('legend')
+    shared = legend == 'shared' or (isinstance(legend, dict)
+                                    and legend.get('mode') == 'shared')
+    kind = values.get('type')
+    is_profile = kind == 'profile' or (kind is None and values.get('_method') == 'profile')
+    bins, quant = values.get('group_by_bins'), values.get('group_by_quantiles')
+    by_count = quant is not None or (
+        isinstance(bins, (int, np.integer)) and not isinstance(bins, bool))
+    facets = values.get('facet_by')
+    levels = len(facets) if isinstance(facets, list) else 1
+    return bool(shared and is_profile and by_count and levels in (1, 2)
+                and values.get('top_k') is None)
+
+
 def _with_group_legend_title(method):
     """PHASE_13_112_DF F-6: one owner for the group legend title.
 
@@ -338,6 +371,7 @@ def _with_group_legend_title(method):
                 bound = None
             values = dict(bound.arguments) if bound is not None else {}
             values.update(values.pop('kwargs', {}) or {})
+            values['_method'] = method.__name__
             group_by = values.get('group_by')
             if isinstance(group_by, str):
                 n_bins = values.get('group_by_bins')
@@ -353,7 +387,7 @@ def _with_group_legend_title(method):
                 title = _group_legend_title(
                     self._get_label(group_by) or group_by, binned=binned,
                     n_defined=n_defined,
-                    scope_global=values.get('group_by_scope') == 'global',
+                    scope_global=_group_scope_is_global(values),
                     channel=values.get('group_style') or 'color')
             self._group_legend_title_default = title
         self._group_title_depth = depth + 1
@@ -443,10 +477,22 @@ def _resolve_level_labels(fig):
         else:  # pragma: no cover - Matplotlib without Axes._add_text
             ax.add_artist(label)
 
+    def curve_of(label):
+        # PHASE_13_112_DF S4-A (review C-S3-02): the curve that drew the
+        # label, not its colour (two curves can share a user colour).
+        return getattr(label, '_dfdraw_level_curve', None) or to_hex(label.get_color())
+
     for ax in fig.axes:
         shown = [t for t in ax.texts
                  if getattr(t, '_dfdraw_level_label', None) is not None]
-        removed = list(getattr(ax, '_dfdraw_removed_level_labels', ()))
+        # PHASE_13_112_DF S4-A (review C-S3-01): a removed label comes back
+        # only while its own quantile line is still drawn on these axes
+        # (after ax.clear() or a removed line it is forgotten).
+        removed = [t for t in getattr(ax, '_dfdraw_removed_level_labels', ())
+                   if getattr(t, '_dfdraw_level_line', None) is None
+                   or t._dfdraw_level_line in ax.lines]
+        if hasattr(ax, '_dfdraw_removed_level_labels'):
+            ax._dfdraw_removed_level_labels = removed
         labels = shown + removed
         if not labels:
             continue
@@ -456,10 +502,10 @@ def _resolve_level_labels(fig):
         curves = []
         by_level = {}
         for t in labels:
-            colour = to_hex(t.get_color())
-            if colour not in curves:
-                curves.append(colour)
-            by_level.setdefault(t._dfdraw_level_label, set()).add(colour)
+            curve = curve_of(t)
+            if curve not in curves:
+                curves.append(curve)
+            by_level.setdefault(t._dfdraw_level_label, set()).add(curve)
         shared = len(curves) > 1 and any(len(c) > 1 for c in by_level.values())
         names = set(figure_names)
         legend = ax.get_legend()
@@ -480,7 +526,7 @@ def _resolve_level_labels(fig):
             xs, ys = t._dfdraw_level_points
             if shared and len(xs):
                 # (b): each curve's labels at their own place on their line.
-                k = curves.index(to_hex(t.get_color()))
+                k = curves.index(curve_of(t))
                 frac = 0.2 + 0.6 * k / (n - 1)
                 i = min(int(frac * len(xs)), len(xs) - 1)
                 xy = (xs[i], ys[i])
@@ -497,7 +543,21 @@ def _drawn_data_points(ax):
     pts = []
     for line in ax.lines:
         if line.get_visible() and len(line.get_xdata()) > 0:
-            pts.append(line.get_transform().transform(line.get_xydata()))
+            xy = line.get_transform().transform(line.get_xydata())
+            # PHASE_13_112_DF S4-A (review C-S2b-03): a long straight segment
+            # crosses areas between its vertices; sample it every 4 pixels.
+            if len(xy) > 1:
+                ok = np.all(np.isfinite(xy), axis=1)
+                dense = [xy[:1]]
+                for a, b, good in zip(xy[:-1], xy[1:], ok[:-1] & ok[1:]):
+                    if good:
+                        n = int(min(np.hypot(*(b - a)) // 4.0, 2000))
+                        if n > 1:
+                            t = np.linspace(0.0, 1.0, n + 1)[1:-1, None]
+                            dense.append(a + t * (b - a))
+                    dense.append(b[None, :])
+                xy = np.vstack(dense)
+            pts.append(xy)
     for coll in ax.collections:
         if not coll.get_visible():
             continue
@@ -557,53 +617,68 @@ def _move_best_legends_off_text_boxes(fig):
     renderer = (fig.canvas.get_renderer()
                 if hasattr(fig.canvas, 'get_renderer')
                 else fig._get_renderer())
-    pad = 2.0 * fig.dpi / 72.0
-
-    def covered(extent, boxes):
-        grown = extent.expanded(1.0, 1.0).padded(pad)
-        return sum(1 for t in boxes
-                   if t.get_window_extent(renderer).overlaps(grown))
-
-    def set_loc(legend, code):
-        if hasattr(legend, 'set_loc'):
-            legend.set_loc(code)
-        else:  # Matplotlib < 3.8
-            legend._loc = code
-
     for ax, legend, boxes in work:
-        if not covered(legend.get_window_extent(renderer), boxes):
+        if not _legend_covers_text(legend, boxes, renderer):
             continue
-        points = _drawn_data_points(ax)
-        frame = ax.get_window_extent(renderer)
-        choice = None
-        for code in _LEGEND_FALLBACK_LOCS:
-            set_loc(legend, code)
-            extent = legend.get_window_extent(renderer)
-            if covered(extent, boxes):
-                continue
-            if (extent.x0 < frame.x0 - 1 or extent.x1 > frame.x1 + 1
-                    or extent.y0 < frame.y0 - 1 or extent.y1 > frame.y1 + 1):
-                continue
-            inside = int(np.count_nonzero(
-                (points[:, 0] >= extent.x0) & (points[:, 0] <= extent.x1)
-                & (points[:, 1] >= extent.y0) & (points[:, 1] <= extent.y1)))
-            if choice is None or inside < choice[1]:
-                choice = (code, inside)
-                if inside == 0:
-                    break
+        choice = _choose_legend_location(ax, legend, boxes, renderer)
         if choice is None:
-            # PHASE_13_112_DF S2b (S2-C07): no standard location is free of
-            # framed text; keep Matplotlib's choice and say so.
+            # PHASE_13_112_DF S2b (S2-C07), wording S4-A (review R-1): no
+            # standard location is free of framed text; keep Matplotlib's
+            # choice and say so, naming remedies that work.
             import warnings
-            set_loc(legend, 0)
+            _set_legend_loc(legend, 0)
             warnings.warn(
                 'PHASE_13_112 F-3: no legend location inside the axes is free '
                 'of framed text (fit box, level labels); the legend stays at '
-                "loc='best' and may cover a text box. Give legend={'mode': "
-                "'all', 'loc': ...} or move the fit box with "
-                'fit_textbox_kwargs.', UserWarning, stacklevel=4)
+                "loc='best' and may cover a text box. Remedies: a larger "
+                "figsize, legend='shared' (one legend outside the axes), or "
+                "another fit box position (set_style({'fit.position': "
+                "'lower right'})).",
+                UserWarning, stacklevel=4)
         else:
-            set_loc(legend, choice[0])
+            _set_legend_loc(legend, choice)
+
+
+def _set_legend_loc(legend, code):
+    if hasattr(legend, 'set_loc'):
+        legend.set_loc(code)
+    else:  # Matplotlib < 3.8
+        legend._loc = code
+
+
+def _legend_covers_text(legend, boxes, renderer, extent=None):
+    """Number of framed texts ``boxes`` that the legend covers (2 pt margin)."""
+    fig = legend.figure
+    pad = 2.0 * fig.dpi / 72.0
+    grown = (extent or legend.get_window_extent(renderer)).expanded(1.0, 1.0).padded(pad)
+    return sum(1 for t in boxes if t.get_window_extent(renderer).overlaps(grown))
+
+
+def _choose_legend_location(ax, legend, boxes, renderer):
+    """PHASE_13_112_DF F-3: the first standard location (in the order of
+    _LEGEND_FALLBACK_LOCS) inside the axes that covers no framed text, with
+    the fewest drawn data points under it; None if every location covers a
+    framed text.  Leaves the legend at the chosen location (or the last
+    tried one; the caller sets the final location)."""
+    points = _drawn_data_points(ax)
+    frame = ax.get_window_extent(renderer)
+    choice = None
+    for code in _LEGEND_FALLBACK_LOCS:
+        _set_legend_loc(legend, code)
+        extent = legend.get_window_extent(renderer)
+        if _legend_covers_text(legend, boxes, renderer, extent):
+            continue
+        if (extent.x0 < frame.x0 - 1 or extent.x1 > frame.x1 + 1
+                or extent.y0 < frame.y0 - 1 or extent.y1 > frame.y1 + 1):
+            continue
+        inside = int(np.count_nonzero(
+            (points[:, 0] >= extent.x0) & (points[:, 0] <= extent.x1)
+            & (points[:, 1] >= extent.y0) & (points[:, 1] <= extent.y1)))
+        if choice is None or inside < choice[1]:
+            choice = (code, inside)
+            if inside == 0:
+                break
+    return None if choice is None else choice[0]
 
 
 def _neutral_quantile_handle(source):
@@ -1396,14 +1471,22 @@ def _reserve_automatic_legend_top_room(fig, axes_grid, legend, *,
         # (explicit figure_margins returned above).
         # The limit is the title as placed (the stacker only ever moves it
         # up), else the Figure top; the stack needs one gap per step.
+        # PHASE_13_112_DF S4-A (Architect decision 2b): the gap left between
+        # the legend and the title is the style key
+        # legend.figure_title_gap_pt (points); the decoration stacker below
+        # adds its own 4-point padding between panels and legend.
+        title_gap = float(get_style_value('legend.figure_title_gap_pt', 6.0)) \
+            * fig.dpi / 72.0
+        stack_pad = 4.0 * fig.dpi / 72.0
         limit = (suptitle.get_window_extent(renderer).y0
                  if suptitle is not None else fig.bbox.y1 - gap)
-        needed = top_edge + legend.get_window_extent(renderer).height + 2 * gap
+        needed = (top_edge + legend.get_window_extent(renderer).height
+                  + stack_pad + title_gap)
         if headings:
             needed += max(h.get_window_extent(renderer).height
-                          for h in headings) + gap
+                          for h in headings) + stack_pad
         surplus = limit - needed
-        if surplus <= gap:
+        if surplus <= 1.0:
             return
         new_top = current_top + surplus / fig.bbox.height
     else:
@@ -5935,6 +6018,42 @@ class DFDraw:
         group_scope = plot_kwargs.pop('group_by_scope', 'auto')
         if group_scope not in ('auto', 'global', 'facet'):
             raise ValueError('invalid group_by_scope')
+        # PHASE_13_112_DF S4-A (Architect decision 1, 2026-11-20): one shared
+        # legend needs one set of group intervals.  Decided from the call's
+        # arguments alone, before anything is drawn:
+        # * bins given as a count (group_by_bins=N / group_by_quantiles=N)
+        #   with group_by_scope='auto' on a profile -> computed once for the
+        #   whole Figure (global scope);
+        # * bins given as explicit edges -> the same in every cell, allowed;
+        # * explicit group_by_scope='facet', a histogram, 3-level facets or
+        #   top_k (no global scope there) -> refused here, before drawing.
+        _req_legend = plot_kwargs.get('_facet_legend_spec')
+        _gb_bins = plot_kwargs.get('group_by_bins')
+        _gb_quant = plot_kwargs.get('group_by_quantiles')
+        _binned_by_count = (
+            (_gb_quant is not None)
+            or (_gb_bins is not None
+                and isinstance(_gb_bins, (int, np.integer))
+                and not isinstance(_gb_bins, bool)))
+        if (group_by is not None and _binned_by_count
+                and isinstance(_req_legend, dict)
+                and _req_legend.get('mode') == 'shared'):
+            _levels = len(facet_by) if isinstance(facet_by, list) else 1
+            if (plot_kind == 'profile' and group_scope == 'auto'
+                    and _levels in (1, 2) and top_k is None):
+                group_scope = 'global'
+            elif group_scope != 'global':
+                raise ValueError(
+                    "legend='shared' needs one set of group intervals for the "
+                    "whole Figure, but group_by_bins/group_by_quantiles given "
+                    "as a count are computed separately in each facet cell "
+                    + ("(group_by_scope='facet' was requested). "
+                       if group_scope == 'facet' else
+                       "(global bins are available only for profiles with "
+                       "1 or 2 facet levels and without top_k). ")
+                    + "Use group_by_scope='global' on a profile, give the bins "
+                    "as explicit edges (group_by_bins=[e0, e1, ...]), or a "
+                    "legend mode other than 'shared' (dfdraw PHASE_13_112 F-5).")
         nd_vector = (plot_kind == 'profile' and isinstance(y_expr, list)
                      and isinstance(facet_by, list) and len(facet_by) == 2)
         global_scope = (plot_kind == 'profile' and

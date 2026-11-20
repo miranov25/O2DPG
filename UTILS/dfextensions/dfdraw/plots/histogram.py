@@ -207,49 +207,31 @@ def _patch_color(patches):
     return first.get_facecolor()
 
 
-# PHASE_13_112_DF D-5 (AD-1/13.112.DF): a fit line drawn over FILLED bars
-# of its own curve gets a fixed darker shade of the curve colour, so that it
-# is visible on the bars.  HLS lightness times FIT_SHADE_FACTOR; a colour
-# already darker than FIT_SHADE_DARK_LIMIT (black, dark grey) cannot be
-# darkened visibly and gets the lighter tint halfway to white instead.
-FIT_SHADE_FACTOR = 0.6
-FIT_SHADE_DARK_LIMIT = 0.25
-
-
-def fit_shade_over_filled_bars(colour):
-    """The fit-line colour over filled bars of ``colour`` (hex, no alpha)."""
-    import colorsys
-    from matplotlib.colors import to_hex, to_rgb
-    h, l, s = colorsys.rgb_to_hls(*to_rgb(colour))
-    if l >= FIT_SHADE_DARK_LIMIT:
-        l = l * FIT_SHADE_FACTOR
-    else:
-        l = l + (1.0 - l) * 0.5
-    return to_hex(colorsys.hls_to_rgb(h, l, s))
-
-
 def _fit_colour_for_bars(patches, fallback=None):
-    """PHASE_13_112_DF: the colour of the fit line of one histogram curve.
+    """PHASE_13_112_DF: colour of the fit line of one histogram curve, and
+    whether it is drawn over filled bars (AD-1/13.112.DF).
 
-    The curve colour is read from its drawn bars (so a fit always has the
-    colour of its own curve, AD-3/13.111.DF, also in facet cells and for
-    groups); over filled bars it is the D-5 shade of that colour.  Over
-    unfilled bars (``histtype='step'``) the fit keeps the curve colour: the
-    ``fallback`` (the caller's curve colour) when given, else the colour
-    Matplotlib assigned to the bars (their face colour, drawn with zero
-    alpha).  Without drawn bars the ``fallback`` is returned unchanged.
+    Returns ``(colour, over_filled_bars)``.  The colour is the curve colour,
+    read from the curve's own drawn bars, so a fit always has the colour of
+    its own curve (AD-3/13.111.DF), also in facet cells and for groups.
+    Over filled bars the fit is drawn with an outline (style keys
+    ``fit.outline_color`` / ``fit.outline_width``) so that it stays visible.
+    Over unfilled bars (``histtype='step'``) it is the plain curve colour:
+    the ``fallback`` (the caller's curve colour) when given, else the colour
+    Matplotlib assigned to the bars.  Without drawn bars: ``(fallback, False)``.
     """
     from matplotlib.colors import to_hex
     items = list(getattr(patches, 'patches', patches) or [])
     if not items:
-        return fallback
+        return fallback, False
     face = items[0].get_facecolor()
     if face is None:
-        return fallback
+        return fallback, False
     filled = bool(items[0].get_fill()) and face[3] > 0
     if filled:
-        return fit_shade_over_filled_bars(face)
-    return fallback if fallback is not None else to_hex(face, keep_alpha=False)
+        return to_hex(face, keep_alpha=False), True
+    return (fallback if fallback is not None
+            else to_hex(face, keep_alpha=False)), False
 
 
 def _hist_bin_values_and_errors(x_data, bins, used_range, hist_weights,
@@ -938,11 +920,13 @@ def draw_hist(
                 # of the axes cycle in data order, so a group's fit could be
                 # drawn in another group's colour.
                 _g_bars = [p for p in ax.patches if p.get_label() == str(g)]
+                _g_colour, _g_filled = _fit_colour_for_bars(_g_bars[-1:], None)
                 curve_g = {
                     'x_data': centers_g,
                     'y_data': counts_g.astype(float),
                     'yerr_data': yerr_g,
-                    'color': _fit_colour_for_bars(_g_bars[-1:], None),
+                    'color': _g_colour,
+                    'outline': _g_filled,
                     'label': str(g),
                 }
                 normalized_g = normalize_fit_spec(fit, 1)
@@ -1002,9 +986,10 @@ def draw_hist(
                 'y_data': counts_fit.astype(float),
                 'yerr_data': yerr_hist,
                 # PHASE_13_112_DF D-5: the colour of this curve's drawn bars
-                # (shaded over filled bars); before, color=None in facet
+                # (outlined over filled bars); before, color=None in facet
                 # cells gave the fit the next colour of the axes cycle.
-                'color': _fit_colour_for_bars(_hist_artists[2], color),
+                'color': _fit_colour_for_bars(_hist_artists[2], color)[0],
+                'outline': _fit_colour_for_bars(_hist_artists[2], color)[1],
                 'label': label,
             }
             curves_list_fit = [curve]
