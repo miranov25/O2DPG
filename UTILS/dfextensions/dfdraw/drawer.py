@@ -285,11 +285,21 @@ def _group_legend_title(name, *, binned, n_defined, scope_global,
     if not binned:
         return f"{word}: {name}"
     scope = 'global ' if scope_global else ''
+    # PHASE_13_113_DF S1b (review P1): ``n_defined`` may be a pair
+    # (fewest, most) when the cells of one legend produced different
+    # numbers of bins; the title then names the range, e.g. '(1-3 bins)'.
+    if isinstance(n_defined, tuple):
+        lo, hi = n_defined
+        n_defined = lo if lo == hi else None
+        if lo != hi:
+            return f"{word}: {name} ({lo}\u2013{hi} {scope}bins)"
     count = f"{n_defined} " if n_defined is not None else ''
-    return f"{word}: {name} ({count}{scope}bins)"
+    noun = 'bin' if n_defined == 1 else 'bins'   # PHASE_13_113_DF: '1 bin'
+    return f"{word}: {name} ({count}{scope}{noun})"
 
 
-def _title_group_legends(figures, title, *, binned, group_names):
+def _title_group_legends(figures, title, *, binned, group_names,
+                         axes_title=None, figure_title=None, replace=()):
     """PHASE_13_112_DF F-6: give ``title`` to every group legend of the
     returned Figure(s) that has no title yet (axes legends of unfaceted and
     per-cell routes; Figure legends receive it before layout).
@@ -298,6 +308,12 @@ def _title_group_legends(figures, title, *, binned, group_names):
     name: one of ``group_names`` for a categorical group, an interval name
     for a binned group.  Titles already set (by the user, by the 2-D global
     owner of PHASE_13_98, or by the expression legend) are kept.
+
+    PHASE_13_113_DF S1b: ``axes_title(ax)`` gives the title of the legend of
+    one axes (the count of bins that axes produced) and ``figure_title`` the
+    title of a Figure legend; a Figure legend that already carries one of the
+    titles in ``replace`` (the requested count, set before layout) gets
+    ``figure_title`` instead.
     """
     from matplotlib.figure import Figure
     if isinstance(figures, Figure):
@@ -306,21 +322,43 @@ def _title_group_legends(figures, title, *, binned, group_names):
     for fig in figures:
         if not isinstance(fig, Figure):
             continue
-        legends = list(fig.legends) + [ax.get_legend() for ax in fig.axes
-                                       if ax.get_legend() is not None]
-        for legend in legends:
-            if legend.get_title().get_text():
+        legends = ([(lg, figure_title or title) for lg in fig.legends]
+                   + [(ax.get_legend(), axes_title(ax) if axes_title else title)
+                      for ax in fig.axes if ax.get_legend() is not None])
+        for legend, wanted in legends:
+            current = legend.get_title().get_text()
+            if current:
+                if (figure_title and current in replace and current != figure_title
+                        and legend in fig.legends):
+                    legend.set_title(figure_title)
                 continue
             texts = [t.get_text() for t in legend.get_texts()]
             if any(not _NON_GROUP_ENTRY.match(t)
                    and (t in known if not binned else bool(_INTERVAL_NAME.match(t)))
                    for t in texts):
-                legend.set_title(title)
+                legend.set_title(wanted)
                 # PHASE_13_112_DF: a generic top Figure legend grew by its
                 # title; place it again so the panels make room for it.
                 if getattr(legend, '_dfdraw_auto_top', False):
                     from .plots._legend import _place_figure_legend_on_top
                     _place_figure_legend_on_top(fig, legend)
+
+
+def _realized_group_bin_counts(figures):
+    """PHASE_13_113_DF F112-02: the set of interval counts that the group
+    binning produced on the axes of ``figures`` (from the bin edges the cell
+    renderers record as ``_dfdraw_group_bin_edges``)."""
+    from matplotlib.figure import Figure
+    if isinstance(figures, Figure):
+        figures = [figures]
+    counts = set()
+    for fig in figures or []:
+        if not isinstance(fig, Figure):
+            continue
+        for ax in fig.axes:
+            for edges in getattr(ax, '_dfdraw_group_bin_edges', None) or []:
+                counts.add(max(len(edges) - 1, 0))
+    return counts
 
 
 def _group_scope_is_global(values):
@@ -373,6 +411,7 @@ def _with_group_legend_title(method):
             values.update(values.pop('kwargs', {}) or {})
             values['_method'] = method.__name__
             group_by = values.get('group_by')
+            self._group_legend_title_parts = None
             if isinstance(group_by, str):
                 n_bins = values.get('group_by_bins')
                 n_quant = values.get('group_by_quantiles')
@@ -384,11 +423,16 @@ def _with_group_legend_title(method):
                                  else max(len(spec) - 1, 0))
                 elif group_by in self.df.columns:
                     names = self.df[group_by].dropna().unique()
-                title = _group_legend_title(
-                    self._get_label(group_by) or group_by, binned=binned,
-                    n_defined=n_defined,
-                    scope_global=_group_scope_is_global(values),
-                    channel=values.get('group_style') or 'color')
+                parts = dict(name=self._get_label(group_by) or group_by,
+                             binned=binned,
+                             scope_global=_group_scope_is_global(values),
+                             channel=values.get('group_style') or 'color')
+                title = _group_legend_title(n_defined=n_defined, **parts)
+                # PHASE_13_113_DF F112-02: kept so that the global route can
+                # rewrite the count with the number of bins the binning really
+                # produced, before the Figure legend is built.
+                if binned:
+                    self._group_legend_title_parts = parts
             self._group_legend_title_default = title
         self._group_title_depth = depth + 1
         try:
@@ -396,9 +440,39 @@ def _with_group_legend_title(method):
         finally:
             self._group_title_depth = depth
             if depth == 0:
+                # The global route may have corrected the count (F112-02).
+                title = self._group_legend_title_default or title
                 self._group_legend_title_default = None
+                parts = getattr(self, '_group_legend_title_parts', None)
+                self._group_legend_title_parts = None
         if depth == 0 and title and isinstance(result, tuple) and result:
-            _title_group_legends(result[0], title, binned=binned, group_names=names)
+            if binned and parts is not None and not parts['scope_global']:
+                # PHASE_13_113_DF F112-02 / S1b (review P1): per-axes binning.
+                # Duplicate quantile edges collapse (pd.qcut
+                # duplicates='drop'), so a cell can produce fewer bins than
+                # requested, and two cells can produce different numbers.
+                # The legend of each axes names the number of bins of that
+                # axes; a Figure legend names the number common to all cells,
+                # or the range when the cells differ.  Without any record (no
+                # binning drawn) the requested count stays.
+                def _title_for(counts, _parts=parts, _fallback=title):
+                    if not counts:
+                        return _fallback
+                    return _group_legend_title(
+                        n_defined=(min(counts), max(counts)), **_parts)
+
+                def _axes_title(ax, _fig_title=None):
+                    own = {max(len(e) - 1, 0) for e in
+                           getattr(ax, '_dfdraw_group_bin_edges', None) or []}
+                    return _title_for(own) if own else _fig_title
+                fig_title = _title_for(_realized_group_bin_counts(result[0]))
+                _title_group_legends(
+                    result[0], title, binned=binned, group_names=names,
+                    axes_title=lambda ax: _axes_title(ax, fig_title),
+                    figure_title=fig_title, replace={title})
+            else:
+                _title_group_legends(result[0], title, binned=binned,
+                                     group_names=names)
         return result
     return wrapper
 
@@ -6075,6 +6149,13 @@ class DFDraw:
                 plot_kwargs['_group_is_interval'] = True
             df, group_by, global_groups = _scope_group_domain(
                 df, group_by, bins=group_bins, quantiles=group_quantiles)
+            # PHASE_13_113_DF F112-02: the legend title names the number of
+            # bins the binning produced (duplicate quantile edges collapse),
+            # set here, before the Figure legend is built and placed.
+            _parts = getattr(self, '_group_legend_title_parts', None)
+            if _nd98_group_is_binned and _parts is not None:
+                self._group_legend_title_default = _group_legend_title(
+                    n_defined=len(global_groups or []), **_parts)
         if global_scope and plot_kwargs.get('stat_list') is not None:
             # Stable physical color identity across sparse facet cells.
             plot_kwargs['_stat_group_order'] = global_groups or []
@@ -6083,8 +6164,11 @@ class DFDraw:
         # happens to hold. Give every cell the ordered group identities of the
         # whole call. Group intervals computed per cell (group_by_bins /
         # group_by_quantiles, 13.108 R2) keep their per-cell colours.
+        # PHASE_13_113_DF F112-01: faceted scatter plots get the same ordered
+        # group identities, so a group has one colour in every cell and the
+        # shared legend is true for every cell.
         if (group_by is not None and not global_scope
-                and plot_kind in ('profile', 'hist')
+                and plot_kind in ('profile', 'hist', 'scatter')
                 and group_scope in ('auto',)
                 and plot_kwargs.get('group_by_bins') is None
                 and plot_kwargs.get('group_by_quantiles') is None
@@ -8111,6 +8195,8 @@ class DFDraw:
                 # __dfdraw_group_scope__ column. Keep automatic/user titles
                 # untouched and avoid duplicating the label in every cell.
                 kind = 'bins' if _nd98_group_is_binned else 'groups'
+                if len(nd94_groups) == 1:          # PHASE_13_113_DF: '1 bin'
+                    kind = kind[:-1]
                 legend_artist.set_title(
                     f"Colors: {_nd98_group_display_name} "
                     f"({len(nd94_groups)} global {kind})",

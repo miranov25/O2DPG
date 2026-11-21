@@ -169,10 +169,18 @@ def _apply_legend_mode(fig, canonical: Optional[Dict[str, Any]]) -> None:
     - 'all'    : no-op (per-axes legends already drawn).
     - 'none'   : strip every per-axes legend; no fig-level added.
     - 'first'  : keep ``fig.axes[0]``'s legend; strip the rest.
-    - 'shared' : capture handles+labels from the first axes that has a legend,
+    - 'shared' : capture handles+labels from every axes that has a legend,
                  strip all per-axes legends, draw a single ``fig.legend(...)``
                  with the canonical loc / ncol / bbox_to_anchor / frameon /
                  fontsize / title (each optional).
+
+                 Contract (PHASE_13_113_DF S1b): an entry is identified by its
+                 label text.  Each label is listed once, with the sample of the
+                 first axes that draws it; a label must therefore mean the same
+                 thing, in the same style, on every axes.  dfdraw's own facet
+                 routes guarantee this (one style per group, PHASE_13_111 and
+                 PHASE_13_113); on a caller's own axes it is the caller's
+                 responsibility.
     """
     if canonical is None:
         return  # no override — keep current default
@@ -218,19 +226,31 @@ def _apply_legend_mode(fig, canonical: Optional[Dict[str, Any]]) -> None:
         return
 
     if mode == 'shared':
-        # Capture handles+labels from the first axes that has a legend;
-        # then strip per-axes legends and add a single fig-level one.
-        handles, labels = None, None
+        # Capture handles+labels from every axes that has a legend; then
+        # strip per-axes legends and add a single fig-level one.
+        # PHASE_13_113_DF F112-01: before, only the first axes with a legend
+        # was used, so an entry missing from that cell (a group absent there)
+        # was missing from the shared legend.  Each label is now taken once,
+        # from the first axes that draws it; entries that carry the rank of
+        # their group in the call (faceted scatter groups) are sorted by it.
+        handles, labels = [], []
         for ax in fig.axes:
             leg = ax.get_legend()
             if leg is None:
                 continue
-            if handles is None:
-                # Use the axes' get_legend_handles_labels (not the legend's
-                # internal artists — those are proxies that don't replay well
-                # at fig level on some matplotlib versions).
-                handles, labels = ax.get_legend_handles_labels()
+            # Use the axes' get_legend_handles_labels (not the legend's
+            # internal artists — those are proxies that don't replay well
+            # at fig level on some matplotlib versions).
+            for handle, label in zip(*ax.get_legend_handles_labels()):
+                if label not in labels:
+                    handles.append(handle)
+                    labels.append(label)
             leg.remove()
+        ranks = [getattr(h, '_dfdraw_group_rank', None) for h in handles]
+        if handles and all(r is not None for r in ranks):
+            order = sorted(range(len(handles)), key=lambda k: ranks[k])
+            handles = [handles[k] for k in order]
+            labels = [labels[k] for k in order]
         if handles:
             # PHASE_13_112_DF (13.107 item 5, F-5 placement): without a
             # caller loc/bbox_to_anchor the Figure legend goes on top, in

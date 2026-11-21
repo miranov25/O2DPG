@@ -147,6 +147,10 @@ def draw_scatter(
     tuple
         (fig, ax, stats_dict)
     """
+    # PHASE_13_113_DF F112-01: private ordered group identities of the whole
+    # call, set by the facet coordinator; never passed to matplotlib.
+    _group_order = kwargs.pop('_stat_group_order', None)
+
     # Get style defaults
     if alpha is None:
         alpha = get_style_value("scatter.alpha", 0.7)
@@ -269,6 +273,7 @@ def draw_scatter(
     if group_by is not None and group_by in df.columns:
         _draw_scatter_grouped(
             df_filtered, x, y, ax, group_by, top_k,
+            group_order=_group_order,
             alpha=alpha, edgecolors=edgecolors, linewidths=linewidths,
             s=size if size is not None else default_size, **kwargs
         )
@@ -849,9 +854,18 @@ def _draw_scatter_grouped(
     ax: plt.Axes,
     group_by: str,
     top_k: Optional[int],
+    group_order: Optional[list] = None,
     **scatter_kwargs
 ) -> None:
-    """Draw grouped scatter plots."""
+    """Draw grouped scatter plots.
+
+    ``group_order`` (PHASE_13_113_DF F112-01) is the ordered list of group
+    identities of the whole call, given by the facet coordinator.  With it, a
+    group's colour and marker follow its rank in that list, and the groups of
+    this cell are drawn in that order, so a group looks the same in every
+    facet cell even when other groups are missing there.  Without it (a plot
+    with one axes) the order of first appearance is kept, as before.
+    """
     import matplotlib.pyplot as plt
     
     # Get groups
@@ -862,6 +876,12 @@ def _draw_scatter_grouped(
         counts = df[group_by].value_counts()
         top_groups = counts.head(top_k).index.tolist()
         groups = top_groups
+
+    _order_text = list(map(str, group_order)) if group_order is not None else None
+    if _order_text is not None:
+        groups = sorted(groups, key=lambda g: (
+            _order_text.index(str(g)) if str(g) in _order_text else len(_order_text),
+            str(g)))
     
     # Color palette
     palette_name = get_style_value("colors.palette", "tab10")
@@ -870,7 +890,11 @@ def _draw_scatter_grouped(
     # Marker cycle
     markers = get_style_value("markers.cycle", ["o", "s", "^", "D", "P", "X", "v", "<", ">", "h"])
     
-    for i, group in enumerate(groups):
+    for j, group in enumerate(groups):
+        # Colour and marker index: the rank in the call's group order when it
+        # is known, otherwise the position in this axes (unchanged behaviour).
+        i = (_order_text.index(str(group))
+             if _order_text is not None and str(group) in _order_text else j)
         group_df = df[df[group_by] == group]
         x_data = group_df[x].values.astype(float)
         y_data = group_df[y].values.astype(float)
@@ -880,13 +904,17 @@ def _draw_scatter_grouped(
         x_data = x_data[mask]
         y_data = y_data[mask]
         
-        ax.scatter(
+        _collection = ax.scatter(
             x_data, y_data,
             c=[palette(i % 10)],
             marker=markers[i % len(markers)],
             label=str(group),
             **scatter_kwargs
         )
+        if _order_text is not None:
+            # PHASE_13_113_DF F112-01: the shared Figure legend sorts the
+            # entries of all cells by this rank.
+            _collection._dfdraw_group_rank = i
 
 
 def _add_stats_box(
