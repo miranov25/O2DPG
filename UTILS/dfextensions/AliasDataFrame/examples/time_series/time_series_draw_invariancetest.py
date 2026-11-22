@@ -65,6 +65,7 @@ import os
 import platform
 import re
 import sys
+import textwrap
 import time
 from typing import Any, Callable
 
@@ -76,6 +77,7 @@ import numpy as np
 import pandas as pd
 
 import time_series_draw as G          # the gallery: every adf.draw() of a page lives there
+import time_series_draw_110 as G110   # PHASE_13_110 pages: combined features, one public call per page
 
 PASS, FAIL, SKIP = "PASS", "FAIL", "SKIP"
 KNOWN = "KNOWN_DEFECT"     # PHASE_13_110 S1: a declared product defect still reproduces; reported every run, not gating
@@ -113,6 +115,13 @@ O4 = Tol("same request, historical o4", 1e-12, 1e-10)
 C3_RATIO = Tol("ratio of float64 means, historical C3", 2e-13, 2e-13)
 C3_REFERENCE = Tol("float64 reference means, historical C3", 2e-12, 1e-12)        # the signal side keeps HIST12
 O2_VALUE = Tol("weighted sums/mean/std/sem, historical o2", 1e-7, 5e-6)
+
+
+def equal_widths(edges: np.ndarray) -> Tol:
+    """Bins of equal width, up to the float64 rounding of their edges (8 ulp of the largest edge; time edges near
+    1.7e9 s carry about 2.4e-7 s of rounding each)."""
+    return Tol("equal bin widths, 8 ulp of the edges", 8 * float(np.spacing(np.abs(edges).max())), 1e-9)
+
 FIT10 = Tol("same fit from two public calls, historical o2", 1e-10, 1e-10)
 # golden noise values come from an independent implementation; libm cos/sqrt may differ by 1 ulp.
 GOLDEN = Tol("independent implementation, last-ulp libm differences", 1e-15, 0.0)
@@ -160,7 +169,24 @@ def early(t):                     # time_s below the median of all rows (the gal
 
 def late(t):
     return t.time_s >= t.time_s.median()
-RAW_COLUMNS = ["phi", "tgl", "dcar_tpc_vertex", "dcar_tpc", "ncl", "side_type", "timeMS", "qpt"]   # ROOT branches used
+
+
+def rows_and(query: str, extra) -> Callable:
+    """Rows of the pandas query `query` that also satisfy extra(t), e.g. the gallery selection and the early half."""
+    return lambda t: t.eval(query).astype(bool) & extra(t)
+
+
+def side(value: int) -> Callable:
+    return lambda t: t.side_type == value
+
+
+# Known product defects that the 13_110 S2 cases measure (S0 v1.1 §4; KD-12 found in S1, 2026-11-14)
+KD_3 = ("KD-3 (owner dfdraw): the summary mean of a weighted histogram ignores weights=; the bars themselves "
+        "are weighted correctly")
+KD_12 = ("KD-12 (owner dfdraw): selection_labels and weights_labels are accepted but not shown in the legend, "
+         "so the vector branches cannot be told apart")
+RAW_COLUMNS = ["phi", "tgl", "dcar_tpc_vertex", "dcar_tpc", "ncl", "side_type", "timeMS", "qpt",   # ROOT branches used
+               "nClITS", "hasITSTPC"]                                                                 # 13_110 S2
 SOURCE_COLUMNS = RAW_COLUMNS + ["oracle_noise", "oracle_row_id", "oracle_w_flat", "oracle_w_tgl"]
 
 NOISE_SIGMA = 0.02                                  # declared in time_series_draw.py (seed 137)
@@ -185,7 +211,11 @@ class Profile:
     weights: str | None = None               # truth column of per-row weights; None = unweighted
     tol: Tol = SAME_VALUES
     edges_tol: Tol | None = None             # also compare the plotted bin edges (x_low, x_high)
-    spread: bool = False                     # also compare weighted y_std (population) and y_sem = std/sqrt(n_eff)
+    spread: bool = False                     # also compare y_std and y_sem: unweighted std with ddof=1 and
+                                             # sem = std/sqrt(n); weighted population std and sem = std/sqrt(n_eff)
+    label: str = ""                          # names this table in every observable, e.g. "late sector=9.0-18.0"
+    min_entries: int = 0                     # with `drawn`: only bins with at least this many rows are drawn
+    drawn: Callable[[Any], dict] | None = None   # drawn -> {group label: (x, y) of the drawn points}
 
 
 @dataclasses.dataclass(frozen=True)
@@ -259,6 +289,7 @@ class Histogram:
     weights: str | None = None
     tol: Tol = EXACT
     label: str = ""                          # which plotted series, e.g. "side_type=1 early"
+    edges: Callable[[Any], np.ndarray] | None = None   # range None: drawn -> the drawn bin edges (13_110 S2)
 
 
 @dataclasses.dataclass(frozen=True)
@@ -328,6 +359,37 @@ class Refuses:
 
 
 @dataclasses.dataclass(frozen=True)
+class FacetProfile:
+    """One Profile per facet panel. The facet cells are computed here from the selected rows: pd.cut into
+    `facet_bins` equal-width bins (or the distinct values when None), and for two facet columns their product.
+    A plotted facet is identified by the interval (or value) it denotes, never by its position (13_110 S2)."""
+    profile: Profile                         # the per-facet check; its `plotted` and `drawn` are not used
+    facet: tuple                             # facet column(s), in facet_by order
+    facet_bins: tuple                        # per column: number of pd.cut bins, or None for distinct values
+    plotted: Callable[[Any], list]           # drawn -> [(facet key, plotted table)]; key: label text or Interval tuple
+    drawn: Callable[[Any, Any], dict] | None = None   # (drawn, facet key) -> {group label: (x, y) drawn points}
+
+
+@dataclasses.dataclass(frozen=True)
+class LegendLabels:
+    """Every label the caller declared (selection_labels, weights_labels) is shown in a legend of the figure, so a
+    reader can tell the branches apart. Searched in the figure legends and in every panel legend."""
+    labels: tuple
+    known_defect: str = ""
+
+
+@dataclasses.dataclass(frozen=True)
+class SummaryMean:
+    """The returned summary `mean` of a weighted histogram is the weighted mean of x over the same rows as today's
+    unweighted value: all selected rows with finite x and weight (Architect decision D6a, 13_110 S0)."""
+    x: str
+    rows: Any
+    weights: str
+    plotted: Callable[[Any], float]          # drawn -> the returned summary mean
+    known_defect: str = ""
+
+
+@dataclasses.dataclass(frozen=True)
 class Case:
     case_id: str
     draw: Callable[[Any], Any] | None        # gallery function; None for machine-only contracts
@@ -336,6 +398,7 @@ class Case:
     expect: tuple = ()
     fixture: Callable[[Any, pd.DataFrame], None] | None = None
     derived: dict = dataclasses.field(default_factory=dict)
+    about: str = ""        # plain-language description for the check page: drawn / expected and why / caught
 
 
 def facets(stats) -> list:
@@ -430,6 +493,42 @@ def groups(stats) -> list:
     """Plotted tables of a grouped profile: [(group label, rows of profile_data), ...] in plotted order."""
     frame = stats["profile_data"]
     return [(g, frame[frame["group"] == g]) for g in pd.unique(frame["group"])]
+
+
+def groups_or_single(table: pd.DataFrame) -> list:
+    """[(group label, rows)] of one plotted table: by its `group` column, or the whole table as group 0."""
+    if "group" in table:
+        return [(g, table[table["group"] == g]) for g in pd.unique(table["group"])]
+    return [(0, table)]
+
+
+def facet_tables(stats) -> list:
+    """[(facet label, profile_data)] of a faceted profile, in plotted order (facet_by of one column)."""
+    return [(g, stats["per_group"][str(g)]["profile_data"]) for g in stats["groups"]]
+
+
+def cell_tables(stats) -> list:
+    """[(Interval tuple, profile_data)] of a profile faceted by two columns, in plotted order."""
+    return [(key, cell["profile_data"]) for key, cell in stats.items() if isinstance(key, tuple)]
+
+
+def panel_titled(fig, text: str):
+    """The one panel whose title ends with `text`; none or two is a failure of what was plotted (L2)."""
+    found = [ax for ax in fig.axes if ax.get_title().endswith(text)]
+    if len(found) != 1:
+        raise CheckFailure("L2", f"{len(found)} panels titled ...{text!r}")
+    return found[0]
+
+
+def errorbar_points(ax) -> dict:
+    """{container label: (x, y)} of the drawn profile points of one panel (one errorbar container per group)."""
+    return {str(c.get_label()): (np.asarray(c.lines[0].get_xdata(), float), np.asarray(c.lines[0].get_ydata(), float))
+            for c in ax.containers if c.lines and c.lines[0] is not None}
+
+
+def bar_edges(ax, series: int, n_bins: int) -> np.ndarray:
+    """Bin edges of one drawn step histogram: the x of vertices 0, 2, ..., 2n of its polygon."""
+    return np.asarray(ax.patches[series].get_xy()[0:2 * n_bins + 1:2, 0], dtype=float)
 
 
 def paired_x_is_sensitive(result, t: pd.DataFrame) -> None:
@@ -570,9 +669,10 @@ def profile_edges(x: pd.Series, y: pd.Series, spec) -> np.ndarray:
     return np.linspace(x[finite].min(), x[finite].max(), spec.bins + 1)
 
 
-def truth_profile(t: pd.DataFrame, spec: Profile) -> dict:
+def truth_profile(t: pd.DataFrame, spec: Profile, edges: np.ndarray | None = None) -> dict:
     """{group: (count, sum of weights, weighted float64 mean, std, sem) per bin} by pandas cut/groupby; bins [a, b),
-    last closed. A numeric group (by_bins) is keyed by its pd.Interval, never by a formatted label (13_110 S1)."""
+    last closed. A numeric group (by_bins) is keyed by its pd.Interval, never by a formatted label (13_110 S1).
+    `edges` overrides the declared binning (range "reported": the edges dfdraw chose, verified by the caller)."""
     r = select(t, spec.rows)
     if spec.by_bins:
         r = r[np.isfinite(r[spec.by].astype(float))]
@@ -583,7 +683,7 @@ def truth_profile(t: pd.DataFrame, spec: Profile) -> dict:
         key = r[spec.by].astype(int) if spec.by else pd.Series(0, index=r.index)
     x, y = r[spec.x].astype(float), r[spec.y].astype(float)
     w = r[spec.weights].astype(float) if spec.weights else pd.Series(1.0, index=r.index)
-    edges = profile_edges(x, y, spec)
+    edges = profile_edges(x, y, spec) if edges is None else edges
     b = pd.cut(x, edges, right=False, labels=False)
     b[x == edges[-1]] = spec.bins - 1
     keep = b.notna() & np.isfinite(y) & np.isfinite(w)
@@ -599,20 +699,40 @@ def truth_profile(t: pd.DataFrame, spec: Profile) -> dict:
     table = table.reindex(pd.MultiIndex.from_product([keys, range(spec.bins)])).fillna({"count": 0})
     filled = table["count"] > 0                    # empty bins: count 0, every other quantity NaN
     table["mean"] = table["sum_wy"] / table["sum_w"].where(filled)
-    table["std"] = np.sqrt(table["dev2"] / table["sum_w"]).where(table["count"] > 1)
-    table["sem"] = table["std"] / np.sqrt(table["sum_w"] ** 2 / table["sum_ww"])
+    if spec.weights:      # weighted: population spread and sem = std/sqrt(n_eff), n_eff = (sum w)^2/sum w^2
+        table["std"] = np.sqrt(table["dev2"] / table["sum_w"]).where(table["count"] > 1)
+        table["sem"] = table["std"] / np.sqrt(table["sum_w"] ** 2 / table["sum_ww"])
+    else:                 # unweighted: sample spread (ddof=1) and sem = std/sqrt(n), as pandas computes them
+        table["std"] = np.sqrt(table["dev2"] / (table["count"] - 1)).where(table["count"] > 1)
+        table["sem"] = table["std"] / np.sqrt(table["count"])
     return {(names[g] if spec.by_bins else g): (
                 table.loc[g, "count"].to_numpy(int), table.loc[g, "sum_w"].to_numpy(float),
                 table.loc[g, "mean"].to_numpy(float), table.loc[g, "std"].to_numpy(float),
                 table.loc[g, "sem"].to_numpy(float)) for g in keys}
 
 
+def reported_edges(tables: list, label: str, result: CaseResult) -> np.ndarray:
+    """Range "reported" (dfdraw chose the range): the edges of the first plotted table. Every group of the same
+    panel must use the same edges, and the bins must have equal width (S0 v1.1 §3.1); the counts compared next
+    then show that every selected row inside these edges was counted."""
+    first = tables[0]
+    edges = np.r_[np.asarray(first["x_low"], float), np.asarray(first["x_high"], float)[-1]]
+    for other in tables[1:]:
+        compare(result, f"{label}same bin edges in every group", np.r_[np.asarray(other["x_low"], float),
+                np.asarray(other["x_high"], float)[-1]], edges, EXACT, "L2")
+    width = np.diff(edges)
+    compare(result, f"{label}equal bin widths", width, np.full(len(width), width.mean()), equal_widths(edges), "L2")
+    return edges
+
+
 def check_profile(t: pd.DataFrame, spec: Profile, drawn, result: CaseResult) -> None:
     """Compare the plotted tables with the truth: group identities in order, then count and mean per group (L2).
     A numeric group is identified by the interval its label denotes (interval_of_label), not by label text."""
-    truth = truth_profile(t, spec)
     plotted = spec.plotted(drawn)
-    observable = f"{spec.y} groups of {spec.by or 'the whole selection'}"
+    prefix = f"{spec.label} " if spec.label else ""
+    edges = reported_edges([table for _, table in plotted], prefix, result) if spec.range == "reported" else None
+    truth = truth_profile(t, spec, edges)
+    observable = f"{prefix}{spec.y} groups of {spec.by or 'the whole selection'}"
     if spec.by_bins:
         intervals = list(truth)
         found = [interval_of_label(g, intervals) for g, _ in plotted]
@@ -626,7 +746,7 @@ def check_profile(t: pd.DataFrame, spec: Profile, drawn, result: CaseResult) -> 
         keys = labels
     for key, label, (_, table) in zip(keys, labels, plotted):
         count, sum_w, mean, std, sem = truth[key]
-        tag = spec.y + (f" {spec.by}={label}" if spec.by else "") + (f" weights={spec.weights}" if spec.weights else "")
+        tag = prefix + spec.y + (f" {spec.by}={label}" if spec.by else "") + (f" weights={spec.weights}" if spec.weights else "")
         compare(result, f"{tag} count", table["count"], count, EXACT, "L2")
         if spec.weights:
             compare(result, f"{tag} sum of weights", table["sum_weights"], sum_w, spec.tol, "L2")
@@ -640,6 +760,16 @@ def check_profile(t: pd.DataFrame, spec: Profile, drawn, result: CaseResult) -> 
             got_edges = np.r_[np.asarray(table["x_low"], float), np.asarray(table["x_high"], float)[-1]]
             compare(result, f"{tag} bin edges", got_edges, edges, spec.edges_tol, "L2")
             compare(result, f"{tag} bin centres", table["x_center"], (edges[1:] + edges[:-1]) / 2, spec.edges_tol, "L2")
+        if spec.drawn is not None:     # the drawn points: exactly the bins with at least min_entries rows
+            if edges is None:
+                r = select(t, spec.rows)
+                edges = profile_edges(r[spec.x].astype(float), r[spec.y].astype(float), spec)
+            shown = (count >= max(spec.min_entries, 1)) & np.isfinite(mean)
+            x, y = spec.drawn(drawn).get(str(label), (np.zeros(0), np.zeros(0)))
+            compare(result, f"{tag} drawn points (bins with >= {spec.min_entries} rows)", len(x), int(shown.sum()),
+                    EXACT, "L2")
+            compare(result, f"{tag} drawn x", x, ((edges[1:] + edges[:-1]) / 2)[shown], HIST12, "L2")
+            compare(result, f"{tag} drawn y", y, mean[shown], spec.tol, "L2")
 
 
 def check_delta(t: pd.DataFrame, spec: Delta, drawn, result: CaseResult) -> None:
@@ -740,9 +870,15 @@ def check_histogram(t: pd.DataFrame, spec: Histogram, drawn, result: CaseResult)
     keep = np.isfinite(x) & (np.isfinite(w) if w is not None else True)
     if not keep.any():
         raise CheckFailure("L0", f"histogram selection keeps no rows for {spec.x}")
-    want = np.histogram(x[keep], bins=np.linspace(*spec.range, spec.bins + 1),
-                        weights=None if w is None else w[keep])[0]
     tag = f"histogram {spec.x}" + (f" weights={spec.weights}" if spec.weights else "") + (f" {spec.label}" if spec.label else "")
+    if spec.edges is not None:        # dfdraw chose the range: equal widths, then every row inside is counted
+        edges = np.asarray(spec.edges(drawn), float)
+        compare(result, f"{tag} bins", len(edges) - 1, spec.bins, EXACT, "L2")
+        width = np.diff(edges)
+        compare(result, f"{tag} equal bin widths", width, np.full(len(width), width.mean()), equal_widths(edges), "L2")
+    else:
+        edges = np.linspace(*spec.range, spec.bins + 1)
+    want = np.histogram(x[keep], bins=edges, weights=None if w is None else w[keep])[0]
     compare(result, tag, spec.plotted(drawn), want, spec.tol, "L2")
 
 
@@ -879,6 +1015,91 @@ def check_gauss_fit(t: pd.DataFrame, spec: GaussFit, drawn, result: CaseResult) 
             Tol("max(bin/4, 5 sigma/sqrt(2(n-1)))", max(0.25 * bin_width, 5 * sigma / (2 * (n - 1)) ** 0.5), 0.0), "L2")
 
 
+def facet_cell_codes(r: pd.DataFrame, columns: tuple, n_bins: tuple) -> tuple:
+    """Facet cells of the selected rows: per column pd.cut intervals (equal width, as facet_by_bins) or the
+    distinct values; cells are the product in facet_by order. Returns (levels, codes): levels[i] is the list of
+    cell identities of column i, codes[i] the per-row index into it."""
+    levels, codes = [], []
+    for column, n in zip(columns, n_bins):
+        values = r[column].astype(float)
+        if n:
+            cut = pd.cut(values, n)
+            levels.append(list(cut.cat.categories))
+            codes.append(cut.cat.codes.to_numpy())
+        else:
+            distinct = sorted(pd.unique(values))
+            levels.append(distinct)
+            codes.append(np.searchsorted(distinct, values.to_numpy()))
+    return levels, codes
+
+
+def facet_level_index(key, level: list, binned: bool) -> int:
+    """Which cell of one facet column a plotted key denotes: an Interval must equal a truth interval, a label is
+    read as the interval it denotes (interval_of_label), a value must equal a distinct value; -1 none, -2 two."""
+    if binned:
+        if isinstance(key, pd.Interval):
+            found = [i for i, iv in enumerate(level) if iv.left == key.left and iv.right == key.right]
+            return found[0] if len(found) == 1 else (-1 if not found else -2)
+        return interval_of_label(str(key).split("=")[-1], level)
+    try:
+        return level.index(float(str(key).split("=")[-1]))
+    except ValueError:
+        return -1
+
+
+def check_facet_profile(t: pd.DataFrame, spec: FacetProfile, drawn, result: CaseResult) -> None:
+    """Facet identities first (L2), then the Profile check of every facet cell, restricted to that cell's rows."""
+    r = select(t, spec.profile.rows)
+    levels, codes = facet_cell_codes(r, spec.facet, spec.facet_bins)
+    plotted = spec.plotted(drawn)
+    found = []
+    for key, _ in plotted:
+        parts = key if isinstance(key, tuple) else (key,)
+        found.append(tuple(facet_level_index(k, level, bool(n)) for k, level, n in zip(parts, levels, spec.facet_bins)))
+    want = [cell for cell in np.ndindex(*[len(level) for level in levels])]
+    compare_labels(result, f"facet cells of {' x '.join(spec.facet)}", [str(c) for c in found], [str(c) for c in want],
+                   "L2", tolerance="exact interval or value identities")
+    for cell, (key, table) in zip(found, plotted):
+        in_cell = np.logical_and.reduce([code == i for code, i in zip(codes, cell)])
+        index = r.index[in_cell]
+        name = " ".join(f"{c}={level[i]}" for c, level, i in zip(spec.facet, levels, cell))
+        sub = dataclasses.replace(
+            spec.profile, rows=lambda tt, index=index: tt.index.isin(index),
+            label=f"{spec.profile.label} {name}".strip(),
+            plotted=lambda d, table=table: groups_or_single(table),
+            drawn=None if spec.drawn is None else (lambda d, key=key: spec.drawn(d, key)))
+        check_profile(t, sub, drawn, result)
+
+
+def legend_texts(fig) -> list:
+    """Texts of every legend of the figure: figure legends and panel legends."""
+    found = [t.get_text() for lg in fig.legends for t in lg.get_texts()]
+    for ax in fig.axes:
+        lg = ax.get_legend()
+        found += [t.get_text() for t in lg.get_texts()] if lg is not None else []
+    return found
+
+
+def check_legend_labels(spec: LegendLabels, drawn, result: CaseResult) -> None:
+    """Each declared label appears in some legend text; a legend repeating the expression name instead lets the
+    reader confuse the branches (L2: what the figure shows)."""
+    texts = legend_texts(drawn[0])
+    shown = [label for label in spec.labels if any(label in text for text in texts)]
+    result.detail = result.detail or f"legend shows {texts[:8]}"
+    compare(result, f"declared labels {list(spec.labels)} shown in a legend (legend: {texts[:6]})", len(shown),
+            len(spec.labels), EXACT, "L2", known_defect=spec.known_defect)
+
+
+def check_summary_mean(t: pd.DataFrame, spec: SummaryMean, drawn, result: CaseResult) -> None:
+    """Weighted mean sum(w x)/sum(w) over all selected rows with finite x and w, against the returned mean (L2)."""
+    r = select(t, spec.rows)
+    x, w = r[spec.x].to_numpy(float), r[spec.weights].to_numpy(float)
+    keep = np.isfinite(x) & np.isfinite(w)
+    want = float(np.sum(w[keep] * x[keep]) / np.sum(w[keep]))
+    compare(result, f"returned summary mean of {spec.x} weighted by {spec.weights}", spec.plotted(drawn), want,
+            SAME_VALUES, "L2", known_defect=spec.known_defect)
+
+
 def check_refusal(adf, spec: Refuses, result: CaseResult) -> None:
     """The call must raise with the declared message and leave no Figure open (gating since 13_110 S1; it was a
     diagnostic in 13.105). A refusal declared with `orphan_known_defect` reports its open Figure as that defect."""
@@ -898,7 +1119,8 @@ def check_refusal(adf, spec: Refuses, result: CaseResult) -> None:
 def evaluate(adf, case: Case, drawn, result: CaseResult) -> None:
     """Evaluate every declaration of one case; a case with no gating comparison is a failure of the test (H)."""
     checks = {Profile: check_profile, Delta: check_delta, Histogram: check_histogram, GaussFit: check_gauss_fit,
-              FacetQuantiles: check_facet_quantiles, RowCounts: check_row_counts}
+              FacetQuantiles: check_facet_quantiles, RowCounts: check_row_counts, FacetProfile: check_facet_profile,
+              SummaryMean: check_summary_mean}
     needs_truth = case.aliases or case.fixture or any(type(s) in checks for s in case.expect)
     t = truth_frame(adf, case, result) if needs_truth else None
     for spec in case.expect:
@@ -924,6 +1146,8 @@ def evaluate(adf, case: Case, drawn, result: CaseResult) -> None:
             check_branches(spec, drawn, result)
         elif isinstance(spec, FacetPanels):
             check_facet_panels(spec, drawn, result)
+        elif isinstance(spec, LegendLabels):
+            check_legend_labels(spec, drawn, result)
         else:
             raise CheckFailure("H", f"unknown declaration {type(spec).__name__}")
     gating_levels = {c["level"] for c in result.comparisons if c["ok"] is not None}
@@ -940,9 +1164,11 @@ def evidence_page(case: Case, result: CaseResult):
     """A text page after each case: verdict, owner, and the comparisons closest to their tolerance."""
     fig = plt.figure(figsize=(11.0, 8.5))
     rows = sorted(result.comparisons, key=lambda c: -(c["worst_abs"] / max(c["atol"] + c["rtol"], 1e-300)))
+    about = textwrap.wrap(case.about, 118) if case.about else []
     lines = [f"{case.case_id}", case.title, f"verdict: {result.status}"
              + (f"   owner: {result.failure_level}" if result.failure_level else "")
-             + f"   comparisons: {len(result.comparisons)}   wall time: {result.wall_time_s} s", result.detail[:150], "",
+             + f"   comparisons: {len(result.comparisons)}   wall time: {result.wall_time_s} s",
+             *textwrap.wrap(result.detail, 118)[:3], "", *about, *([""] if about else []),
              f"{'level':5s} {'ok':5s} {'worst |diff|':>13s}  {'tolerance':44s} observable"]
     lines += [f"{c['level']:5s} {str(c['ok']):5s} {c['worst_abs']:13.3e}  {c['tolerance'][:44]:44s} {c['observable'][:58]}"
               for c in rows[:40]]
@@ -1205,6 +1431,8 @@ MANDATORY_CASE_IDS = (
     "I4-REAL-SELECTION-VECTOR-FACET-DELTA-CORRECTNESS-EAGER-20PCT-01",
     "I4-REAL-PUBLIC-SURFACE-QUALIFIED-VECTOR-EQUIV-EAGER-20PCT-01",
     "I4-REAL-WEIGHTS-VECTOR-FACET-PROFILE-CORRECTNESS-EAGER-20PCT-01",
+    # PHASE_13_110 S2
+    "110-01.a", "110-01.b", "110-01.c", "110-01.d", "110-01.e", "110-01.f", "110-01.g", "110-01.h", "110-01.i",
 )
 
 NOT_YET_MIGRATED = (   # historical case IDs still owned by the old harness; each S3 family shortens this list
@@ -1559,6 +1787,115 @@ CASES = [
                        Profile("dcar_tpc_vertex", SIDES_A_C + " & (side_type == 1)", x="tgl", bins=30, range=(-1.5, 1.5),
                                plotted=None),
                        plotted=lambda d: [(0, d[2]["surface_stats"]["draw"]["normalize_data"])], tol=O4))),
+
+    # ---- PHASE_13_110 S2, family 110-01: vectors x groups x facets, combined in one public call
+    Case("110-01.a", G110.p110_01a_group_facet_min_entries,
+         "ITS clusters vs time per side, one panel per sector quarter, bins with fewer than 20 tracks not drawn",
+         aliases={**SECTOR_ALIAS, **TIME_ALIAS},
+         expect=(FacetProfile(Profile("nClITS", G110.ITS_SEL, x="time_s", bins=100, range="reported", by="side_type",
+                                      plotted=None, spread=True, min_entries=20),
+                              facet=("sector",), facet_bins=(4,), plotted=lambda d: facet_tables(d[2]),
+                              drawn=lambda d, key: errorbar_points(panel_titled(d[0], f"sector={key}"))),),
+         about="Drawn: the mean number of ITS clusters (nClITS) of tracks with an ITS-TPC match, against time in "
+               "seconds (time_s = timeMS/1000), for the A side, C side and both sides (side_type 0, 1, 2), in four "
+               "panels, one per quarter of the TPC sector range (sector = 18 phi/pi). Expected: in each panel and "
+               "side, the count, mean, standard deviation and standard error per time bin equal pandas on the same "
+               "rows; the panels are the four equal-width sector intervals of the selected tracks, and only bins "
+               "with at least 20 tracks are drawn (min_entries=20). Caught: a track counted in the wrong panel or "
+               "side, a wrong mean or error, or a bin with too few tracks drawn (or a full bin missing)."),
+    Case("110-01.b", G110.p110_01b_two_level_facets,
+         "DCA_r per sector in a 2 x 3 grid of panels: side_type halves x q/pT thirds",
+         aliases={**SECTOR_ALIAS, **QPT_BIN},
+         expect=(FacetProfile(Profile("dcar_tpc_vertex", SELECTED, x="sector", bins=36, range="reported",
+                                      plotted=None, spread=True),
+                              facet=("side_type", "qpt_bin10"), facet_bins=(2, 3), plotted=lambda d: cell_tables(d[2])),),
+         about="Drawn: the mean radial distance of closest approach of the track to the vertex (DCA_r, "
+               "dcar_tpc_vertex, cm) per TPC sector, in a 2 x 3 grid of panels: side_type split into two equal-width "
+               "intervals, times q/pT (qpt_bin10 = int8(10 q/pT)) split into three. Expected: each panel holds "
+               "exactly the tracks of its two intervals, and its per-sector count, mean, standard deviation and "
+               "standard error equal pandas on those tracks. Caught: two panels exchanged, a track in the wrong "
+               "interval, or a wrong per-bin statistic."),
+    Case("110-01.c", G110.p110_01c_profile_group,
+         "Mean DCA_r per sector, A side and C side as two curves",
+         aliases=SECTOR_ALIAS,
+         expect=(Profile("dcar_tpc_vertex", G110.AC_SEL, x="sector", bins=36, range="reported", by="side_type",
+                         plotted=lambda d: groups(d[2]), spread=True),),
+         about="Drawn: the mean DCA_r (cm) per TPC sector for the A side and the C side (side_type 0 and 1) as two "
+               "curves in one panel. Expected: per side and sector bin, the count, mean, standard deviation "
+               "(ddof=1) and standard error equal pandas on the selected tracks of that side; dfdraw chooses the "
+               "range, and the check takes its equal-width edges. Caught: the two sides exchanged, or one bin's mean "
+               "or error wrong."),
+    Case("110-01.d", G110.p110_01d_profile_facet,
+         "Mean DCA_r per sector, one panel per side",
+         aliases=SECTOR_ALIAS,
+         expect=(FacetProfile(Profile("dcar_tpc_vertex", G110.AC_SEL, x="sector", bins=36, range="reported",
+                                      plotted=None, spread=True),
+                              facet=("side_type",), facet_bins=(None,), plotted=lambda d: facet_tables(d[2])),),
+         about="Drawn: the same mean DCA_r per sector as 110-01.c, but the A and C side in separate panels "
+               "(facet_by=side_type). Expected: each panel holds only its side's tracks, with per-bin count, mean, "
+               "standard deviation and standard error equal to pandas. Caught: a track in the wrong panel (one count "
+               "off), or the panels exchanged."),
+    Case("110-01.e", G110.p110_01e_selection_vector_group,
+         "Mean DCA_r per sector, early and late half of the run, A and C side: four curves in one call",
+         aliases={**SECTOR_ALIAS, **TIME_ALIAS},
+         expect=(*(Profile("dcar_tpc_vertex", rows_and(G110.AC_SEL, part), **SECTOR_BINS, by="side_type",
+                           plotted=lambda d, i=i: groups(d[2][i]), spread=True, label=name)
+                   for i, (name, part) in enumerate((("early", early), ("late", late)))),
+                 LegendLabels(("early", "late"), known_defect=KD_12)),
+         about="Drawn: mean DCA_r (cm) per sector for the early and the late half of the run (time_s below or above "
+               "its median, selection_vector) times the A and C side (group_by): four curves from one call. "
+               "Expected: each of the four curves equals pandas on exactly its tracks (count, mean, standard deviation, "
+               "standard error per sector), and the legend shows the declared labels 'early' and 'late'. Caught: two "
+               "branches or two sides exchanged. Known defect KD-12: the legend does not show 'early'/'late', so the "
+               "reader cannot tell the branches apart; the numbers themselves are checked and must be right."),
+    Case("110-01.f", G110.p110_01f_weights_vector_facet_hist,
+         "Cluster-count histogram weighted by 1+|DCA_r| and flat, one panel per side",
+         derived={"w_dca": O2_WEIGHTS["w_dca"], "w_unity": O2_WEIGHTS["w_unity"]},
+         expect=(*(Histogram("ncl", rows_and(G110.AC_SEL, side(g)), bins=40, range=(60, 160), weights=w,
+                             plotted=lambda d, i=i, g=g: bar_heights(facet_panel(d[1], g), i, 40), tol=HIST_WEIGHTED,
+                             label=f"{name} side_type={g}")
+                   for g in (0, 1) for i, (name, w) in enumerate((("w_dca", "w_dca"), ("flat", "w_unity")))),
+                 LegendLabels(("w_dca", "flat"), known_defect=KD_12)),
+         about="Drawn: histograms of the number of TPC clusters (ncl, 40 bins from 60 to 160) for the A and C side "
+               "in two panels, each with two weightings (weights_vector): w = 1+|DCA_r| and w = 1. Expected: every "
+               "bar height is the sum of the weights of the tracks in that bin, as numpy.histogram computes it from "
+               "the same tracks. Caught: the weights of one branch used for the other, or a track in the wrong panel. "
+               "Known defect KD-12: both curves are labelled 'ncl' in the legend instead of 'w_dca' and 'flat'."),
+    Case("110-01.g", G110.p110_01g_hist_group,
+         "Cluster-count histogram, A side and C side",
+         expect=tuple(Histogram("ncl", rows_and("(ncl>30)&(side_type<2)", side(g)), bins=40, range=None,
+                                edges=lambda d, g=g: bar_edges(d[1], g, 40),
+                                plotted=lambda d, g=g: bar_heights(d[1], g, 40), label=f"side_type={g}")
+                      for g in (0, 1)),
+         about="Drawn: histograms of the number of TPC clusters (ncl > 30) for the A and C side (group_by), 40 bins "
+               "over the range dfdraw chooses. Expected: each bar is the number of tracks of that side in that bin, "
+               "numpy.histogram on the same tracks with the drawn equal-width edges. Caught: a track moved to the "
+               "neighbouring bin, or the two sides exchanged."),
+    Case("110-01.h", G110.p110_01h_hist_weights,
+         "Cluster-count histogram weighted by w_dca = 1+|DCA_r|, and its returned mean",
+         aliases={"w_dca": O2_WEIGHTS["w_dca"]},
+         expect=(Histogram("ncl", "ncl>30", bins=50, range=None, edges=lambda d: bar_edges(d[1], 0, 50),
+                           plotted=lambda d: bar_heights(d[1], 0, 50), weights="w_dca", tol=HIST_WEIGHTED),
+                 SummaryMean("ncl", "ncl>30", "w_dca", plotted=lambda d: d[2]["mean"], known_defect=KD_3)),
+         about="Drawn: the histogram of the number of TPC clusters (ncl > 30) where each track counts with the weight "
+               "w_dca = 1+|DCA_r| (an ADF alias). Expected: every bar is the sum of w_dca of its tracks "
+               "(numpy.histogram with weights), and the returned summary mean is the weighted mean "
+               "sum(w ncl)/sum(w) over all selected tracks (Architect decision D6a). Caught: unweighted counts drawn "
+               "instead of sums of weights. Known defect KD-3: the returned mean is today the unweighted mean."),
+    Case("110-01.i", G110.p110_01i_selection_group_facet,
+         "selection_vector x group_by x facet_by in one call: early/late x A/C side x hasITSTPC panels",
+         aliases={**SECTOR_ALIAS, **TIME_ALIAS},
+         expect=(*(FacetProfile(Profile("dcar_tpc_vertex", rows_and(G110.AC_SEL, part), **SECTOR_BINS, by="side_type",
+                                        plotted=None, spread=True, label=name),
+                                facet=("hasITSTPC",), facet_bins=(None,), plotted=lambda d, i=i: facet_tables(d[2][i]))
+                   for i, (name, part) in enumerate((("early", early), ("late", late)))),
+                 LegendLabels(("early", "late"), known_defect=KD_12)),
+         about="Drawn: mean DCA_r (cm) per sector, combining all three vector and grouping options in a single call: "
+               "the early and late half of the run (selection_vector) x the A and C side (group_by) x tracks without "
+               "and with an ITS-TPC match (facet_by=hasITSTPC, two panels). Expected: each of the eight curves equals "
+               "pandas on exactly its tracks: count, mean, standard deviation and standard error per sector. Caught: "
+               "two branches exchanged inside one panel while keeping their labels. Known defect KD-12: the legend "
+               "shows only the sides, not 'early'/'late'."),
 ]
 
 

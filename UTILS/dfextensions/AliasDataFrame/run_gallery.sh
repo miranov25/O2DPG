@@ -257,6 +257,7 @@ main() {
         examples/time_series/time_series_draw_invariancetest.py \
         examples/time_series/phase_13_101_realdata_oracles.py \
         examples/time_series/phase_13_110_source_freeze.json \
+        examples/time_series/time_series_draw_110.py \
         tests/test_time_series_invariancetest.py \
         tests/test_phase_13_101_realdata_fast_registry.py \
         tests/test_phase_13_101_dfdraw_adf_oracles.py \

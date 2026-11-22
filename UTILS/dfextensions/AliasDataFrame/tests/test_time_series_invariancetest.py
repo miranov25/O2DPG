@@ -48,6 +48,9 @@ def make_adf(n: int = 6000, seed: int = 13105) -> ADF:
         "timeMS": np.sort(rng.uniform(1.7e12, 1.7e12 + 3.6e6, n)),
         "dcar_tpc": rng.normal(0.0, 1.6, n).astype(np.float16),
         "qpt": rng.uniform(-1.0, 1.0, n).astype(np.float32),
+        # 13_110 S2: drawn after the columns above, so their values are unchanged; dtypes as in the real tree
+        "nClITS": rng.integers(0, 8, n).astype(np.int32),
+        "hasITSTPC": (rng.random(n) < 0.7).astype(np.int8),
     }))
     adf.add_alias("sector", f"18*(phi/{np.pi})", dtype=np.float16)
     adf.add_alias("time_s", "timeMS/1000", dtype=np.float64)
@@ -83,7 +86,8 @@ def run_alone(the_case, adf=None) -> T.CaseResult:
 VISUAL = "A6-VISUAL-GALLERY-FULL-01"
 
 
-KNOWN_ON_HONEST_FRAME = {REFUSAL: "KD-5b"}   # 13_110 S1: declared product defects that reproduce on synthetic data too
+KNOWN_ON_HONEST_FRAME = {REFUSAL: "KD-5b",   # 13_110: declared product defects that reproduce on synthetic data too
+                         "110-01.e": "KD-12", "110-01.f": "KD-12", "110-01.h": "KD-3", "110-01.i": "KD-12"}
 
 
 @pytest.mark.parametrize("case_id", [c.case_id for c in T.CASES])
@@ -910,7 +914,7 @@ def test_FIX2_mutant_fig46_branch_x_centres_shifted_is_red(i):
 def test_FIX1_parity_table_has_the_66_declared_old_observables_of_the_21_migrated_cases():
     rows = [(c, row) for c, gates in T.HISTORICAL_GATES.items() for row in gates]
     assert sum(row[0] == "declared" for _, row in rows) == 66
-    migrated = {c.case_id for c in T.CASES} - {REFUSAL}
+    migrated = {c.case_id for c in T.CASES if not c.case_id.startswith("110-")} - {REFUSAL}   # 13_110 cases are new
     assert set(T.HISTORICAL_GATES) == migrated and len(migrated) == 21
 
 
@@ -1247,3 +1251,144 @@ def test_S1_audit_fails_a_known_defect_that_no_longer_reproduces(tmp_path):
     adf.draw_figures = clean_refusal
     out = run_audit(tmp_path, adf, {"ok": True})
     assert out.returncode != 0 and "known defects no longer reproduce" in out.stdout
+
+
+# ------------------------------------------------------------------ 13_110 S2, family 110-01: deliberately broken results
+# Each test draws the page on the synthetic frame, breaks ONE thing in what dfdraw returned or drew, and requires the
+# case to fail at L2 (plotted result). The honest drawing passes (or reports its known defect) in
+# test_every_case_passes_on_honest_frame.
+def drawn_page(case_id: str, n: int = 6000):
+    adf = make_adf(n=n)
+    return adf, case(case_id).draw(adf)
+
+
+def relabel_groups(table: pd.DataFrame, a, b) -> None:
+    g = table["group"].copy()
+    table.loc[g == a, "group"], table.loc[g == b, "group"] = b, a
+
+
+def test_S2_01a_two_sides_exchanged_in_one_panel_is_red():
+    adf, drawn = drawn_page("110-01.a")
+    relabel_groups(drawn[2]["per_group"][drawn[2]["groups"][1]]["profile_data"], 0, 1)
+    r = red(adf, "110-01.a", drawn)
+    assert r.failure_level == "L2" and "sector=" in r.detail
+
+
+def test_S2_01a_bin_below_min_entries_drawn_is_red():
+    adf, drawn = drawn_page("110-01.a", n=60000)
+    key = drawn[2]["groups"][0]
+    ax = T.panel_titled(drawn[0], f"sector={key}")
+    line = ax.containers[0].lines[0]
+    x, y = np.asarray(line.get_xdata(), float), np.asarray(line.get_ydata(), float)
+    line.set_data(np.r_[x, x[-1] + 1.0], np.r_[y, y[-1]])        # one more drawn point than bins with >= 20 tracks
+    r = red(adf, "110-01.a", drawn)
+    assert r.failure_level == "L2" and "drawn points" in r.detail
+
+
+def test_S2_01b_two_panels_exchanged_is_red():
+    adf, drawn = drawn_page("110-01.b")
+    keys = [k for k in drawn[2] if isinstance(k, tuple)]
+    drawn[2][keys[0]], drawn[2][keys[1]] = drawn[2][keys[1]], drawn[2][keys[0]]
+    r = red(adf, "110-01.b", drawn)
+    assert r.failure_level == "L2"
+
+
+def test_S2_01c_one_mean_shifted_by_three_standard_errors_is_red():
+    adf, drawn = drawn_page("110-01.c")
+    table = drawn[2]["profile_data"]
+    i = table.index[(table["group"] == 0) & (table["count"] > 2)][0]
+    table.loc[i, "y_mean"] += 3 * table.loc[i, "y_sem"]
+    r = red(adf, "110-01.c", drawn)
+    assert r.failure_level == "L2" and "mean" in r.detail
+
+
+def test_S2_01d_one_track_missing_from_one_panel_is_red():
+    adf, drawn = drawn_page("110-01.d")
+    table = drawn[2]["per_group"]["0"]["profile_data"]
+    i = table.index[table["count"] > 0][0]
+    table.loc[i, "count"] -= 1
+    r = red(adf, "110-01.d", drawn)
+    assert r.failure_level == "L2" and "count" in r.detail
+
+
+def test_S2_01e_early_and_late_exchanged_keeping_labels_is_red():
+    adf, drawn = drawn_page("110-01.e")
+    stats = list(drawn[2])
+    stats[0]["profile_data"], stats[1]["profile_data"] = stats[1]["profile_data"], stats[0]["profile_data"]
+    r = red(adf, "110-01.e", drawn)
+    assert r.failure_level == "L2" and "early" in r.detail
+
+
+def swap_patches(ax, i: int, j: int) -> None:
+    a, b = ax.patches[i].get_xy().copy(), ax.patches[j].get_xy().copy()
+    ax.patches[i].set_xy(b)
+    ax.patches[j].set_xy(a)
+
+
+def test_S2_01f_weights_of_the_other_branch_is_red():
+    adf, drawn = drawn_page("110-01.f")
+    swap_patches(T.facet_panel(drawn[1], 0), 0, 1)
+    r = red(adf, "110-01.f", drawn)
+    assert r.failure_level == "L2" and "histogram ncl" in r.detail
+
+
+def move_one_entry(patch, n_bins: int) -> None:
+    xy = patch.get_xy().copy()
+    heights = xy[1:2 * n_bins:2, 1]
+    k = int(np.flatnonzero(heights > 0)[0])
+    for v in (2 * k + 1, 2 * k + 2):
+        xy[v, 1] -= 1
+    for v in (2 * k + 3, 2 * k + 4):
+        xy[v, 1] += 1
+    patch.set_xy(xy)
+
+
+def test_S2_01g_one_track_moved_to_the_next_bin_is_red():
+    adf, drawn = drawn_page("110-01.g")
+    move_one_entry(drawn[1].patches[0], 40)
+    r = red(adf, "110-01.g", drawn)
+    assert r.failure_level == "L2" and "histogram ncl" in r.detail
+
+
+def test_S2_01h_unweighted_counts_drawn_is_red():
+    adf, drawn = drawn_page("110-01.h")
+    patch = drawn[1].patches[0]
+    edges = T.bar_edges(drawn[1], 0, 50)
+    counts = np.histogram(adf.df.query("ncl>30")["ncl"].to_numpy(float), bins=edges)[0]
+    xy = patch.get_xy().copy()
+    xy[1:2 * 50:2, 1], xy[2:2 * 50 + 1:2, 1] = counts, counts
+    patch.set_xy(xy)
+    r = red(adf, "110-01.h", drawn)
+    assert r.failure_level == "L2" and "weights=w_dca" in r.detail
+
+
+def test_S2_01i_branches_exchanged_inside_one_panel_is_red():
+    adf, drawn = drawn_page("110-01.i")
+    a, b = drawn[2][0]["per_group"]["1"], drawn[2][1]["per_group"]["1"]
+    a["profile_data"], b["profile_data"] = b["profile_data"], a["profile_data"]
+    r = red(adf, "110-01.i", drawn)
+    assert r.failure_level == "L2" and "hasITSTPC=1" in r.detail
+
+
+def test_S2_legend_labels_known_defect_is_live():
+    """KD-12 measures the legend: once the declared labels are shown, the case fails 'no longer reproduces'."""
+    adf, drawn = drawn_page("110-01.e")
+    drawn[1].legend(["early", "late"])
+    result = T.CaseResult("110-01.e")
+    with pytest.raises(T.CheckFailure) as info:
+        T.evaluate(adf, case("110-01.e"), drawn, result)
+    plt.close("all")
+    assert T.NO_LONGER in str(info.value) and "KD-12" in str(info.value)
+
+
+def test_S2_weighted_summary_mean_known_defect_is_live():
+    """KD-3 measures the returned mean: a weighted value makes the case fail 'no longer reproduces'."""
+    adf, drawn = drawn_page("110-01.h")
+    r = adf.df.query("ncl>30")
+    w = 1.0 + r["dcar_tpc_vertex"].abs().to_numpy(float)
+    drawn[2]["mean"] = float(np.sum(w * r["ncl"].to_numpy(float)) / np.sum(w))
+    result = T.CaseResult("110-01.h")
+    with pytest.raises(T.CheckFailure) as info:
+        T.evaluate(adf, case("110-01.h"), drawn, result)
+    plt.close("all")
+    assert T.NO_LONGER in str(info.value) and "KD-3" in str(info.value)
