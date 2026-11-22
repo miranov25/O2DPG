@@ -1574,10 +1574,6 @@ DTYPE_SITE_DISPOSITION = {
         "EXTRACTION",
         "array access while evaluating an alias expression on the"
         "frame;no target dtype is chosen"),
-    "draw:values:0": (
-        "EXTRACTION",
-        "array access on an unmigrated draw surface; B3.3 owns"
-        "migratingit and will reclassify then"),
     "register_evaluator:values_call:0": (
         "EXTRACTION",
         "mapping .values() -- dictionary iteration. pandas .values is"
@@ -1608,10 +1604,6 @@ DTYPE_SITE_DISPOSITION = {
         "mapping .values() -- dictionary iteration. pandas .values is"
         "aPROPERTY, so x.values() on a Series raises TypeError; any"
         "callthat executes proves a mapping receiver. Not a dtype site"),
-    "draw_figures:values:0": (
-        "EXTRACTION",
-        "array access on an unmigrated draw surface; B3.3 owns"
-        "migratingit and will reclassify then"),
     "_compute_fit_validation:values:0": (
         "EXTRACTION",
         "array access to validate a fit result; a reporting path"
@@ -19953,6 +19945,42 @@ function collapseDepth(maxD) {{
             return np.arange(start, stop, dtype=np.intp)
         return None
 
+    def _gather_direct_subframe_ref(self, df_subset, sf_name, col_name,
+                                    index_cols, sel_pos):
+        """Values of the subframe column `sf_name.col_name` for the rows of df_subset.
+
+        BUG_AliasDataFrame_20261116 (ADF-EXT-001 / POST76-010, and POST76-002).
+        draw() and draw_figures() used to join a direct `Sub.col` reference with
+        their own pandas merge on the PARENT key names. That merge ignored the
+        registered child key (`right_index_columns`), failed when the key was
+        only an index level of the child, joined on the wrong column when the
+        child happened to carry a column named like the parent key, ignored the
+        configured subframe fill and silently dropped unmatched rows.
+
+        This is not a third join. It is the same two calls draw_batch() makes
+        in _execute_draw_projection_effects: _compute_join_indices() owns the
+        key mapping, _extract_subframe_values_cached(direct_slot=True) owns
+        NaN, the configured fill and the dtype policy.
+
+        index_cols -- the PARENT key columns of the subframe entry.
+        sel_pos    -- positions into self.df of the rows df_subset holds, or
+                      None when df_subset has every row of self.df. Positional
+                      on purpose, like draw_batch (see _entry_selection_positions).
+        """
+        join_idx, missing = self._compute_join_indices(sf_name, index_cols)
+        join_idx = np.asarray(join_idx)
+        missing = np.asarray(missing)
+        if sel_pos is not None:
+            join_idx = join_idx[sel_pos]
+            missing = missing[sel_pos]
+        if len(join_idx) != len(df_subset):
+            raise ValueError(
+                f"subframe reference '{sf_name}.{col_name}': the join produced "
+                f"{len(join_idx)} values for a {len(df_subset)}-row frame; the "
+                f"entry selection and the join are out of step")
+        return self._extract_subframe_values_cached(
+            sf_name, col_name, join_idx, missing, direct_slot=True)
+
     # facet_by accepts CHANNEL NAMES as well as column names
     # (Phase 13.31.DF AD-78 §2). They are not aliases and must never be
     # scanned as such. One definition, shared by _parse_expr_aliases and
@@ -20554,9 +20582,14 @@ function collapseDepth(maxD) {{
                                entry_end is not None or 
                                entry_mask is not None)
         
+        # BUG_AliasDataFrame_20261116: positions of the kept rows, for the
+        # subframe gather below (None = every row of self.df).
+        _sel_pos_draw = None
         if has_entry_selection:
             # SLICE-FIRST: Apply entry selection, then evaluate aliases on subset
             df_subset = self._apply_entry_selection(entry_begin, entry_end, entry_mask)
+            _sel_pos_draw = self._entry_selection_positions(
+                entry_begin, entry_end, entry_mask)
             
             # Evaluate needed aliases directly on the subset (not on full df)
             if effective_lazy:
@@ -20724,23 +20757,10 @@ function collapseDepth(maxD) {{
             if refs_to_resolve:
                 df_subset = df_subset.copy()
                 for sf_name, col_name, dot_ref, flat_ref, index_cols in refs_to_resolve:
-                    sf = self.get_subframe(sf_name)
-                    # BUG FIX: when col_name is also an index column, selecting
-                    # it twice then renaming destroys the index column.
-                    if col_name in index_cols:
-                        sf_keys = sf.df[index_cols].copy()
-                        sf_keys[flat_ref] = sf_keys[col_name]
-                    else:
-                        # Rename subframe column to flat_ref before merge to avoid
-                        # pandas suffix collision (dy_x, dy_y) when names conflict
-                        sf_keys = sf.df[index_cols + [col_name]].rename(
-                            columns={col_name: flat_ref}
-                        )
-                    # BUG FIX: deduplicate subframe keys to prevent merge expansion
-                    # when subframe has duplicate index entries (e.g., quantile bins)
-                    sf_keys = sf_keys.drop_duplicates(subset=index_cols, keep='first')
-                    merged = df_subset[index_cols].merge(sf_keys, on=index_cols, how='left')
-                    df_subset[flat_ref] = merged[flat_ref].values
+                    # BUG_AliasDataFrame_20261116: the shared gather, which
+                    # honours the registered child key and the subframe fill.
+                    df_subset[flat_ref] = self._gather_direct_subframe_ref(
+                        df_subset, sf_name, col_name, index_cols, _sel_pos_draw)
             
             if subframe_replacements:
                 for dot_ref, flat_ref in subframe_replacements.items():
@@ -23806,14 +23826,26 @@ function collapseDepth(maxD) {{
                               entry_end is not None or 
                               entry_mask is not None)
         
+        # BUG_AliasDataFrame_20261116: positions of the kept rows, for the
+        # subframe gather below (None = every row of self.df).
         if has_entry_selection:
             df_subset = self._apply_entry_selection(entry_begin, entry_end, entry_mask)
+            _sel_pos_fig = self._entry_selection_positions(
+                entry_begin, entry_end, entry_mask)
         else:
             df_subset = self.df
+            _sel_pos_fig = None
         
         # Apply max_entries limit
         if max_entries and len(df_subset) > max_entries:
+            # Rows and positions take the SAME slice. A negative limit keeps
+            # all but the last rows, as iloc always did here; an explicit
+            # np.arange(max_entries) would be empty for it (review F2).
+            _had_all_rows = _sel_pos_fig is None
             df_subset = df_subset.iloc[:max_entries]
+            _sel_pos_fig = (np.arange(len(df_subset), dtype=np.intp)
+                            if _had_all_rows
+                            else _sel_pos_fig[:max_entries])
             if verbose:
                 print(f"[draw_figures] Limited to {max_entries} entries")
         
@@ -23979,18 +24011,10 @@ function collapseDepth(maxD) {{
             if refs_to_resolve:
                 df_subset = df_subset.copy()
                 for sf_name, col_name, dot_ref, flat_ref, index_cols in refs_to_resolve:
-                    sf = self.get_subframe(sf_name)
-                    # BUG FIX: when col_name is also an index column, selecting
-                    # it twice then renaming destroys the index column.
-                    if col_name in index_cols:
-                        sf_keys = sf.df[index_cols].copy()
-                        sf_keys[flat_ref] = sf_keys[col_name]
-                    else:
-                        sf_keys = sf.df[index_cols + [col_name]].rename(
-                            columns={col_name: flat_ref}
-                        )
-                    merged = df_subset[index_cols].merge(sf_keys, on=index_cols, how='left')
-                    df_subset[flat_ref] = merged[flat_ref].values
+                    # BUG_AliasDataFrame_20261116: the shared gather, which
+                    # honours the registered child key and the subframe fill.
+                    df_subset[flat_ref] = self._gather_direct_subframe_ref(
+                        df_subset, sf_name, col_name, index_cols, _sel_pos_fig)
             
             if subframe_replacements:
                 _fig_rewrite_targets = [
