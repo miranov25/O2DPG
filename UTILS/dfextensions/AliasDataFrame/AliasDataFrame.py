@@ -10384,12 +10384,18 @@ class AliasDataFrame:
             
             def build_graph():
                 g = nx.DiGraph()
-                for alias, expr in self.aliases.items():
+                # PHASE_13_114 (BUG_AliasDataFrame_20261122): `self.aliases` rebuilds the whole
+                # {name: expr} mapping on every read, so reading it once per word made one call
+                # cost (number of aliases) x (words in all expressions). Read it once per call;
+                # nothing below writes the schema, so the graph is unchanged. The snapshot lives
+                # only for this call, so alias changes between calls stay visible.
+                aliases = self.aliases
+                for alias, expr in aliases.items():
                     g.add_node(alias)
                     for token in re.findall(r'\b\w+\b', expr):
                         # Exclude self-references to prevent false cycles
                         # (e.g., alias 'val' with expr 'T.val' extracts token 'val')
-                        if token in self.aliases and token != alias:
+                        if token in aliases and token != alias:
                             g.add_edge(token, alias)
                 return g
             
